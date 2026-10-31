@@ -203,6 +203,28 @@ window.PageIntegration = {
         <div class="btn-group" style="margin-top:14px">
           <button class="btn primary" @click="save('wxpay')">保存</button>
           <button class="btn" @click="testWxpay">测试连接</button>
+          <button class="btn" @click="diagPay">支付诊断</button>
+        </div>
+        <div v-if="payDiag" style="margin-top:14px">
+          <div v-if="payDiag.problems.length" style="border:1px solid var(--danger);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+            <div style="font-weight:600;color:var(--danger);margin-bottom:6px">配置问题</div>
+            <div v-for="p in payDiag.problems" :key="p" style="font-size:13px;line-height:1.7">• {{ p }}</div>
+          </div>
+          <div v-else style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px">
+            五项配置均已填写且已启用
+          </div>
+          <table class="table" v-if="payDiag.events.length">
+            <thead><tr><th style="width:150px">时间</th><th style="width:90px">类型</th><th>详情</th></tr></thead>
+            <tbody>
+              <tr v-for="(e,i) in payDiag.events" :key="i">
+                <td style="font-size:12px;color:var(--text-3)">{{ fmtTime(e.ts) }}</td>
+                <td><span :class="'tag ' + (e.level==='error'?'danger':e.level==='ok'?'success':'')">{{ e.type }}</span></td>
+                <td style="font-size:13px" :style="e.level==='error'?'color:var(--danger)':''">{{ e.detail }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="hint">还没有任何支付记录。「不出码」时先在这儿看一下 —— 下单失败的原因会写在这里，
+            包括微信返回的错误码和对应的处理办法；一条记录都没有，说明请求没到支付这一步。</div>
         </div>
       </div>
     </div>
@@ -282,6 +304,7 @@ window.PageIntegration = {
     const c = reactive({});
     const raw = reactive({});
     const diag = ref(null);
+    const payDiag = ref(null);
     // 带上部署基础路径，子路径部署时提示的回调地址才是对的
     const origin = location.origin + (window.U?.basePath || '');
 
@@ -322,6 +345,12 @@ window.PageIntegration = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
 
+    async function diagPay() {
+      try {
+        payDiag.value = await U.api.get('/api/admin/pay/diag');
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
     function fmtTime(ts) {
       const s = String(ts || '');
       // ISO 里是 UTC，直接取片段显示会差 8 小时，这里转成本地时区
@@ -344,7 +373,7 @@ window.PageIntegration = {
 
     onMounted(load);
     Vue.watch(tab, sync);
-    return { tabs, tab, c, origin, save, testWechat, diagWechat, diag, fmtTime, testTb, testWxpay };
+    return { tabs, tab, c, origin, save, testWechat, diagWechat, diag, fmtTime, testTb, testWxpay, diagPay, payDiag };
   },
 };
 

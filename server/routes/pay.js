@@ -4,6 +4,7 @@ const { now, safeJson } = require('../lib/util');
 const { getSetting } = require('../lib/config');
 const { requireUser } = require('../lib/auth');
 const wxpay = require('../services/wxpay');
+const paydiag = require('../lib/paydiag');
 const alipay = require('../services/alipay');
 const { createPayment, markPaid } = require('../services/pay');
 
@@ -31,10 +32,18 @@ module.exports = async function payRoutes(app) {
       if (data.trade_state === 'SUCCESS') {
         // 微信 v3 金额单位为分
         const paid = Number(data.amount?.total || 0) / 100;
-        markPaid(data.out_trade_no, data.transaction_id, 'wxpay', JSON.stringify(data), paid);
+        const r = markPaid(data.out_trade_no, data.transaction_id, 'wxpay', JSON.stringify(data), paid);
+        if (r && r.mismatch) {
+          paydiag.push('error', 'notify', `回调金额不符，拒绝发货：订单 ${data.out_trade_no}，应收 ¥${r.expected}，实收 ¥${r.actual}`);
+        } else {
+          paydiag.push('ok', 'notify', `支付成功：订单 ${data.out_trade_no}，微信单号 ${data.transaction_id}`);
+        }
+      } else {
+        paydiag.push('info', 'notify', `收到回调但交易未完成：订单 ${data.out_trade_no}，状态 ${data.trade_state}`);
       }
     } catch (e) {
       app.log.warn(`微信支付回调处理失败: ${e.message}`);
+      paydiag.push('error', 'notify', `回调处理失败：${e.message}（微信会重试，务必确认 API v3 密钥与平台证书正确）`);
       return reply.code(500).send({ code: 'FAIL', message: e.message });
     }
     return { code: 'SUCCESS', message: '成功' };

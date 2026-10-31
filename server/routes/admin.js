@@ -6,6 +6,7 @@ const { signAdmin, requireAdmin } = require('../lib/auth');
 const { basePath, getSetting, setSetting, allSettings, getConfig, setConfig, getConfigMasked, DEFAULTS } = require('../lib/config');
 const tb = require('../services/tb');
 const wxpay = require('../services/wxpay');
+const paydiag = require('../lib/paydiag');
 
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'data', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -180,12 +181,53 @@ module.exports = async function adminRoutes(app) {
     if (!(await requireAdmin(req, reply))) return;
     try {
       const r = await wxpay.testConfig();
+      paydiag.push('ok', 'selftest', `配置自检通过（${r.message}）`);
       return { ok: true, message: r.message };
     } catch (e) {
+      paydiag.push('error', 'selftest', `配置自检失败：${e.message}`);
       const extra = getConfig('wxpay').platform_cert
         ? '（当前配置了手动平台证书，不代表线上可用，建议清空后重测）' : '';
       return reply.code(400).send({ error: `微信支付配置不可用：${e.message}${extra}` });
     }
+  });
+
+  // 管理后台「支付诊断」：不出码时先看这里，它留着微信返回的真实错误码
+  app.get('/api/admin/pay/diag', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const cfg = wxpay.readConfig();
+    const problems = [];
+    if (!cfg.enabled) problems.push('「微信支付」开关没打开');
+    if (!cfg.mchid) problems.push('未填商户号 MCHID');
+    if (!/^\d{8,12}$/.test(cfg.mchid || '')) problems.push(`商户号格式不像 10 位数字（当前"${cfg.mchid}"）`);
+    if (!cfg.appid) problems.push('未填应用 AppID（必须是已与该商户号关联的 AppID）');
+    if (!cfg.mch_cert_serial) problems.push('未填商户 API 证书序列号（不是平台证书序列号）');
+    if (!cfg.private_key) problems.push('未填商户私钥（apiclient_key.pem 的完整内容）');
+    if (!cfg.api_v3_key) problems.push('未填 API v3 密钥（商户平台自行设置的 32 位字符串）');
+    else if (cfg.api_v3_key.length !== 32) {
+      problems.push(`API v3 密钥长度应为 32 位，当前 ${cfg.api_v3_key.length} 位`);
+    }
+    if (cfg.notify_url && !/^https?:\/\//.test(cfg.notify_url)) {
+      problems.push(`手动填的回调地址不是合法 URL：${cfg.notify_url}`);
+    }
+    const events = paydiag.list(20);
+    // 配比检查只能看出「有没有填」，看不出「填的对不对」；
+    // 真正卡住用户的是最近一次下单失败，必须直接在最上面点出来
+    const lastFail = events.find((e) => e.level === 'error' && e.type === 'prepay');
+    if (lastFail) problems.unshift(`最近一次下单失败：${lastFail.detail}`);
+    const lastNotifyFail = events.find((e) => e.level === 'error' && e.type === 'notify');
+    if (lastNotifyFail) problems.push(`最近一次支付回调处理失败：${lastNotifyFail.detail}`);
+    return {
+      enabled: !!cfg.enabled,
+      has: {
+        mchid: !!cfg.mchid, appid: !!cfg.appid, mch_cert_serial: !!cfg.mch_cert_serial,
+        private_key: !!cfg.private_key, api_v3_key: !!cfg.api_v3_key,
+      },
+      mchid_tail: cfg.mchid ? cfg.mchid.slice(-4) : '',
+      key_len: cfg.api_v3_key ? cfg.api_v3_key.length : 0,
+      notify_url: cfg.notify_url || '(未填，按当前站点自动拼接)',
+      problems,
+      events,
+    };
   });
 
   app.post('/api/settings/integration/test/tb', async (req, reply) => {

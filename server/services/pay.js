@@ -9,7 +9,11 @@ function baseUrl(req) {
   const cfg = getConfig('wxpay');
   // 手动填了回调地址就以它为准（需自己带完整路径）
   if (cfg.notify_url) return cfg.notify_url.replace(/\/+$/, '');
-  const proto = (req?.headers['x-forwarded-proto'] || 'http').split(',')[0];
+  // 反代没传 X-Forwarded-Proto 时不能默认 http：微信支付要求回调地址是公网可访问的 https，
+  // 用 http 下单会被拒，且这种失败在页面上看不出原因
+  const forwarded = req?.headers['x-forwarded-proto'];
+  const isLocal = String(req?.headers.host || '').startsWith('127.0.0.1') || String(req?.headers.host || '').startsWith('localhost');
+  const proto = String(forwarded || req?.protocol || (isLocal ? 'http' : 'https')).split(',')[0];
   const host = req?.headers['x-forwarded-host'] || req?.headers.host || 'localhost';
   // 子路径部署时必须带上前缀，否则微信回调会打到错误的地址
   return `${proto}://${host}${basePath()}`;
