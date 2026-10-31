@@ -31,6 +31,13 @@ async function ensureUser(openid, profile = {}) {
 }
 
 module.exports = async function wechatRoutes(app) {
+  // 微信服务器回调发的是 XML。Fastify 默认只解析 JSON，不注册 XML 解析器的话
+  // 请求会在 body parser 阶段就被 415 拒掉——handler 一行都执行不到，
+  // 表现为「二维码能扫、手机有反应、网页永远不跳转」，且服务端不留任何日志线索。
+  app.addContentTypeParser(['text/xml', 'application/xml'], { parseAs: 'string' }, (req, body, done) => {
+    done(null, body);
+  });
+
   app.post('/api/wechat/qrcode', async (req, reply) => {
     const cfg = getConfig('wechat');
     const scene = genScene();
@@ -93,23 +100,43 @@ module.exports = async function wechatRoutes(app) {
   // 服务号事件回调：扫码登录确认
   app.post('/api/wechat/server', async (req, reply) => {
     const q = req.query || {};
-    if (!wechat.checkSignature(q.signature, q.timestamp, q.nonce)) return reply.code(403).send('forbidden');
-    let xml = typeof req.body === 'string' ? req.body : (req.body?.xml || '');
-    const enc = q.encrypt_type === 'aes';
-    if (enc && !xml) {
-      const cfg = getConfig('wechat');
-      try {
-        xml = wechat.decryptMessage(String(req.body?.Encrypt || ''), cfg.aes_key).xml;
-      } catch (e) {
+    const cfg = getConfig('wechat');
+    const raw = typeof req.body === 'string' ? req.body : String((req.body && (req.body.raw || req.body.xml)) || '');
+    let msg = wechat.parseXml(raw);
+
+    // 安全模式 / 兼容模式：body 里只有 <Encrypt>，必须先解密再解析
+    if (msg.Encrypt && !msg.MsgType) {
+      if (!cfg.aes_key) {
+        console.error('[wechat] 收到加密回调，但后台未填「消息加密密钥(EncodingAESKey)」，无法解密。'
+          + '请到 系统设置→接入配置→微信服务号 填写，或在微信后台把消息加解密方式改成明文模式');
         return 'success';
       }
+      if (!wechat.checkMsgSignature(cfg.token, q.timestamp, q.nonce, q.msg_signature || '', msg.Encrypt)) {
+        console.error('[wechat] msg_signature 校验失败：Token 或 EncodingAESKey 与微信后台不一致');
+        return reply.code(403).send('forbidden');
+      }
+      try {
+        const d = wechat.decryptMessage(msg.Encrypt, cfg.aes_key);
+        // 微信要求校验解密出的 AppId，防止用别的号伪造回调
+        if (cfg.appid && d.appId && d.appId !== cfg.appid) {
+          console.error(`[wechat] 解密后 AppId 不匹配：${d.appId} ≠ ${cfg.appid}`);
+          return reply.code(403).send('forbidden');
+        }
+        msg = wechat.parseXml(d.xml);
+      } catch (e) {
+        console.error('[wechat] 回调解密失败:', e.message, '—— EncodingAESKey 可能填错');
+        return 'success';
+      }
+    } else if (!wechat.checkSignature(q.signature, q.timestamp, q.nonce)) {
+      return reply.code(403).send('forbidden');
     }
-    const msg = wechat.parseXml(xml);
+
     const openid = msg.FromUserName;
     const toUser = msg.ToUserName;
+    console.log(`[wechat] 回调 ${msg.MsgType}${msg.Event ? '/' + msg.Event : ''} from=${openid} key=${msg.EventKey || '-'}`);
 
     if (msg.MsgType === 'event') {
-      const key = msg.EventKey || '';
+      const key = String(msg.EventKey || '');
       const scene = msg.Event === 'subscribe' && key.startsWith('qrscene_') ? key.slice(8) : key;
       if (scene) {
         const s = db.prepare('SELECT * FROM wechat_sessions WHERE scene = ?').get(scene);
@@ -117,16 +144,22 @@ module.exports = async function wechatRoutes(app) {
           const profile = await wechat.getUserInfo(openid).catch(() => ({}));
           const { user } = await ensureUser(openid, { nickname: profile.nickname, avatar: profile.headimgurl, unionid: profile.unionid });
           db.prepare('UPDATE wechat_sessions SET status = ?, openid = ?, user_id = ? WHERE scene = ?').run('confirmed', openid, user.id, scene);
+          console.log(`[wechat] 扫码登录成功 scene=${scene} user=${user.id}`);
+          reply.type('application/xml; charset=utf-8');
           return wechat.textReply(openid, toUser, '登录成功，请返回网页继续操作。');
         }
+        console.warn(`[wechat] 未找到 scene=${scene} 对应的登录会话（可能已过期）`);
       }
       if (msg.Event === 'subscribe') {
+        reply.type('application/xml; charset=utf-8');
         return wechat.textReply(openid, toUser, '欢迎关注！回复「登录」获取登录入口。');
       }
     }
     if (msg.MsgType === 'text' && String(msg.Content || '').includes('登录')) {
+      reply.type('application/xml; charset=utf-8');
       return wechat.textReply(openid, toUser, '请在网页端点击微信登录扫码。');
     }
+    reply.type('application/xml; charset=utf-8');
     return 'success';
   });
 

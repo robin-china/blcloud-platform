@@ -75,12 +75,26 @@ function checkSignature(signature, timestamp, nonce) {
   return crypto.createHash('sha1').update(str).digest('hex') === signature;
 }
 
+/**
+ * 安全模式下微信不再用 URL 上的 signature，而是 msg_signature：
+ * sha1(sort([token, timestamp, nonce, encrypt]))
+ */
+function checkMsgSignature(token, timestamp, nonce, msgSignature, encrypt) {
+  if (!msgSignature) return false;
+  const str = [token, timestamp, nonce, encrypt].sort().join('');
+  return crypto.createHash('sha1').update(str).digest('hex') === msgSignature;
+}
+
 function decryptMessage(encrypted, aesKey) {
   const key = Buffer.from(`${aesKey}=`, 'base64');
-  const iv = key.subarray(0, 16);
+  // 必须用副本：subarray 是共享视图，Node 的 cipher 会原地更新 iv，复用同一 buffer 会出错
+  const iv = Buffer.from(key.subarray(0, 16));
   const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
   const decoded = Buffer.concat([decipher.update(Buffer.from(encrypted, 'base64')), decipher.final()]);
-  const content = decoded.subarray(20);
+  // 明文结构：16 字节随机数 + 4 字节网络序长度 + 消息体 + AppId
+  // （注意是前 16 字节，不是 20：之前写成 20 会多跳过长度字段，
+  //   导致消息体开头被吃掉 4 个字节、AppId 恒为空，安全模式回调永远解析不出内容）
+  const content = decoded.subarray(16);
   const len = content.readUInt32BE(0);
   const xml = content.subarray(4, 4 + len).toString('utf8');
   const appId = content.subarray(4 + len).toString('utf8');
@@ -89,10 +103,17 @@ function decryptMessage(encrypted, aesKey) {
 
 function parseXml(xml) {
   const out = {};
+  let s = String(xml || '');
+  // 微信消息的根节点固定是 <xml>...</xml>。必须先剥掉它：
+  // 否则最外层 <xml> 会被当成一个字段来解析，把整段内容吞进去，
+  // 最终只能得到 { xml: 第一个CDATA的值 }，FromUserName/MsgType/EventKey 全部丢失
+  // —— 回调因此永远解析不出内容，扫码后网页不会有任何反应。
+  const root = s.match(/^\s*<xml\s*>([\s\S]*)<\/xml\s*>\s*$/i);
+  if (root) s = root[1];
   const re = /<([A-Za-z_][\w.-]*)\s*>([\s\S]*?)<\/\1>/g;
-  let m;
   const cdata = /<!\[CDATA\[([\s\S]*?)\]\]>/;
-  while ((m = re.exec(xml))) {
+  let m;
+  while ((m = re.exec(s))) {
     const v = cdata.test(m[2]) ? cdata.exec(m[2])[1] : m[2];
     out[m[1]] = v;
   }
@@ -105,5 +126,5 @@ function textReply(toUser, fromUser, content) {
 
 module.exports = {
   getAccessToken, createQrScene, getUserInfo, sendTemplateMessage,
-  checkSignature, decryptMessage, parseXml, textReply,
+  checkSignature, checkMsgSignature, decryptMessage, parseXml, textReply,
 };
