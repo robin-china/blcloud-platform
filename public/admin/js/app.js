@@ -116,5 +116,8 @@
     },
   });
 
+// 同 user/app.js：让模板里也能访问全局 U（否则模板作用域看不到它）
+app.config.globalProperties.U = window.U;
+
   window.AdminApp = { app, ref, reactive, computed, onMounted, watch, ICONS };
 })();

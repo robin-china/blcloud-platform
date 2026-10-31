@@ -86,5 +86,10 @@ const userApp = createApp({
   },
 });
 
+// Vue 模板只能看见 setup/data/props/globalProperties 里的东西，
+// 看不到挂在 window 上的全局变量。把 U 注册进来，
+// 模板里写 U.xxx 才不会渲染成 Cannot read properties of undefined。
+userApp.config.globalProperties.U = window.U;
+
 window.UserApp = { app: userApp };
 })();

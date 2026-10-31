@@ -100,7 +100,7 @@ window.PageProduct = {
           <div v-if="!payChannels.length" class="hint">当前未开通任何支付方式，请联系管理员</div>
           <div v-if="payResult">
             <div class="qr-box" v-if="payResult.mode==='qrcode'">
-              <img v-if="payResult.code_url" :src="U.basePath + '/api/portal/qrcode?text=' + encodeURIComponent(payResult.code_url)" />
+              <img v-if="payResult.code_url" :src="basePath + '/api/portal/qrcode?text=' + encodeURIComponent(payResult.code_url)" />
               <div v-else class="qr-placeholder">未获取到支付二维码</div>
               <div class="hint">请使用微信扫码支付</div>
             </div>
@@ -128,6 +128,8 @@ window.PageProduct = {
     const payResult = ref(null);
     const id = computed(() => location.hash.split('/')[2] || '');
     const payChannels = ref([]);
+    // 模板里只能访问 setup 暴露出来的东西，不能直接引用全局 window.U
+    const basePath = window.U ? window.U.basePath || '' : '';
     let timer = null;
 
     const CHANNEL_NAMES = { wxpay: '微信支付', alipay: '支付宝', simulate: '模拟支付' };
@@ -195,7 +197,7 @@ window.PageProduct = {
     onMounted(async () => {
       await Promise.all([load(), loadPayChannels()]);
     });
-    return { product, paying, channel, pay, payResult, payChannels, buy, start, simulatePay, checkPaid, download };
+    return { product, paying, channel, pay, payResult, payChannels, basePath, buy, start, simulatePay, checkPaid, download };
   },
 };
 
