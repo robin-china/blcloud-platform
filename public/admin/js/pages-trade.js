@@ -51,6 +51,7 @@ window.PageOrders = {
                   <div class="table-actions">
                     <button class="btn sm" @click="open(o)">详情</button>
                     <button class="btn sm" v-if="o.status==='pending'" @click="simulatePay(o)">标记已付</button>
+                    <button class="btn sm" v-if="o.status==='pending'" @click="syncPay(o)">向微信查单</button>
                     <button class="btn sm" v-if="o.status==='paid'" @click="deliver(o)">补发授权</button>
                     <button class="btn sm danger" v-if="o.status==='paid'" @click="refund(o)">退款</button>
                   </div>
@@ -137,6 +138,15 @@ window.PageOrders = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
 
+    // 回调丢了/失败过时用这条：直接问微信这笔到底付了没有，付了就补齐发货
+    async function syncPay(o) {
+      try {
+        const r = await U.api.post(`/api/orders/${o.id}/sync-pay`, {});
+        U.toast(r.notice || '已同步', r.status === 'paid' ? 'success' : 'info');
+        load();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
     async function deliver(o) {
       await U.api.post(`/api/orders/${o.id}/deliver`);
       U.toast('授权已补发', 'success');
@@ -156,7 +166,7 @@ window.PageOrders = {
     const channelName = (c) => CHANNEL_MAP[c] || c || '-';
 
     onMounted(load);
-    return { list, total, page, pages, q, status, channel, detail, fmt, load, open, simulatePay, deliver, refund, statusText, statusCls, channelName };
+    return { list, total, page, pages, q, status, channel, detail, fmt, load, open, simulatePay, syncPay, deliver, refund, statusText, statusCls, channelName };
   },
 };
 

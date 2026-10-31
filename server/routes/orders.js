@@ -4,6 +4,9 @@ const { requireAdmin } = require('../lib/auth');
 const wxpay = require('../services/wxpay');
 const tb = require('../services/tb');
 const { addDays } = require('./licenses');
+const { deliverOrder } = require('../services/deliver');
+const { markPaid } = require('../services/pay');
+const paydiag = require('../lib/paydiag');
 
 module.exports = async function orderRoutes(app) {
   app.get('/api/orders', async (req, reply) => {
@@ -44,6 +47,42 @@ module.exports = async function orderRoutes(app) {
     return { ok: true, delivered };
   });
 
+  /**
+   * 补单：回调丢了/失败过时，用微信的「查单」接口确认真实支付结果。
+   * 微信的重试次数是有限的（约 24 小时内若干次），一旦耗尽就再也不会通知，
+   * 那时候用户已付款、订单却永远是 pending —— 只能靠这里人为补齐。
+   */
+  app.post('/api/orders/:id/sync-pay', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(Number(req.params.id));
+    if (!order) return reply.code(404).send({ error: '订单不存在' });
+    if (order.status === 'paid') return { ok: true, status: 'paid', notice: '订单已是已支付' };
+    if (order.channel && order.channel !== 'wxpay') {
+      return reply.code(400).send({ error: `该订单支付渠道为 ${order.channel}，无法向微信查单` });
+    }
+    let data;
+    try {
+      data = await wxpay.queryOrder(order.order_no);
+    } catch (e) {
+      paydiag.push('error', 'query', `主动查单失败：订单 ${order.order_no}，${e.message}`);
+      return reply.code(400).send({ error: `向微信查单失败：${e.message}` });
+    }
+    const states = { SUCCESS: '支付成功', REFUND: '已转入退款', NOTPAY: '未支付', CLOSED: '已关闭',
+      REVOKED: '已撤销', PAYERROR: '支付失败' };
+    if (data.trade_state !== 'SUCCESS') {
+      paydiag.push('info', 'query', `主动查单：订单 ${order.order_no} 当前为 ${data.trade_state}（${states[data.trade_state] || data.trade_state}）`);
+      return { ok: false, status: order.status, notice: `微信侧该订单当前状态：${states[data.trade_state] || data.trade_state}，未做改动` };
+    }
+    const paidAmount = Number(data.amount?.total || 0) / 100;
+    const r = markPaid(data.out_trade_no, data.transaction_id, 'wxpay', JSON.stringify(data), paidAmount);
+    if (r && r.mismatch) {
+      paydiag.push('error', 'query', `主动查单发现金额不符：订单 ${order.order_no}，应收 ¥${r.expected}、实收 ¥${r.actual}，已拒发货`);
+      return reply.code(400).send({ error: `金额不符：应收 ¥${r.expected}、实收 ¥${r.actual}，已拒绝发货` });
+    }
+    paydiag.push('ok', 'query', `主动查单补齐成功：订单 ${order.order_no} 已标记为已支付并自动发货`);
+    return { ok: true, status: 'paid', notice: '微信侧确认已支付，订单已补齐并自动发货' };
+  });
+
   app.post('/api/orders/:id/refund', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(Number(req.params.id));
@@ -78,55 +117,3 @@ module.exports = async function orderRoutes(app) {
     return { trend: rows.reverse(), byChannel, topProducts };
   });
 };
-
-/** 支付成功后自动发放授权与硬件 */
-function deliverOrder(order) {
-  const items = safeJson(order.items, []);
-  const created = [];
-  for (const it of items) {
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(Number(it.product_id));
-    if (!product) continue;
-    if (product.type === 'service') {
-      const key = db.prepare('SELECT * FROM api_keys WHERE user_id = ? ORDER BY id DESC').get(order.user_id);
-      const quota = Number((product.description || '').match(/(\d+)\s*万次/)?.[1] || 10) * 10000;
-      if (key) {
-        db.prepare('UPDATE api_keys SET quota = quota + ? WHERE id = ?').run(quota, key.id);
-      } else {
-        db.prepare('INSERT INTO api_keys (user_id, api_key, name, quota, used, status, created_at) VALUES (?,?,?,?,0,?,?)')
-          .run(order.user_id, `ak_${Math.random().toString(36).slice(2, 18)}`, '默认密钥', quota, 'active', now());
-      }
-      created.push({ type: 'api_quota', product: product.name });
-      continue;
-    }
-    const licenseKey = `LIC-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
-    const info = db.prepare(`INSERT INTO licenses (license_key, user_id, product_id, type, max_devices, start_at, end_at, status, order_id, remark, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(licenseKey, order.user_id, product.id, product.type === 'software' ? 'permanent' : 'subscription',
-        Number(it.qty) || 1, now(), product.type === 'software' ? null : addDays(365), 'active', order.id, '订单自动发放', now());
-    db.prepare('UPDATE products SET total_sales = total_sales + ? WHERE id = ?').run(Number(it.qty) || 1, product.id);
-    created.push({ type: 'license', license_key: licenseKey, product: product.name, license_id: info.lastInsertRowid });
-
-    if (product.type === 'hardware') {
-      const qty = Number(it.qty) || 1;
-      for (let i = 0; i < qty; i++) {
-        const sn = `HW${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-        const dev = db.prepare(`INSERT INTO devices (user_id, product_id, sn, name, model, status, bound_at)
-          VALUES (?,?,?,?,?, 'online', ?)`)
-          .run(order.user_id, product.id, sn, product.name, product.version || '', now());
-        tb.createDevice({ name: sn, type: product.category || 'default' })
-          .then((d) => {
-            if (d.deviceId) {
-              db.prepare('UPDATE devices SET tb_device_id = ?, tb_token = ? WHERE id = ?')
-                .run(d.deviceId, d.token || '', dev.lastInsertRowid);
-            }
-          })
-          .catch(() => {});
-        created.push({ type: 'device', sn, product: product.name });
-      }
-    }
-  }
-  return created;
-}
-
-module.exports.deliverOrder = deliverOrder;
-module.exports.genOrderNo = genOrderNo;

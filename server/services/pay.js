@@ -3,7 +3,7 @@ const { now, safeJson } = require('../lib/util');
 const { getConfig, getSetting, basePath } = require('../lib/config');
 const wxpay = require('./wxpay');
 const alipay = require('./alipay');
-const { deliverOrder } = require('../routes/orders');
+const { deliverOrder } = require('./deliver');
 
 function baseUrl(req) {
   const cfg = getConfig('wxpay');
