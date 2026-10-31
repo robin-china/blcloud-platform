@@ -5,13 +5,32 @@ const API = 'https://api.weixin.qq.com';
 
 let tokenCache = { token: '', expiresAt: 0 };
 
+/** 把微信 errcode 翻译成能直接照做的话，避免只知道「失败」却不知下一步 */
+function explainWxError(code, defaultMsg = '') {
+  const TABLE = {
+    40001: 'AppSecret 错误或不匹配（检查后台是否粘错、有没有多余空格）',
+    40013: 'AppID 无效',
+    40164: '调用 IP 不在白名单：公众号后台「开发 → 基本配置 → IP白名单」加上本机公网 IP',
+    40125: 'AppSecret 格式不合法',
+    48001: '接口未授权：此接口的「带参数二维码」需要**已认证服务号**，订阅号/未认证号调不了',
+    45009: '接口调用超过限额（日调用上限，次日自动恢复）',
+    41001: '缺少 access_token 参数',
+    42001: 'access_token 已超时',
+    61023: 'refresh_token 无效',
+    '-1': '微信服务器内部错误，稍后重试',
+  };
+  const c = Number(code);
+  const tip = TABLE[c] || TABLE[String(c)];
+  return tip ? `微信 ${code}：${tip}` : `微信 ${code}: ${defaultMsg}`;
+}
+
 async function getAccessToken(force = false) {
   const cfg = getConfig('wechat');
   if (!cfg.appid || !cfg.appsecret) throw new Error('未配置服务号 AppID / AppSecret');
   if (!force && tokenCache.token && tokenCache.expiresAt > Date.now() + 60000) return tokenCache.token;
   const res = await fetch(`${API}/cgi-bin/token?grant_type=client_credential&appid=${cfg.appid}&secret=${cfg.appsecret}`);
   const data = await res.json();
-  if (data.errcode) throw new Error(`微信接口错误 ${data.errcode}: ${data.errmsg}`);
+  if (data.errcode) throw new Error(explainWxError(data.errcode, data.errmsg));
   tokenCache = { token: data.access_token, expiresAt: Date.now() + (data.expires_in || 7200) * 1000 };
   return tokenCache.token;
 }
@@ -28,7 +47,7 @@ async function createQrScene(scene, expireSeconds = 300) {
     }),
   });
   const data = await res.json();
-  if (data.errcode) throw new Error(`二维码创建失败 ${data.errcode}: ${data.errmsg}`);
+  if (data.errcode) throw new Error(explainWxError(data.errcode, data.errmsg));
   return { ticket: data.ticket, url: data.url, qrcodeUrl: `https://mp.weixin.qq.com/cgi-bin/showqrcode?ticket=${encodeURIComponent(data.ticket)}` };
 }
 

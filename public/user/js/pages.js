@@ -528,14 +528,19 @@ window.PageUserLogin = {
       <div class="tip">使用微信扫描下方二维码，完成登录</div>
       <div class="qr-box">
         <img v-if="qrcode_url" :src="qrcode_url" />
-        <div v-else class="qr-placeholder" @click="simulate" style="cursor:pointer">
+        <div v-else-if="errmsg" class="qr-placeholder" style="cursor:default">
+          <div style="color:var(--danger);font-weight:600">二维码生成失败</div>
+        </div>
+        <div v-else-if="simulatable" class="qr-placeholder" @click="simulate" style="cursor:pointer">
           未配置服务号参数<br />点击此处使用演示扫码登录
         </div>
+        <div v-else class="qr-placeholder" style="cursor:default">未获取到二维码</div>
       </div>
+      <div v-if="errmsg" style="text-align:center;font-size:12px;color:var(--danger);margin:8px 12px;word-break:break-all;line-height:1.6">{{ errmsg }}</div>
       <div class="hint" style="text-align:center">{{ statusText }}</div>
       <div class="btn-group" style="justify-content:center;margin-top:12px">
         <button class="btn" @click="refresh">刷新二维码</button>
-        <button class="btn" v-if="!qrcode_url" @click="simulate">演示登录</button>
+        <button class="btn" v-if="simulatable && !qrcode_url" @click="simulate">演示登录</button>
       </div>
     </div>
   </div>
@@ -544,15 +549,41 @@ window.PageUserLogin = {
     const settings = Vue.inject('settings');
     const qrcode_url = ref('');
     const scene = ref('');
-    const statusText = ref('等待扫码');
+    const statusText = ref('正在获取二维码...');
+    const errmsg = ref('');
+    const simulatable = ref(false);
     let timer = null;
 
     async function refresh() {
       clearInterval(timer);
-      const res = await U.api.post('/api/wechat/qrcode', {});
-      scene.value = res.scene;
+      qrcode_url.value = '';
+      errmsg.value = '';
+      statusText.value = '正在获取二维码...';
+      let res;
+      try {
+        res = await U.api.post('/api/wechat/qrcode', {});
+      } catch (e) {
+        // 以前这里没有 catch，接口一报错就变成未处理的 Promise rejection，
+        // 页面永远停在「等待扫码」——表现就是扫码登录页毫无反应
+        clearInterval(timer);
+        errmsg.value = e.message || '无法连接服务器';
+        statusText.value = '请点击「刷新二维码」重试';
+        simulatable.value = false;
+        return;
+      }
+      scene.value = res.scene || '';
       qrcode_url.value = res.qrcode_url || '';
-      statusText.value = res.mode === 'simulate' ? '当前为演示模式（未配置服务号）' : '请使用微信扫码';
+      if (res.mode === 'wechat') {
+        simulatable.value = false;
+        statusText.value = '请使用微信扫码';
+      } else if (res.mode === 'error') {
+        simulatable.value = false;
+        errmsg.value = res.error || '服务号接口调用失败';
+        statusText.value = '配置已填写，但调用微信失败（详见上方提示）';
+      } else {
+        simulatable.value = true;
+        statusText.value = '当前为演示模式（未配置服务号）';
+      }
       timer = setInterval(poll, 1500);
     }
 
@@ -573,12 +604,17 @@ window.PageUserLogin = {
 
     async function simulate() {
       if (!scene.value) await refresh();
-      await U.api.post(`/api/wechat/simulate/${scene.value}`, { nickname: '演示用户' });
-      statusText.value = '已扫码，正在登录...';
+      if (!scene.value) return;
+      try {
+        await U.api.post(`/api/wechat/simulate/${scene.value}`, { nickname: '演示用户' });
+        statusText.value = '已扫码，正在登录...';
+      } catch (e) {
+        errmsg.value = e.message || '演示登录失败';
+      }
     }
 
     onMounted(refresh);
-    return { settings, qrcode_url, statusText, refresh, simulate };
+    return { settings, qrcode_url, statusText, errmsg, simulatable, refresh, simulate };
   },
 };
 })();

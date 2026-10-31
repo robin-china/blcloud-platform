@@ -46,9 +46,12 @@ module.exports = async function wechatRoutes(app) {
         .run(scene, qr.ticket, qr.qrcodeUrl, 'pending', '', null, now(), expiresAt);
       return { scene, mode: 'wechat', qrcode_url: qr.qrcodeUrl, url: qr.url, expires_at: expiresAt };
     } catch (e) {
+      // 已配置服务号却调用失败，绝不能降级成 simulate：
+      // simulate 接口在检测到 appid/appsecret 后会直接 403，用户点「演示登录」依然无反应，
+      // 页面就会呈现既无二维码、也无报错、也不动的假死状态。这里必须把原因暴露出去。
       db.prepare('INSERT INTO wechat_sessions (scene, ticket, qrcode_url, status, openid, user_id, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(scene, '', '', 'pending', '', null, now(), expiresAt);
-      return { scene, mode: 'simulate', qrcode_url: '', error: e.message, expires_at: expiresAt };
+        .run(scene, '', '', 'error', '', null, now(), expiresAt);
+      return { scene, mode: 'error', qrcode_url: '', error: e.message, expires_at: expiresAt };
     }
   });
 
