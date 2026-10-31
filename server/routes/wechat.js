@@ -3,6 +3,7 @@ const { now, genScene } = require('../lib/util');
 const { getConfig, devMode } = require('../lib/config');
 const { signUser } = require('../lib/auth');
 const wechat = require('../services/wechat');
+const wxdiag = require('../lib/wxdiag');
 const tb = require('../services/tb');
 
 async function ensureUser(openid, profile = {}) {
@@ -93,7 +94,16 @@ module.exports = async function wechatRoutes(app) {
   // 服务号服务器配置验证
   app.get('/api/wechat/server', async (req, reply) => {
     const { signature, timestamp, nonce, echostr } = req.query || {};
-    if (wechat.checkSignature(signature, timestamp, nonce)) return echostr;
+    if (!echostr) {
+      // 浏览器直接打开：给一句人话，而不是干巴巴的 403
+      wxdiag.push('info', 'verify', '收到无 echostr 的 GET（多半是浏览器直接打开），非微信后台验证请求');
+      return reply.code(403).send('forbidden');
+    }
+    if (wechat.checkSignature(signature, timestamp, nonce)) {
+      wxdiag.push('ok', 'verify', '微信后台服务器配置验证通过');
+      return echostr;
+    }
+    wxdiag.push('error', 'verify', '服务器配置验证失败：后台填写的「消息校验 Token」与微信后台不一致');
     return reply.code(403).send('forbidden');
   });
 
@@ -102,6 +112,8 @@ module.exports = async function wechatRoutes(app) {
     const q = req.query || {};
     const cfg = getConfig('wechat');
     const raw = typeof req.body === 'string' ? req.body : String((req.body && (req.body.raw || req.body.xml)) || '');
+    const mode = q.encrypt_type === 'aes' ? '安全模式' : '明文模式';
+    wxdiag.push('info', 'callback', `收到微信推送（${mode}），body ${raw.length} 字节`);
     let msg = wechat.parseXml(raw);
 
     // 安全模式 / 兼容模式：body 里只有 <Encrypt>，必须先解密再解析
@@ -109,10 +121,13 @@ module.exports = async function wechatRoutes(app) {
       if (!cfg.aes_key) {
         console.error('[wechat] 收到加密回调，但后台未填「消息加密密钥(EncodingAESKey)」，无法解密。'
           + '请到 系统设置→接入配置→微信服务号 填写，或在微信后台把消息加解密方式改成明文模式');
+        wxdiag.push('error', 'decrypt', '后台未填「消息加密密钥(EncodingAESKey)」，无法解密安全模式回调');
+        msg = {};
         return 'success';
       }
       if (!wechat.checkMsgSignature(cfg.token, q.timestamp, q.nonce, q.msg_signature || '', msg.Encrypt)) {
         console.error('[wechat] msg_signature 校验失败：Token 或 EncodingAESKey 与微信后台不一致');
+        wxdiag.push('error', 'signature', 'msg_signature 校验失败：Token 或 EncodingAESKey 与微信后台不一致');
         return reply.code(403).send('forbidden');
       }
       try {
@@ -120,20 +135,24 @@ module.exports = async function wechatRoutes(app) {
         // 微信要求校验解密出的 AppId，防止用别的号伪造回调
         if (cfg.appid && d.appId && d.appId !== cfg.appid) {
           console.error(`[wechat] 解密后 AppId 不匹配：${d.appId} ≠ ${cfg.appid}`);
+          wxdiag.push('error', 'signature', `解密后 AppId 不匹配：${d.appId} ≠ ${cfg.appid}，疑似伪造回调`);
           return reply.code(403).send('forbidden');
         }
         msg = wechat.parseXml(d.xml);
       } catch (e) {
         console.error('[wechat] 回调解密失败:', e.message, '—— EncodingAESKey 可能填错');
+        wxdiag.push('error', 'decrypt', `回调解密失败（${e.message}）：EncodingAESKey 大概率填错`);
         return 'success';
       }
     } else if (!wechat.checkSignature(q.signature, q.timestamp, q.nonce)) {
+      wxdiag.push('error', 'signature', '明文模式 signature 校验失败：后台「消息校验 Token」与微信后台不一致');
       return reply.code(403).send('forbidden');
     }
 
     const openid = msg.FromUserName;
     const toUser = msg.ToUserName;
     console.log(`[wechat] 回调 ${msg.MsgType}${msg.Event ? '/' + msg.Event : ''} from=${openid} key=${msg.EventKey || '-'}`);
+    wxdiag.push('info', 'callback', `解析成功：${msg.MsgType}${msg.Event ? '/' + msg.Event : ''} from=${openid || '未知'}`);
 
     if (msg.MsgType === 'event') {
       const key = String(msg.EventKey || '');
@@ -145,10 +164,12 @@ module.exports = async function wechatRoutes(app) {
           const { user } = await ensureUser(openid, { nickname: profile.nickname, avatar: profile.headimgurl, unionid: profile.unionid });
           db.prepare('UPDATE wechat_sessions SET status = ?, openid = ?, user_id = ? WHERE scene = ?').run('confirmed', openid, user.id, scene);
           console.log(`[wechat] 扫码登录成功 scene=${scene} user=${user.id}`);
+          wxdiag.push('ok', 'login', `扫码登录成功：用户 ${user.nickname || openid}（id=${user.id}）`);
           reply.type('application/xml; charset=utf-8');
           return wechat.textReply(openid, toUser, '登录成功，请返回网页继续操作。');
         }
         console.warn(`[wechat] 未找到 scene=${scene} 对应的登录会话（可能已过期）`);
+        wxdiag.push('warn', 'login', `未找到 scene=${scene} 对应的登录会话（二维码可能已过期，请刷新后重扫）`);
       }
       if (msg.Event === 'subscribe') {
         reply.type('application/xml; charset=utf-8');
@@ -169,10 +190,43 @@ module.exports = async function wechatRoutes(app) {
     if (!(await requireAdmin(req, reply))) return;
     try {
       const token = await wechat.getAccessToken(true);
+      wxdiag.push('ok', 'api', 'AppID / AppSecret 校验通过（拿到 access_token）');
       return { ok: true, message: '服务号配置可用', token: `${token.slice(0, 8)}...` };
     } catch (e) {
+      wxdiag.push('error', 'api', `AppID / AppSecret 校验失败：${e.message}`);
       return reply.code(400).send({ error: e.message });
     }
+  });
+
+  // 管理后台「回调诊断」：不扫码也能看出微信这套链路卡在哪一步
+  app.get('/api/admin/wechat/diag', async (req, reply) => {
+    const { requireAdmin } = require('../lib/auth');
+    if (!(await requireAdmin(req, reply))) return;
+    const { basePath } = require('../lib/config');
+    const cfg = getConfig('wechat');
+    const events = wxdiag.list(20);
+    const has = (v) => !!(v && String(v).trim());
+    // 反代部署下也能拼出对外可见的完整地址（配合 TRUST_PROXY=1 拿真实协议/主机名）
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+    const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+    const serverUrl = `${proto}://${host}${basePath()}/api/wechat/server`;
+    const problems = [];
+    if (!cfg.enabled) problems.push('「微信服务号」开关没打开，扫码登录不会生效');
+    if (!has(cfg.appid)) problems.push('未填 AppID');
+    if (!has(cfg.appsecret)) problems.push('未填 AppSecret（此项不出二维码）');
+    if (!has(cfg.token)) problems.push('未填「消息校验 Token」，微信后台无法验证服务器地址');
+    if (!has(cfg.aes_key)) problems.push('未填「消息加密密钥(EncodingAESKey)」：微信后台选了安全/兼容模式就会解不开回调');
+    return {
+      enabled: !!cfg.enabled,
+      has: {
+        appid: has(cfg.appid), appsecret: has(cfg.appsecret),
+        token: has(cfg.token), aes_key: has(cfg.aes_key),
+      },
+      appid_tail: cfg.appid ? String(cfg.appid).slice(-6) : '',
+      server_url: serverUrl,
+      problems,
+      events,
+    };
   });
 };
 

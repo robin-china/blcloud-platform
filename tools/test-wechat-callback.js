@@ -180,6 +180,93 @@ function scanXml(from, to, scene, subscribe) {
   });
   t('⑦ 明文签名错误被拒 403', r.statusCode === 403, r.statusCode);
 
+  // ⑧ 端到端：回调完成 → 前端轮询拿到 token → 凭 token 能访问用户接口
+  scene = await newScene();
+  await app.inject({
+    method: 'POST', url: '/api/wechat/server',
+    query: { signature: sha1Of([TOKEN, ts, nonce]), timestamp: ts, nonce },
+    headers: { 'content-type': 'text/xml' },
+    payload: scanXml('oE2E0001', 'gh_test', scene, false),
+  });
+  r = await app.inject({ method: 'GET', url: '/api/wechat/qrcode/' + scene });
+  const polled = r.json();
+  t('⑧ 轮询返回 confirmed', polled.status === 'confirmed', r.statusCode + ' ' + JSON.stringify(polled).slice(0, 80));
+  t('⑧ 轮询返回可用 token', !!polled.token, polled.token ? '有' : '无');
+  t('⑧ 轮询不返回 tb 凭据', !('tb_username' in (polled.user || {})) && !('tb_password' in (polled.user || {})),
+    'user字段=' + Object.keys(polled.user || {}).join(','));
+
+  if (polled.token) {
+    const me = await app.inject({ method: 'GET', url: '/api/portal/me', headers: { authorization: 'Bearer ' + polled.token } });
+    const meJson = me.json();
+    t('⑨ token 可访问 /api/portal/me', me.statusCode === 200, me.statusCode);
+    const meU = meJson.user || {};
+    t('⑨ me 返回的是本人 openid', meU.openid === 'oE2E0001', meU.openid || '-');
+    t('⑨ me 不泄露 tb 账号密码', !meU.tb_username && !meU.tb_password, 'user字段=' + Object.keys(meU).join(','));
+  } else {
+    t('⑨ token 可访问 /api/portal/me', false, '上一步没拿到 token');
+  }
+
+  // ⑩ 未确认 / 已过期这两种轮询状态
+  scene = await newScene();
+  r = await app.inject({ method: 'GET', url: '/api/wechat/qrcode/' + scene });
+  t('⑩ 未扫码时轮询为 pending', r.json().status === 'pending', JSON.stringify(r.json()));
+  db.prepare('INSERT INTO wechat_sessions (scene, ticket, qrcode_url, status, openid, user_id, created_at, expires_at)'
+    + ' VALUES (?,?,?,?,?,?,?,?)').run('expiredscene', '', '', 'pending', '', null,
+      new Date(Date.now() - 600000).toISOString(), new Date(Date.now() - 300000).toISOString());
+  r = await app.inject({ method: 'GET', url: '/api/wechat/qrcode/expiredscene' });
+  t('⑩ 过期二维码轮询为 expired', r.json().status === 'expired', JSON.stringify(r.json()));
+  r = await app.inject({ method: 'GET', url: '/api/wechat/qrcode/noscene' });
+  t('⑩ 不存在的 scene 返回 404', r.statusCode === 404, r.statusCode);
+
+  // ⑪ 同一个已经登录过的用户再次扫码：不能重复建号
+  const before = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+  scene = await newScene();
+  await app.inject({
+    method: 'POST', url: '/api/wechat/server',
+    query: { signature: sha1Of([TOKEN, ts, nonce]), timestamp: ts, nonce },
+    headers: { 'content-type': 'text/xml' },
+    payload: scanXml('oE2E0001', 'gh_test', scene, false),
+  });
+  const after = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+  t('⑪ 重复扫码不重复建号', before === after, before + ' -> ' + after);
+
+  // ⑫ 管理后台「回调诊断」：能看出配置缺口 + 能看到推送记录，且不泄露密钥
+  const diagUrl = '/api/admin/wechat/diag';
+  r = await app.inject({ method: 'GET', url: diagUrl });
+  t('⑫ 诊断接口未授权拒绝', r.statusCode === 401 || r.statusCode === 403, r.statusCode);
+
+  const adminToken = (await app.inject({
+    method: 'POST', url: '/api/admin/login', payload: { username: 'admin', password: 'admin123' },
+  })).json().token;
+  const ah = { authorization: 'Bearer ' + adminToken };
+  r = await app.inject({ method: 'GET', url: diagUrl, headers: ah });
+  const dj = r.json();
+  t('⑫ 管理员可读诊断', r.statusCode === 200, r.statusCode);
+  t('⑫ 诊断含推送记录', Array.isArray(dj.events) && dj.events.length > 0, '事件数=' + ((dj.events || []).length));
+  t('⑫ 诊断记录到扫码成功事件', (dj.events || []).some((e) => e.type === 'login' && e.level === 'ok'),
+    (dj.events || []).slice(0, 3).map((e) => e.type + ':' + e.level).join(' | '));
+  t('⑫ 诊断记录到解密失败事件', (dj.events || []).some((e) => e.type === 'decrypt' && e.level === 'error'), '-');
+  const djStr = JSON.stringify(dj);
+  // 泄露要看「值」是否被带出来：has 里出现的只是字段名，不算泄露
+  t('⑫ 诊断不泄露密钥原文', !djStr.includes(TOKEN) && !djStr.includes(AESKEY),
+    '字段=' + Object.keys(dj).join(','));
+  // 注意：子脚本装在模板字面量里，反斜杠转义会在求值阶段被吃掉，
+  // 写正则字面量会被转成行注释，这里改用 endsWith
+  t('⑫ 诊断给出对外回调地址', String(dj.server_url || '').endsWith('/api/wechat/server'), dj.server_url);
+
+  // ⑬ 清空配置后诊断要能报出缺口。
+  // 注意 setConfig 对敏感字段是「留空表示不修改」（防止误清），所以这里直接写库来清空
+  const wipe = (partial) => db.prepare('UPDATE settings SET value = ? WHERE key = ?')
+    .run(JSON.stringify(partial), 'cfg.wechat');
+  wipe({ enabled: 1, appid: APPID, appsecret: 'x', token: TOKEN, aes_key: '' });
+  r = await app.inject({ method: 'GET', url: diagUrl, headers: ah });
+  const pj = r.json();
+  t('⑬ 缺 EncodingAESKey 时诊断报缺口', (pj.problems || []).some((p) => p.includes('EncodingAESKey')),
+    JSON.stringify(pj.problems || []));
+  wipe({ enabled: 0, appid: '', appsecret: '', token: '', aes_key: '' });
+  r = await app.inject({ method: 'GET', url: diagUrl, headers: ah });
+  t('⑬ 配置全空时诊断列出所有缺口', (r.json().problems || []).length >= 5, String((r.json().problems || []).length));
+
   await app.close();
   console.log = origLog; console.error = origErr;
   fs.writeFileSync(${JSON.stringify(RESULT)}, JSON.stringify({ rows: out, logs }));
@@ -194,11 +281,22 @@ for (const f of [DB, `${DB}-wal`, `${DB}-shm`]) {
 }
 try { fs.unlinkSync(RESULT); } catch { /* ignore */ }
 
-require('child_process').execFileSync(NODE, ['-e', script], {
-  cwd: ROOT,
-  env: { ...process.env, DB_PATH: DB, ADMIN_INIT_PASSWORD: 'admin123' },
-  stdio: ['ignore', 'ignore', 'ignore'],
-});
+if (process.env.WXCB_DEBUG) {
+  // 调试用：子脚本拼好后原样落盘，方便直接 node --check 定位语法问题
+  require('fs').writeFileSync(path.join(ROOT, 'data', '.wecb-script.js'), script);
+}
+
+try {
+  require('child_process').execFileSync(NODE, ['-e', script], {
+    cwd: ROOT,
+    env: { ...process.env, DB_PATH: DB, ADMIN_INIT_PASSWORD: 'admin123' },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+} catch (e) {
+  // 子进程崩了要把 stderr 打出来，否则只能看到「没有结果文件」这种无效信息
+  console.error('子进程执行失败：' + (e.stderr ? e.stderr.toString() : e.message));
+  process.exit(1);
+}
 
 const { rows, logs } = JSON.parse(fs.readFileSync(RESULT, 'utf8'));
 let pass = 0;
