@@ -42,6 +42,8 @@ window.PageOrders = {
                   <div v-for="it in o.items" :key="it.product_id" style="font-size:12.5px">
                     {{ it.product_name }} × {{ it.qty }}
                   </div>
+                  <div v-if="deliverText(o)" style="color:var(--text-3);font-size:12px;margin-top:4px">已发：{{ deliverText(o) }}</div>
+                  <div v-else-if="o.status==='paid'" style="color:var(--danger);font-size:12px;margin-top:4px">未发放任何内容</div>
                 </td>
                 <td>{{ fmt.money(o.pay_amount) }}<div v-if="o.discount" style="color:var(--text-3);font-size:12px">已抵 {{ fmt.money(o.discount) }}</div></td>
                 <td>{{ channelName(o.channel) }}</td>
@@ -84,6 +86,12 @@ window.PageOrders = {
             <div class="k">交易号</div><div>{{ detail.order.trade_no || '-' }}</div>
             <div class="k">下单时间</div><div>{{ fmt.time(detail.order.created_at) }}</div>
             <div class="k">支付时间</div><div>{{ fmt.time(detail.order.paid_at) }}</div>
+            <div class="k">发货结果</div>
+            <div>
+              <span v-if="deliverText(detail.order)" style="font-size:13px">{{ deliverText(detail.order) }}</span>
+              <span v-else-if="detail.order.status==='paid'" style="color:var(--danger);font-size:13px">未发放任何内容</span>
+              <span v-else style="color:var(--text-3);font-size:13px">待支付</span>
+            </div>
           </div>
           <h4 style="margin:18px 0 8px;font-size:14px">商品明细</h4>
           <table class="table">
@@ -164,9 +172,22 @@ window.PageOrders = {
     const statusText = (s) => STATUS_MAP[s]?.text || s;
     const statusCls = (s) => STATUS_MAP[s]?.cls || '';
     const channelName = (c) => CHANNEL_MAP[c] || c || '-';
+    // 订单「已支付」不等于「已发货」：额度包发的是 API 调用次数而不是授权码，
+    // 管理员必须能在列表里一眼看到发了什么，否则客服无法应答
+    function deliverText(o) {
+      let arr = [];
+      try { arr = JSON.parse(o.deliver_result || '[]'); } catch { arr = []; }
+      if (!Array.isArray(arr) || !arr.length) return '';
+      return arr.map((c) => {
+        if (c.type === 'api_quota') return `API 额度 ${c.quota} 次（余额 ${c.after}）`;
+        if (c.type === 'license') return `授权码 ${c.license_key}`;
+        if (c.type === 'device') return `设备 ${c.sn}`;
+        return '';
+      }).filter(Boolean).join('，');
+    }
 
     onMounted(load);
-    return { list, total, page, pages, q, status, channel, detail, fmt, load, open, simulatePay, syncPay, deliver, refund, statusText, statusCls, channelName };
+    return { list, total, page, pages, q, status, channel, detail, fmt, load, open, simulatePay, syncPay, deliver, refund, statusText, statusCls, channelName, deliverText };
   },
 };
 

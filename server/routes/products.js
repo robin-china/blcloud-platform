@@ -4,6 +4,8 @@ const { requireAdmin } = require('../lib/auth');
 
 const FIELDS = `type, name, subtitle, description, category, price, original_price, icon, images,
   features, version, download_url, file_size, stock, is_official, status, sort`;
+// quota = 额度包商品发放的调用次数（db/index.js 的 ensureColumn 保证旧库也有这列）
+const FIELDS_WITH_QUOTA = `${FIELDS}, quota`;
 
 function shape(row) {
   if (!row) return row;
@@ -41,12 +43,12 @@ module.exports = async function productRoutes(app) {
     if (!(await requireAdmin(req, reply))) return;
     const b = req.body || {};
     const ts = now();
-    const info = db.prepare(`INSERT INTO products (${FIELDS}, total_downloads, total_installs, active_users, total_sales, created_at, updated_at)
-      VALUES (@type,@name,@subtitle,@description,@category,@price,@original_price,@icon,@images,@features,@version,@download_url,@file_size,@stock,@is_official,@status,@sort,0,0,0,0,@ts,@ts)`)
+    const info = db.prepare(`INSERT INTO products (${FIELDS_WITH_QUOTA}, total_downloads, total_installs, active_users, total_sales, created_at, updated_at)
+      VALUES (@type,@name,@subtitle,@description,@category,@price,@original_price,@icon,@images,@features,@version,@download_url,@file_size,@stock,@is_official,@status,@sort,@quota,0,0,0,0,@ts,@ts)`)
       .run({
         type: b.type || 'software', name: b.name || '未命名产品', subtitle: b.subtitle || '',
         description: b.description || '', category: b.category || '', price: Number(b.price) || 0,
-        original_price: Number(b.original_price) || 0, icon: b.icon || '',
+        original_price: Number(b.original_price) || 0, icon: b.icon || '', quota: Number(b.quota) || 0,
         images: JSON.stringify(b.images || []), features: JSON.stringify(b.features || []),
         version: b.version || '1.0.0', download_url: b.download_url || '', file_size: b.file_size || '',
         stock: Number(b.stock) || 0, is_official: b.is_official == null ? 1 : Number(b.is_official),
@@ -65,11 +67,11 @@ module.exports = async function productRoutes(app) {
     db.prepare(`UPDATE products SET type=@type, name=@name, subtitle=@subtitle, description=@description,
       category=@category, price=@price, original_price=@original_price, icon=@icon, images=@images,
       features=@features, version=@version, download_url=@download_url, file_size=@file_size,
-      stock=@stock, is_official=@is_official, status=@status, sort=@sort, updated_at=@ts WHERE id=@id`)
+      stock=@stock, is_official=@is_official, status=@status, sort=@sort, quota=@quota, updated_at=@ts WHERE id=@id`)
       .run({
         id, type: next.type, name: next.name, subtitle: next.subtitle || '', description: next.description || '',
         category: next.category || '', price: Number(next.price) || 0, original_price: Number(next.original_price) || 0,
-        icon: next.icon || '', images: JSON.stringify(b.images || safeJson(next.images, [])),
+        icon: next.icon || '', quota: Number(next.quota) || 0, images: JSON.stringify(b.images || safeJson(next.images, [])),
         features: JSON.stringify(b.features || safeJson(next.features, [])), version: next.version || '1.0.0',
         download_url: next.download_url || '', file_size: next.file_size || '', stock: Number(next.stock) || 0,
         is_official: Number(next.is_official), status: next.status || 'off', sort: Number(next.sort) || 0, ts: now(),

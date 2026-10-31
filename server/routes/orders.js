@@ -44,6 +44,11 @@ module.exports = async function orderRoutes(app) {
     if (!order) return reply.code(404).send({ error: '订单不存在' });
     if (order.status !== 'paid') return reply.code(400).send({ error: '仅已支付订单可发货' });
     const delivered = deliverOrder(order);
+    // 与自动发货一致：结果写回订单，管理员事后能核对到底发了什么
+    db.prepare('UPDATE orders SET deliver_result = ? WHERE id = ?')
+      .run(JSON.stringify(delivered || []), order.id);
+    paydiag.push('ok', 'deliver', `管理员手动发货：订单 ${order.order_no}，${
+      (delivered || []).length ? JSON.stringify(delivered) : '未发放任何东西'}`);
     return { ok: true, delivered };
   });
 

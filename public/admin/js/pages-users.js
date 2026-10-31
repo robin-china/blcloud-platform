@@ -79,6 +79,8 @@ window.PageUsers = {
               <div class="k">OpenID</div><div style="font-family:ui-monospace,monospace;font-size:12.5px">{{ detail.user.openid || '-' }}</div>
               <div class="k">手机号</div><div>{{ detail.user.phone || '未绑定' }}</div>
               <div class="k">积分</div><div>{{ fmt.int(detail.user.points) }}</div>
+              <div class="k">API 额度</div>
+              <div>总额 {{ fmt.int(detail.user.blcloud_quota) }} 次 · 已用 {{ fmt.int(detail.user.blcloud_used) }} 次 · 剩余 {{ fmt.int(Math.max((detail.user.blcloud_quota||0)-(detail.user.blcloud_used||0),0)) }} 次</div>
               <div class="k">注册时间</div><div>{{ fmt.time(detail.user.created_at) }}</div>
               <div class="k">blcloud 账户</div><div>{{ detail.user.tb_username || '未开通' }}</div>
               <div class="k">blcloud 密码</div><div style="font-family:ui-monospace,monospace">{{ detail.user.tb_password || '-' }}</div>

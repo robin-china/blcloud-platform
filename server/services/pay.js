@@ -3,7 +3,18 @@ const { now, safeJson } = require('../lib/util');
 const { getConfig, getSetting, basePath } = require('../lib/config');
 const wxpay = require('./wxpay');
 const alipay = require('./alipay');
+const paydiag = require('../lib/paydiag');
 const { deliverOrder } = require('./deliver');
+
+/** 把发货结果说成人话，便于诊断与客服核对 */
+function describeDelivery(created) {
+  return (created || []).map((c) => {
+    if (c.type === 'api_quota') return `API 额度 +${c.quota} 次（账户余额 ${c.after}）`;
+    if (c.type === 'license') return `授权码 ${c.license_key}（${c.product}）`;
+    if (c.type === 'device') return `设备 ${c.sn}（${c.product}）`;
+    return String(c.type || '未知');
+  }).join('；');
+}
 
 function baseUrl(req) {
   const cfg = getConfig('wxpay');
@@ -88,7 +99,20 @@ function markPaid(orderNo, tradeNo, channel, raw = '', paidAmount = null) {
   db.prepare(`INSERT INTO stats_daily (date, revenue) VALUES (?,?)
     ON CONFLICT(date) DO UPDATE SET revenue = revenue + ?`).run(date, order.pay_amount, order.pay_amount);
   const fresh = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
-  deliverOrder(fresh);
+  // 发货结果必须留痕：付了钱却什么都没发（比如商品被删/下架）是最难自查的故障，
+  // 光看订单状态是「已支付」根本发现不了
+  let created = [];
+  try {
+    created = deliverOrder(fresh) || [];
+  } catch (e) {
+    paydiag.push('error', 'deliver', `订单 ${orderNo} 已支付但发货失败：${e.message}`);
+  }
+  db.prepare('UPDATE orders SET deliver_result = ? WHERE id = ?').run(JSON.stringify(created), order.id);
+  if (created.length) {
+    paydiag.push('ok', 'deliver', `订单 ${orderNo} 已发货：${describeDelivery(created)}`);
+  } else {
+    paydiag.push('warn', 'deliver', `订单 ${orderNo} 已支付但没有发放任何东西：检查商品是否存在/已下架`);
+  }
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(order.user_id);
   if (user) {
     const gained = Math.floor(order.pay_amount);

@@ -30,6 +30,11 @@ ensureColumn('open_apps', 'release_note', 'release_note TEXT DEFAULT \'\'');
 ensureColumn('users', 'blcloud_quota', 'blcloud_quota INTEGER DEFAULT 0');
 ensureColumn('users', 'blcloud_used', 'blcloud_used INTEGER DEFAULT 0');
 ensureColumn('admins', 'must_change_password', 'must_change_password INTEGER DEFAULT 0');
+// 额度包商品发放多少「次」必须能显式配置：早先是从商品描述里正则猜「N 万次」，
+// 描述写不出这个数字时就会按默认值发，配错了用户买到的额度与页面标称不符
+ensureColumn('products', 'quota', 'quota INTEGER DEFAULT 0');
+// 发货结果落到订单上：付了钱到底发了什么（授权码 / 额度），必须用户和管理员都看得到
+ensureColumn('orders', 'deliver_result', 'deliver_result TEXT DEFAULT \'\'');
 db.exec('CREATE INDEX IF NOT EXISTS idx_license_devices_machine ON license_devices(machine_id)');
 
 // 常见弱口令：命中即强制登录后修改密码

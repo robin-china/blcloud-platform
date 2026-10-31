@@ -104,6 +104,12 @@ window.PageProducts = {
             <div class="field"><label>库存</label><input class="input" type="number" v-model.number="form.stock" /></div>
             <div class="field"><label>版本号</label><input class="input" v-model="form.version" /></div>
           </div>
+          <div class="field" v-if="form.type==='service'">
+            <label>API 额度（次）</label>
+            <input class="input" type="number" v-model.number="form.quota" placeholder="例如 100000" />
+            <div class="hint">「服务」类商品支付后直接给用户账户充这个次数的 API 调用额度。
+              <b>留空才会按名称/副标题里的「N 万次」猜</b>，猜不出就发 10 万次 —— 建议一定显式填。</div>
+          </div>
           <div class="field"><label>产品图标</label>
             <div style="display:flex;gap:10px;align-items:center">
               <div style="width:56px;height:56px;border-radius:10px;border:1px solid var(--border);display:grid;place-items:center;overflow:hidden">
@@ -158,7 +164,7 @@ window.PageProducts = {
       Object.assign(form, {
         type: 'software', name: '', subtitle: '', category: '', price: 0, original_price: 0,
         stock: 0, version: '1.0.0', icon: '', download_url: '', description: '', status: 'off',
-        sort: 0, is_official: 1, features: [],
+        sort: 0, is_official: 1, quota: 0, features: [],
       });
       featureText.value = '';
     }

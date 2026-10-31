@@ -385,7 +385,11 @@ window.PageMyOrders = {
         <tbody>
           <tr v-for="o in list" :key="o.id">
             <td style="font-family:ui-monospace,monospace;font-size:12.5px">{{ o.order_no }}</td>
-            <td><div v-for="it in o.items" :key="it.product_id">{{ it.product_name }} × {{ it.qty }}</div></td>
+            <td>
+              <div v-for="it in o.items" :key="it.product_id">{{ it.product_name }} × {{ it.qty }}</div>
+              <div v-if="deliverText(o)" style="margin-top:6px;font-size:12px;color:var(--text-3)">已发放：{{ deliverText(o) }}</div>
+              <div v-else-if="o.status==='paid'" style="margin-top:6px;font-size:12px;color:var(--danger)">未发放任何内容，请联系客服</div>
+            </td>
             <td>¥{{ o.pay_amount }}</td>
             <td>{{ channelName(o.channel) }}</td>
             <td><span class="tag" :class="o.status==='paid'?'success':o.status==='pending'?'warning':''">{{ statusText(o.status) }}</span></td>
@@ -417,6 +421,19 @@ window.PageMyOrders = {
     function pay(o) { location.hash = `#/product/${o.items[0].product_id}`; }
     const statusText = (s) => ({ pending: '待支付', paid: '已支付', refunded: '已退款' }[s] || s);
     const channelName = (c) => ({ wxpay: '微信支付', alipay: '支付宝', simulate: '模拟支付' }[c] || c || '-');
+    // 付了钱到底发了什么，必须让用户自己看得见：额度包不会发授权码，
+    // 不写出来的话用户只会以为「付了钱没发货」
+    function deliverText(o) {
+      let arr = [];
+      try { arr = JSON.parse(o.deliver_result || '[]'); } catch { arr = []; }
+      if (!Array.isArray(arr) || !arr.length) return '';
+      return arr.map((c) => {
+        if (c.type === 'api_quota') return `API 额度 ${c.quota} 次`;
+        if (c.type === 'license') return `授权码 ${c.license_key}`;
+        if (c.type === 'device') return `设备 ${c.sn}`;
+        return '';
+      }).filter(Boolean).join('，');
+    }
     onMounted(async () => {
       if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
       load();
@@ -425,7 +442,7 @@ window.PageMyOrders = {
         canSimulate.value = (s.pay_channels || []).includes('simulate');
       } catch (e) { /* ignore */ }
     });
-    return { list, fmt, canSimulate, simulatePay, pay, statusText, channelName };
+    return { list, fmt, canSimulate, simulatePay, pay, statusText, channelName, deliverText };
   },
 };
 
