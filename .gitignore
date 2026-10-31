@@ -1,0 +1,28 @@
+# ---- 运行数据与密钥（绝不能提交）----
+data/
+!data/uploads/
+data/uploads/*
+!data/uploads/.gitkeep
+
+# ---- 依赖 ----
+node_modules/
+.npm-cache/
+package-lock.json.bak
+
+# ---- 日志 ----
+*.log
+logs/
+
+# ---- 环境变量 ----
+.env
+.env.*
+!.env.example
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- 代理工作区（内部记忆，非交付物）----
+.workbuddy/

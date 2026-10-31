@@ -1,0 +1,31 @@
+# systemd 服务单元（不用 PM2 时用这个）
+# 复制：sudo cp deploy/blcloud.service /etc/systemd/system/
+# 生效：sudo systemctl daemon-reload && sudo systemctl enable --now blcloud
+[Unit]
+Description=blcloud 软硬件一体化管理后台
+After=network.target
+
+[Service]
+Type=simple
+User=blcloud
+Group=blcloud
+WorkingDirectory=/opt/blcloud
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOST=0.0.0.0
+# 子路径部署（如 www.bliot.cn/platform/）时取消注释，并与 deploy/nginx-subpath.conf 配套
+# Environment=BASE_PATH=platform
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=5
+# 安全加固（按需开启）
+# NoNewPrivileges=true
+# PrivateTmp=true
+# ProtectSystem=strict
+# ReadWritePaths=/opt/blcloud/data
+
+StandardOutput=append:/var/log/blcloud/out.log
+StandardError=append:/var/log/blcloud/error.log
+
+[Install]
+WantedBy=multi-user.target

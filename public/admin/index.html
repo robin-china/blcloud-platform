@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>管理后台</title>
+<!-- 资源用相对路径，这样根路径部署和 /platform/ 子路径部署都能正确加载 -->
+<link rel="stylesheet" href="../assets/ui.css" />
+</head>
+<body>
+<div id="app">
+  <page-login v-if="!state.token" :settings="state.settings" @logged="onLogged"></page-login>
+  <div v-else class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <img v-if="state.settings.site_logo" :src="state.settings.site_logo" alt="logo" />
+        <div v-else class="mark">{{ (state.settings.site_short_name || 'M').slice(0, 1) }}</div>
+        <div>
+          <b>{{ state.settings.site_name || '管理后台' }}</b>
+          <small>{{ state.settings.site_short_name || '控制台' }}</small>
+        </div>
+      </div>
+      <nav class="sidebar-nav">
+        <template v-for="g in state.menu" :key="g.group">
+          <div class="nav-group">{{ g.group }}</div>
+          <div v-for="it in g.items" :key="it.key" class="nav-item" :class="state.route === it.key ? 'active' : ''" @click="go(it.key)">
+            <span class="ico" v-html="icon(it.icon)"></span><span>{{ it.name }}</span>
+          </div>
+        </template>
+      </nav>
+      <div class="sidebar-foot">v1.0 · 一期网页端</div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div>
+          <h1>{{ current.name }}</h1>
+          <div class="sub">{{ state.settings.site_name || '管理后台' }}</div>
+        </div>
+        <div class="user-chip">
+          <div class="avatar">{{ (state.admin?.name || 'A').slice(0, 1) }}</div>
+          <span>{{ state.admin?.name || '管理员' }}</span>
+          <a href="../user/" target="_blank" class="btn sm">用户端</a>
+          <button class="btn sm" @click="logout">退出</button>
+        </div>
+      </header>
+      <main class="content">
+        <page-dashboard v-if="state.route === 'dashboard'"></page-dashboard>
+        <page-products v-if="state.route === 'products'"></page-products>
+        <page-storefront v-if="state.route === 'storefront'"></page-storefront>
+        <page-licenses v-if="state.route === 'licenses'"></page-licenses>
+        <page-orders v-if="state.route === 'orders'"></page-orders>
+        <page-revenue v-if="state.route === 'revenue'"></page-revenue>
+        <page-api-usage v-if="state.route === 'apiUsage'"></page-api-usage>
+        <page-users v-if="state.route === 'users'"></page-users>
+        <page-admin-blcloud v-if="state.route === 'blcloud'"></page-admin-blcloud>
+        <page-settings v-if="state.route === 'settings'"></page-settings>
+        <page-integration v-if="state.route === 'integration'"></page-integration>
+        <page-openapi v-if="state.route === 'openapi'"></page-openapi>
+        <page-admins v-if="state.route === 'admins'"></page-admins>
+      </main>
+    </div>
+  </div>
+</div>
+
+<script src="../vendor/vue.global.prod.js"></script>
+<script src="../assets/api.js"></script>
+<script src="js/login.js"></script>
+<script src="js/app.js"></script>
+<script src="js/pages-dashboard.js"></script>
+<script src="js/pages-products.js"></script>
+<script src="js/pages-trade.js"></script>
+<script src="js/pages-users.js"></script>
+  <script src="js/pages-system.js"></script>
+  <script src="js/pages-openapi.js"></script>
+  <script src="js/pages-blcloud.js"></script>
+<script>
+  const PAGES = ['Login', 'Dashboard', 'Products', 'Storefront', 'Licenses', 'Orders', 'Revenue', 'ApiUsage', 'Users', 'AdminBlcloud', 'Settings', 'Integration', 'Openapi', 'Admins'];
+  const kebab = (s) => s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+  for (const name of PAGES) {
+    const comp = window['Page' + name];
+    if (comp) AdminApp.app.component('page-' + kebab(name), comp);
+  }
+  AdminApp.app.mount('#app');
+</script>
+</body>
+</html>

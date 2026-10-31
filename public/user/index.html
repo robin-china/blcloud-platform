@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>用户中心</title>
+<!-- 资源用相对路径，这样根路径部署和 /platform/ 子路径部署都能正确加载 -->
+<link rel="stylesheet" href="../assets/ui.css" />
+</head>
+<body>
+<div id="app">
+  <header class="site-header">
+    <div class="inner">
+      <div class="brand">
+        <img v-if="state.settings.site_logo" :src="state.settings.site_logo" alt="logo" />
+        <span>{{ state.settings.site_name || '用户中心' }}</span>
+      </div>
+      <nav class="site-nav">
+        <a href="#/shop" :class="state.route==='shop'?'active':''">官方产品</a>
+        <a href="#/space" :class="state.route==='space'?'active':''">我的空间</a>
+        <a href="#/licenses" :class="state.route==='licenses'?'active':''">我的授权</a>
+        <a href="#/devices" :class="state.route==='devices'?'active':''">我的硬件</a>
+        <a href="#/orders" :class="state.route==='orders'?'active':''">我的订单</a>
+        <a href="#/blcloud" :class="state.route==='blcloud'?'active':''">blcloud</a>
+        <a href="#/account" :class="state.route==='account'?'active':''">账户中心</a>
+      </nav>
+      <div class="spacer"></div>
+      <div v-if="state.user" class="user-chip">
+        <div class="avatar">{{ (state.user.nickname || 'U').slice(0, 1) }}</div>
+        <span>{{ state.user.nickname }}</span>
+        <button class="btn sm" @click="logout">退出</button>
+      </div>
+      <a v-else class="btn primary sm" href="#/login">登录</a>
+    </div>
+  </header>
+
+  <main class="site-main">
+    <page-shop v-if="state.route === 'shop'"></page-shop>
+    <page-product v-if="state.route === 'product'" :key="state.param"></page-product>
+    <page-space v-if="state.route === 'space'"></page-space>
+    <page-my-licenses v-if="state.route === 'licenses'"></page-my-licenses>
+    <page-my-devices v-if="state.route === 'devices'"></page-my-devices>
+    <page-my-orders v-if="state.route === 'orders'"></page-my-orders>
+    <page-user-blcloud v-if="state.route === 'blcloud'"></page-user-blcloud>
+    <page-account v-if="state.route === 'account'"></page-account>
+    <page-user-login v-if="state.route === 'login'" @logged="onLogged"></page-user-login>
+  </main>
+
+  <footer class="site-foot">
+    <div>{{ state.settings.site_copyright }}</div>
+    <div style="margin-top:4px">{{ state.settings.site_icp }} {{ state.settings.site_contact }}</div>
+  </footer>
+</div>
+
+<script src="../vendor/vue.global.prod.js"></script>
+<script src="../assets/api.js"></script>
+<script src="js/app.js"></script>
+<script src="js/pages.js"></script>
+<script src="js/pages-blcloud.js"></script>
+<script>
+  const PAGES = ['Shop', 'Product', 'Space', 'MyLicenses', 'MyDevices', 'MyOrders', 'UserBlcloud', 'Account', 'UserLogin'];
+  const kebab = (s) => s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+  for (const name of PAGES) {
+    const comp = window['Page' + name];
+    if (comp) UserApp.app.component('page-' + kebab(name), comp);
+  }
+  UserApp.app.mount('#app');
+</script>
+</body>
+</html>
