@@ -149,12 +149,42 @@ fi
 
 h "健康检查"
 sleep 2
-if curl -fsS --noproxy '*' --max-time 5 http://127.0.0.1:3000/api/health; then
+
+# 读取运行时端口与子路径前缀（用了 BASE_PATH 时 /api/health 不在根路径，写死会误报失败）
+PORT=3000; BASE_PATH=""
+probe_runtime() {
+  local j=""
+  command -v pm2 >/dev/null 2>&1 && j=$(pm2 jlist 2>/dev/null)
+  if [ -n "$j" ]; then
+    eval "$(printf '%s' "$j" | node -e '
+      let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+        try{const a=JSON.parse(s)||[];const p=a.find(x=>/blcloud/.test(x.name||""))||a[0]||{};
+        const e=p.pm2_env||{};console.log("PORT="+(e.PORT||""));console.log("BASE_PATH="+(e.BASE_PATH||""));
+        }catch(err){console.log("PORT=");console.log("BASE_PATH=");}});' 2>/dev/null)"
+  fi
+  if [ -z "$PORT" ] && [ -f "$1" ]; then
+    PORT=$(node -e 'try{const c=require(process.argv[1]);console.log((c.apps[0].env||{}).PORT||3000)}catch(e){console.log(3000)}' "$1" 2>/dev/null)
+    BASE_PATH=$(node -e 'try{const c=require(process.argv[1]);console.log((c.apps[0].env||{}).BASE_PATH||"")}catch(e){console.log("")}' "$1" 2>/dev/null)
+  fi
+  [ -z "$PORT" ] && PORT=3000
+  BASE_PATH=$(printf '%s' "$BASE_PATH" | tr -d '/' | tr -d ' ')
+}
+probe_runtime "$APP_DIR/deploy/ecosystem.config.cjs"
+PREFIX=""; [ -n "$BASE_PATH" ] && PREFIX="/$BASE_PATH"
+HEALTH="http://127.0.0.1:${PORT}${PREFIX}/api/health"
+info "探测地址: $HEALTH"
+
+if curl -fsS --noproxy '*' --max-time 5 "$HEALTH"; then
   echo; ok "服务正常"
+  ADMIN_URL="https://你的域名${PREFIX}/admin/"
+  [ -n "$PREFIX" ] && info "子路径部署已生效 → 后台地址形如 $ADMIN_URL"
 else
-  bad "健康检查失败（服务未在 3000 端口响应）"
+  bad "健康检查失败（服务未在 ${PORT} 端口响应）"
   info "看日志：pm2 logs blcloud-admin   或   journalctl -u blcloud -n 100"
-  info "若改了端口，把上面 URL 的 3000 换成实际端口再试"
+  if [ -n "$PREFIX" ]; then
+    info "子路径模式下确认 BASE_PATH 已生效：改完 ecosystem.config.cjs 必须执行"
+    info "  pm2 restart blcloud-admin --update-env   否则环境变量不生效"
+  fi
   exit 1
 fi
 
