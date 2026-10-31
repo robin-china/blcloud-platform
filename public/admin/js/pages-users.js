@@ -84,7 +84,9 @@ window.PageUsers = {
               <div class="k">注册时间</div><div>{{ fmt.time(detail.user.created_at) }}</div>
               <div class="k">blcloud 账户</div><div>{{ detail.user.tb_username || '未开通' }}</div>
               <div class="k">blcloud 密码</div><div style="font-family:ui-monospace,monospace">{{ detail.user.tb_password || '-' }}</div>
-              <div class="k">blcloud 状态</div><div><span class="tag" :class="detail.user.tb_status==='active'?'success':'warning'">{{ tbText(detail.user.tb_status) }}</span></div>
+              <div class="k">blcloud 状态</div><div><span class="tag" :class="detail.user.tb_status==='active'?'success':detail.user.tb_status==='error'?'danger':'warning'">{{ tbText(detail.user.tb_status) }}</span></div>
+              <div v-if="detail.user.tb_message" class="k">开通结果</div>
+              <div v-if="detail.user.tb_message" style="color:var(--danger, #d93025);font-size:12.5px">{{ detail.user.tb_message }}</div>
             </div>
             <div class="btn-group" style="margin-top:16px">
               <button class="btn primary" @click="provisionTb">开通 / 同步 blcloud 账户</button>
@@ -200,7 +202,12 @@ window.PageUsers = {
     async function provisionTb() {
       try {
         const res = await U.api.post(`/api/users/${detail.value.user.id}/tb-provision`, {});
-        U.toast(`blcloud 账户：${res.tb.username}（${res.tb.message}）`, 'success');
+        const t = res.tb || {};
+        // 开通失败时必须把卡住的那一步说出来，只回一句"失败"等于没说
+        const failed = (t.steps || []).filter((s) => !s.ok);
+        const detailText = failed.length ? `失败步骤：${failed.map((s) => s.name).join(' → ')}｜${failed[failed.length - 1].detail}` : (t.message || '');
+        if (t.status === 'active') U.toast(`已开通：${t.username}`, 'success');
+        else U.toast(`未开通成功：${detailText}`, 'error');
         await reloadDetail();
         load();
       } catch (e) { U.toast(e.message, 'error'); }

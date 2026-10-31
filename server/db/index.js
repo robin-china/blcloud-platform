@@ -35,6 +35,8 @@ ensureColumn('admins', 'must_change_password', 'must_change_password INTEGER DEF
 ensureColumn('products', 'quota', 'quota INTEGER DEFAULT 0');
 // 发货结果落到订单上：付了钱到底发了什么（授权码 / 额度），必须用户和管理员都看得到
 ensureColumn('orders', 'deliver_result', 'deliver_result TEXT DEFAULT \'\'');
+// 物联账户开通失败的原因存下来：否则管理员只能看到一个「待激活」，不知道卡在哪一步
+ensureColumn('users', 'tb_message', 'tb_message TEXT DEFAULT \'\'');
 db.exec('CREATE INDEX IF NOT EXISTS idx_license_devices_machine ON license_devices(machine_id)');
 
 // 常见弱口令：命中即强制登录后修改密码

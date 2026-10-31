@@ -75,10 +75,16 @@ module.exports = async function userRoutes(app) {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     if (!user) return reply.code(404).send({ error: '用户不存在' });
     if (!user.openid) return reply.code(400).send({ error: '用户缺少 openid，无法生成 TB 账户' });
-    const res = await tb.provisionUser(user.openid, user.nickname);
-    db.prepare(`UPDATE users SET tb_username = ?, tb_password = ?, tb_user_id = ?, tb_status = ? WHERE id = ?`)
-      .run(res.username, res.password, res.userId || '', res.status, id);
-    return { ok: true, tb: res };
+    let res;
+    try {
+      res = await tb.provisionUser(user.openid, user.nickname);
+    } catch (e) {
+      res = { username: user.tb_username || '', password: user.tb_password || '', userId: '',
+        status: 'error', message: `开通异常：${e.message}`, steps: [] };
+    }
+    db.prepare(`UPDATE users SET tb_username = ?, tb_password = ?, tb_user_id = ?, tb_status = ?, tb_message = ? WHERE id = ?`)
+      .run(res.username, res.password, res.userId || '', res.status, res.message || '', id);
+    return { ok: res.status === 'active', tb: res };
   });
 
   app.post('/api/users/:id/devices', async (req, reply) => {

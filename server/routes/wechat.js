@@ -10,6 +10,19 @@ async function ensureUser(openid, profile = {}) {
   let user = db.prepare('SELECT * FROM users WHERE openid = ?').get(openid);
   if (user) {
     db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now(), user.id);
+    // 开关后开、或上次开通失败的历史账户：用户再次登录时自动补开，
+    // 否则这些账户会永远停在「待激活」，只能靠管理员逐个手工点
+    const cfg = getConfig('tb');
+    if (cfg.enabled && user.tb_status !== 'active' && user.openid) {
+      const res = await tb.provisionUser(user.openid, user.nickname).catch((e) => ({
+        username: user.tb_username || '', password: user.tb_password || '', userId: '',
+        status: 'error', message: `开通异常：${e && e.message ? e.message : e}`,
+      }));
+      db.prepare('UPDATE users SET tb_username = ?, tb_password = ?, tb_user_id = ?, tb_status = ?, tb_message = ? WHERE id = ?')
+        .run(res.username, res.password, res.userId || '', res.status, res.message || '', user.id);
+      console.log(`[tb] 补开 ${res.username} → ${res.status}：${res.message}`);
+      user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+    }
     return { user, isNew: false };
   }
   const info = db.prepare('INSERT INTO users (openid, unionid, nickname, avatar, phone, points, status, created_at, last_login_at) VALUES (?,?,?,?,?,?,?,?,?)')
@@ -17,13 +30,18 @@ async function ensureUser(openid, profile = {}) {
   user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   const cfg = getConfig('tb');
   const suffix = cfg.email_suffix || '@tb.cn';
-  db.prepare('UPDATE users SET tb_username = ?, tb_password = ?, tb_status = ? WHERE id = ?')
-    .run(`${openid}${suffix}`, openid, 'pending', user.id);
+  db.prepare('UPDATE users SET tb_username = ?, tb_password = ?, tb_status = ?, tb_message = ? WHERE id = ?')
+    .run(`${openid}${suffix}`, openid, 'pending', '尚未向物联平台开通', user.id);
   if (cfg.enabled) {
-    const res = await tb.provisionUser(openid, user.nickname).catch(() => null);
+    // 开通失败绝不能吞掉：吞掉之后管理员只能看到「待激活」，完全没有线索
+    const res = await tb.provisionUser(openid, user.nickname).catch((e) => ({
+      username: `${openid}${suffix}`, password: openid, userId: '', status: 'error',
+      message: `开通异常：${e && e.message ? e.message : e}`,
+    }));
     if (res) {
-      db.prepare('UPDATE users SET tb_username = ?, tb_password = ?, tb_user_id = ?, tb_status = ? WHERE id = ?')
-        .run(res.username, res.password, res.userId || '', res.status, user.id);
+      db.prepare('UPDATE users SET tb_username = ?, tb_password = ?, tb_user_id = ?, tb_status = ?, tb_message = ? WHERE id = ?')
+        .run(res.username, res.password, res.userId || '', res.status, res.message || '', user.id);
+      console.log(`[tb] 开通 ${res.username} → ${res.status}：${res.message}`);
     }
   }
   const date = new Date().toISOString().slice(0, 10);

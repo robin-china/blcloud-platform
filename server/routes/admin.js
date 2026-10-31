@@ -7,6 +7,7 @@ const { basePath, getSetting, setSetting, allSettings, getConfig, setConfig, get
 const tb = require('../services/tb');
 const wxpay = require('../services/wxpay');
 const paydiag = require('../lib/paydiag');
+const tbdiag = require('../lib/tbdiag');
 
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'data', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -157,6 +158,9 @@ module.exports = async function adminRoutes(app) {
     const name = req.params.name;
     if (!DEFAULTS[name]) return reply.code(400).send({ error: '未知配置' });
     const cfg = setConfig(name, req.body || {});
+    // 改了物联地址或管理员密码，缓存的令牌必须立刻作废，
+    // 否则接下来一整天都在用旧令牌，管理员会以为「改了没生效」
+    if (name === 'tb') tb.resetAdminToken();
     logAdmin(req, '更新接入配置', name);
     return { ok: true, config: getConfigMasked(name), enabled: cfg.enabled };
   });
@@ -241,15 +245,71 @@ module.exports = async function adminRoutes(app) {
     };
   });
 
+  // 「测试连接」只验管理员登录远远不够：开通失败多半卡在 Customer 或激活环节，
+  // 所以这里把开通流程的前置步骤全跑一遍，哪一步挂了就直接报在哪一步
   app.post('/api/settings/integration/test/tb', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
-    try {
-      const token = await tb.adminToken(true);
-      const me = await tb.request('GET', '/api/auth/user', null, token);
-      return { ok: true, message: `连接成功：${me.email || '已认证'}` };
-    } catch (e) {
-      return reply.code(400).send({ error: `连接失败：${e.message}` });
+    const cfg = getConfig('tb');
+    const steps = [];
+    const step = (name, ok, detail) => {
+      steps.push({ name, ok, detail: String(detail || '') });
+      tbdiag.push(ok ? 'info' : 'error', 'test', `${name}：${detail}`);
+    };
+    if (!cfg.enabled) {
+      step('检查开关', false, '「启用」开关没打开，用户扫码登录时根本不会触发开通');
+      return reply.code(400).send({ error: 'blcloud 物联未启用：请打开右上角「启用」开关并保存', steps });
     }
+    if (!cfg.base_url) {
+      step('检查配置', false, '平台地址为空');
+      return reply.code(400).send({ error: '未填写 blcloud 物联平台地址', steps });
+    }
+    step('检查配置', true, `地址 ${cfg.base_url}，邮箱后缀 ${cfg.email_suffix || '@blcloud.cn'}`);
+    let token = '';
+    try {
+      token = await tb.adminToken(true);
+      step('管理员登录', true, '已取得令牌');
+    } catch (e) {
+      step('管理员登录', false, e.message);
+      return reply.code(400).send({ error: `管理员登录失败：${e.message}（检查平台地址与管理员账号密码）`, steps });
+    }
+    let customerId = '';
+    try {
+      const me = await tb.request('GET', '/api/auth/user', null, token);
+      step('读取租户信息', true, `${me.email || ''}（${me.authority || '未知权限'}）`);
+      customerId = (await tb.ensureCustomer(token, 'default', me.tenantId?.id || '')) || '';
+      step('客户(Customer)', true, customerId ? `已就绪 ${customerId}` : '未创建，用户将挂到租户下');
+      return { ok: true, message: `连接成功：${me.email || '已认证'}`, steps, customer_id: customerId };
+    } catch (e) {
+      step('客户(Customer)', false, e.message);
+      return reply.code(400).send({ error: `准备客户失败：${e.message}`, steps });
+    }
+  });
+
+  // 管理后台「开通诊断」：账户一直是「待激活」时先看这里
+  app.get('/api/admin/tb/diag', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const cfg = getConfig('tb');
+    const problems = [];
+    if (!cfg.enabled) problems.push('blcloud 物联「启用」开关没打开 —— 用户扫码登录时不会触发开通，账户会一直停在「待激活」');
+    if (!cfg.base_url) problems.push('未填写平台地址');
+    else if (!/^https?:\/\//.test(cfg.base_url)) problems.push(`平台地址缺少 http(s):// 前缀（当前"${cfg.base_url}"）`);
+    if (!cfg.username || !cfg.password) problems.push('未填写物联平台管理员账号/密码');
+    const byStatus = db.prepare("SELECT IFNULL(tb_status,'none') AS s, COUNT(*) AS c FROM users GROUP BY s").all();
+    const failed = db.prepare("SELECT id, nickname, openid, tb_username, tb_status, tb_message FROM users WHERE tb_status <> 'active' ORDER BY id DESC LIMIT 20").all();
+    const events = tbdiag.list(20);
+    const lastFail = events.find((e) => e.level === 'error');
+    if (lastFail) problems.unshift(`最近一次开通失败：${lastFail.detail}`);
+    return {
+      enabled: !!cfg.enabled,
+      base_url: cfg.base_url || '',
+      email_suffix: cfg.email_suffix || '@blcloud.cn',
+      default_customer: cfg.default_customer || '',
+      has_admin: !!(cfg.username && cfg.password),
+      by_status: byStatus,
+      pending_users: failed,
+      problems,
+      events,
+    };
   });
 
   app.get('/api/admin/logs', async (req, reply) => {

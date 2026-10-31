@@ -278,6 +278,42 @@ window.PageIntegration = {
         <div class="btn-group" style="margin-top:14px">
           <button class="btn primary" @click="save('tb')">保存</button>
           <button class="btn" @click="testTb">测试连接</button>
+          <button class="btn" @click="diagTb">开通诊断</button>
+        </div>
+        <div v-if="tbDiag" style="margin-top:14px">
+          <div v-if="tbDiag.problems.length" style="border:1px solid var(--danger);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+            <div style="font-weight:600;color:var(--danger);margin-bottom:6px">开通问题</div>
+            <div v-for="p in tbDiag.problems" :key="p" style="font-size:13px;line-height:1.7">• {{ p }}</div>
+          </div>
+          <div v-else style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px">
+            开关已打开，配置齐全：{{ tbDiag.base_url }}｜邮箱后缀 {{ tbDiag.email_suffix }}
+          </div>
+          <div style="font-size:13px;margin-bottom:8px">
+            账户状态分布：<span v-for="s in tbDiag.by_status" :key="s.s" style="margin-right:10px">{{ tbStatusText(s.s) }} {{ s.c }}</span>
+          </div>
+          <table class="table" v-if="tbDiag.pending_users.length">
+            <thead><tr><th style="width:60px">ID</th><th style="width:160px">blcloud 账户</th><th style="width:90px">状态</th><th>最近一次结果</th></tr></thead>
+            <tbody>
+              <tr v-for="u in tbDiag.pending_users" :key="u.id">
+                <td>{{ u.id }}</td>
+                <td style="font-size:12px">{{ u.tb_username || '-' }}</td>
+                <td><span class="tag" :class="u.tb_status==='error'?'danger':'warning'">{{ tbStatusText(u.tb_status) }}</span></td>
+                <td style="font-size:13px;color:var(--danger)">{{ u.tb_message || '尚无记录' }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <table class="table" v-if="tbDiag.events.length">
+            <thead><tr><th style="width:150px">时间</th><th>开通步骤</th></tr></thead>
+            <tbody>
+              <tr v-for="(e,i) in tbDiag.events" :key="i">
+                <td style="font-size:12px;color:var(--text-3)">{{ fmtTime(e.ts) }}</td>
+                <td style="font-size:13px" :style="e.level==='error'?'color:var(--danger)':''">{{ e.detail }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="hint">还没有任何开通记录。用户一直是「待激活」时先看这里 ——
+            若连一条记录都没有，说明开通压根没被触发：检查开关是否打开，以及用户是不是在本开关打开<strong>之前</strong>注册的
+            （这种情况到「用户管理 → 详情 → 开通/同步 blcloud 账户」手动补开）。</div>
         </div>
       </div>
     </div>
@@ -314,6 +350,7 @@ window.PageIntegration = {
     const raw = reactive({});
     const diag = ref(null);
     const payDiag = ref(null);
+    const tbDiag = ref(null);
     // 验签模式决定回调靠什么验签：填了公钥就不再联网拉平台证书
     const verifyModeText = computed(() => (c.pub_key ? '微信支付公钥（本地验签）'
       : c.platform_cert ? '手动平台证书' : '自动下载平台证书'));
@@ -376,6 +413,14 @@ window.PageIntegration = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
 
+    async function diagTb() {
+      try {
+        tbDiag.value = await U.api.get('/api/admin/tb/diag');
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
+    const tbStatusText = (s) => ({ active: '已开通', pending: '待激活', error: '异常', none: '未开通' }[s] || s || '未开通');
+
     async function testWxpay() {
       try {
         const res = await U.api.post('/api/settings/integration/test/wxpay', {});
@@ -385,7 +430,7 @@ window.PageIntegration = {
 
     onMounted(load);
     Vue.watch(tab, sync);
-    return { tabs, tab, c, origin, save, testWechat, diagWechat, diag, fmtTime, testTb, testWxpay, diagPay, payDiag, verifyModeText };
+    return { tabs, tab, c, origin, save, testWechat, diagWechat, diag, fmtTime, testTb, diagTb, tbDiag, tbStatusText, testWxpay, diagPay, payDiag, verifyModeText };
   },
 };
 
