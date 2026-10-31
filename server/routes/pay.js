@@ -1,7 +1,7 @@
 const { Readable } = require('stream');
 const db = require('../db');
 const { now, safeJson } = require('../lib/util');
-const { getSetting } = require('../lib/config');
+const { getSetting, basePath } = require('../lib/config');
 const { requireUser } = require('../lib/auth');
 const wxpay = require('../services/wxpay');
 const paydiag = require('../lib/paydiag');
@@ -15,8 +15,12 @@ module.exports = async function payRoutes(app) {
     done(null, out);
   });
 
+  // 回调必须拿到**原始报文**才能验签（验签串里就是这段字节），
+  // 所以要在 body 被解析之前先把兜住。注意子路径部署时 req.url 带前缀，
+  // 路径判断必须跟着 BASE_PATH 走，否则子路径下拿不到原文 → 验签必失败。
+  const notifyPath = basePath() + '/api/pay/notify/wxpay';
   app.addHook('preParsing', async (req, reply, payload) => {
-    if (req.url.startsWith('/api/pay/notify/wxpay')) {
+    if ((req.url || '').split('?')[0] === notifyPath) {
       const chunks = [];
       for await (const chunk of payload) chunks.push(chunk);
       const raw = Buffer.concat(chunks).toString('utf8');

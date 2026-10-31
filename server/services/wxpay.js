@@ -97,6 +97,9 @@ async function call(method, urlPath, body) {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      // Node 的内置 fetch 会自带 accept-language: *，微信支付不接受这个值，
+      // 会直接回 PARAM_ERROR「传入了不支持的Accept-Language」。这里必须显式指定。
+      'Accept-Language': 'zh-CN',
       'User-Agent': 'iot-admin/1.0',
       Authorization: sign(method, urlPath, timestamp, nonceStr, payload),
     },
@@ -224,18 +227,40 @@ function verifyNotify(headers, rawBody) {
 
 async function verifyAndDecrypt(headers, rawBody) {
   const { signature, timestamp, nonce, cfg } = verifyNotify(headers, rawBody);
-  const cert = await getPlatformCert();
+  if (!String(rawBody || '').trim()) throw new Error('回调报文为空：拿不到原始 body 无法验签（检查 Nginx 是否转发完整请求体）');
+  let cert;
+  try {
+    cert = await getPlatformCert();
+  } catch (e) {
+    // 拉不到证书就没法验签，这不是回调本身的问题，别让人去查回调地址
+    throw new Error(`拉取微信支付平台证书失败，回调无法验签：${e.message}`);
+  }
   const verifier = crypto.createVerify('RSA-SHA256');
   verifier.update(`${timestamp}\n${nonce}\n${rawBody}\n`);
   if (!verifier.verify(cert.pem, signature, 'base64')) {
     certCache = { pem: '', serial: '', expiresAt: 0 };
-    const fresh = await getPlatformCert(true);
+    let fresh;
+    try {
+      fresh = await getPlatformCert(true);
+    } catch (e) {
+      throw new Error(`拉取微信支付平台证书失败，回调无法验签：${e.message}`);
+    }
     const v2 = crypto.createVerify('RSA-SHA256');
     v2.update(`${timestamp}\n${nonce}\n${rawBody}\n`);
     if (!v2.verify(fresh.pem, signature, 'base64')) throw new Error('微信支付回调验签失败');
   }
-  const body = JSON.parse(rawBody);
-  const r = body.resource;
+  let r;
+  try { r = JSON.parse(rawBody).resource; } catch { throw new Error('回调报文不是合法 JSON'); }
+  if (!r || !r.ciphertext) throw new Error('回调报文缺少 resource 密文');
+  try {
+    return decryptResource(r, cfg);
+  } catch (e) {
+    // GCM tag 校验不过 = API v3 密钥不对，这是最典型的症状
+    throw new Error(`回调报文解密失败，几乎可以确定是 API v3 密钥填错：${e.message}`);
+  }
+}
+
+function decryptResource(r, cfg) {
   const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(cfg.api_v3_key, 'utf8'), Buffer.from(r.nonce, 'utf8'));
   decipher.setAAD(Buffer.from(r.associated_data || '', 'utf8'));
   decipher.setAuthTag(Buffer.from(r.ciphertext, 'base64').subarray(-16));
