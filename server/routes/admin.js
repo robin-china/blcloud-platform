@@ -5,6 +5,7 @@ const { now, hashPassword, verifyPassword } = require('../lib/util');
 const { signAdmin, requireAdmin } = require('../lib/auth');
 const { basePath, getSetting, setSetting, allSettings, getConfig, setConfig, getConfigMasked, DEFAULTS } = require('../lib/config');
 const tb = require('../services/tb');
+const wxpay = require('../services/wxpay');
 
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'data', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -173,6 +174,18 @@ module.exports = async function adminRoutes(app) {
       ws.on('error', reject);
     });
     return { url: `${basePath()}/uploads/${name}` };
+  });
+
+  app.post('/api/settings/integration/test/wxpay', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    try {
+      const r = await wxpay.testConfig();
+      return { ok: true, message: r.message };
+    } catch (e) {
+      const extra = getConfig('wxpay').platform_cert
+        ? '（当前配置了手动平台证书，不代表线上可用，建议清空后重测）' : '';
+      return reply.code(400).send({ error: `微信支付配置不可用：${e.message}${extra}` });
+    }
   });
 
   app.post('/api/settings/integration/test/tb', async (req, reply) => {

@@ -155,4 +155,24 @@ async function verifyAndDecrypt(headers, rawBody) {
   return JSON.parse(plain);
 }
 
-module.exports = { nativePrepay, jsapiPrepay, queryOrder, refund, verifyAndDecrypt };
+/**
+ * 配置自检：调用「获取平台证书」接口并解密。
+ * 这一步能同时验证四样配置：
+ *   - 商户号 + 证书序列号 + 商户私钥 → 请求签名能否被微信接受
+ *   - API v3 密钥                    → AEAD 解密能否通过（final() 会校验 GCM tag）
+ * 不需要真实付款，是上线前唯一能完整验证支付配置的方法。
+ */
+async function testConfig() {
+  const cfg = getConfig('wxpay');
+  const missing = [];
+  for (const [k, label] of [['mchid', '商户号'], ['appid', '应用 AppID'],
+    ['mch_cert_serial', '证书序列号'], ['private_key', '商户私钥'], ['api_v3_key', 'API v3 密钥']]) {
+    if (!cfg[k]) missing.push(label);
+  }
+  if (missing.length) throw new Error(`缺少配置：${missing.join('、')}`);
+  certCache = { pem: '', serial: '', expiresAt: 0 };
+  const cert = await getPlatformCert(true);
+  return { ok: true, message: '微信支付配置可用（已成功拉取并解密平台证书）', serial: cert.serial };
+}
+
+module.exports = { nativePrepay, jsapiPrepay, queryOrder, refund, verifyAndDecrypt, testConfig };

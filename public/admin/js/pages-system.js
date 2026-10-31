@@ -177,7 +177,11 @@ window.PageIntegration = {
         <div class="field"><label>商户私钥（apiclient_key.pem 内容）</label><textarea class="input" v-model="c.private_key" placeholder="-----BEGIN PRIVATE KEY-----"></textarea></div>
         <div class="field"><label>回调地址</label><input class="input" v-model="c.notify_url" :placeholder="origin + '/api/pay/notify/wxpay'" /></div>
         <div class="hint">留空则自动使用当前站点地址。支付回调路径：<b>{{ origin }}/api/pay/notify/wxpay</b></div>
-        <div class="btn-group" style="margin-top:14px"><button class="btn primary" @click="save('wxpay')">保存</button></div>
+        <div class="hint">测试连接会拉取并解密微信支付平台证书，无需真实付款即可验证「商户号 + 证书序列号 + 私钥 + API v3 密钥」四项是否都对。</div>
+        <div class="btn-group" style="margin-top:14px">
+          <button class="btn primary" @click="save('wxpay')">保存</button>
+          <button class="btn" @click="testWxpay">测试连接</button>
+        </div>
       </div>
     </div>
 
@@ -296,9 +300,16 @@ window.PageIntegration = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
 
+    async function testWxpay() {
+      try {
+        const res = await U.api.post('/api/settings/integration/test/wxpay', {});
+        U.toast(res.message || '配置可用', 'success');
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
     onMounted(load);
     Vue.watch(tab, sync);
-    return { tabs, tab, c, origin, save, testWechat, testTb };
+    return { tabs, tab, c, origin, save, testWechat, testTb, testWxpay };
   },
 };
 
