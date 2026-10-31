@@ -197,9 +197,18 @@ window.PageIntegration = {
         <div class="field"><label>API v3 密钥</label><input class="input" v-model="c.api_v3_key" placeholder="留空表示不修改" /></div>
         <div class="field"><label>商户 API 证书序列号</label><input class="input" v-model="c.mch_cert_serial" /></div>
         <div class="field"><label>商户私钥（apiclient_key.pem 内容）</label><textarea class="input" v-model="c.private_key" placeholder="-----BEGIN PRIVATE KEY-----"></textarea></div>
+        <div class="field-row">
+          <div class="field"><label>微信支付公钥ID</label><input class="input" v-model="c.pub_key_id" placeholder="PUB_KEY_ID_xxxxxxxxxxxx" /></div>
+          <div class="field"><label>验签模式</label><input class="input" :value="verifyModeText" disabled /></div>
+        </div>
+        <div class="field"><label>微信支付公钥内容</label><textarea class="input" v-model="c.pub_key" placeholder="-----BEGIN PUBLIC KEY-----"></textarea></div>
+        <div class="hint">2024 年起新商户号<b>已无法下载平台证书</b>：回调会报「无可用的平台证书 / RESOURCE_NOT_EXISTS」。
+          此时请到 商户平台 → 账户中心 → API安全 → 申请「微信支付公钥」，把<b>公钥ID</b>与<b>公钥内容</b>填到这里保存，
+          回调即可<b>本地验签</b>（不再联网拉证书）。</div>
         <div class="field"><label>回调地址</label><input class="input" v-model="c.notify_url" :placeholder="origin + '/api/pay/notify/wxpay'" /></div>
         <div class="hint">留空则自动使用当前站点地址。支付回调路径：<b>{{ origin }}/api/pay/notify/wxpay</b></div>
-        <div class="hint">测试连接会拉取并解密微信支付平台证书，无需真实付款即可验证「商户号 + 证书序列号 + 私钥 + API v3 密钥」四项是否都对。</div>
+        <div class="hint">测试连接无需真实付款：会用商户私钥向微信发一次查询请求验证「商户号 + 证书序列号 + 私钥」，
+          API v3 密钥则校验长度（平台证书模式下还会实际解密证书，可完整验证）。</div>
         <div class="btn-group" style="margin-top:14px">
           <button class="btn primary" @click="save('wxpay')">保存</button>
           <button class="btn" @click="testWxpay">测试连接</button>
@@ -211,7 +220,7 @@ window.PageIntegration = {
             <div v-for="p in payDiag.problems" :key="p" style="font-size:13px;line-height:1.7">• {{ p }}</div>
           </div>
           <div v-else style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px">
-            五项配置均已填写且已启用
+            配置已填写完整且已启用｜验签模式：{{ payDiag.mode==='pubkey'?'微信支付公钥':payDiag.mode==='cert'?'手动平台证书':'自动下载平台证书' }}<span v-if="payDiag.pub_key_id">（公钥ID {{ payDiag.pub_key_id }}）</span>
           </div>
           <table class="table" v-if="payDiag.events.length">
             <thead><tr><th style="width:150px">时间</th><th style="width:90px">类型</th><th>详情</th></tr></thead>
@@ -305,6 +314,9 @@ window.PageIntegration = {
     const raw = reactive({});
     const diag = ref(null);
     const payDiag = ref(null);
+    // 验签模式决定回调靠什么验签：填了公钥就不再联网拉平台证书
+    const verifyModeText = computed(() => (c.pub_key ? '微信支付公钥（本地验签）'
+      : c.platform_cert ? '手动平台证书' : '自动下载平台证书'));
     // 带上部署基础路径，子路径部署时提示的回调地址才是对的
     const origin = location.origin + (window.U?.basePath || '');
 
@@ -373,7 +385,7 @@ window.PageIntegration = {
 
     onMounted(load);
     Vue.watch(tab, sync);
-    return { tabs, tab, c, origin, save, testWechat, diagWechat, diag, fmtTime, testTb, testWxpay, diagPay, payDiag };
+    return { tabs, tab, c, origin, save, testWechat, diagWechat, diag, fmtTime, testTb, testWxpay, diagPay, payDiag, verifyModeText };
   },
 };
 

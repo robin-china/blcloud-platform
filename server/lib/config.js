@@ -4,6 +4,8 @@ const { encrypt, decrypt, mask } = require('./crypto');
 
 const SENSITIVE = {
   wechat: ['appsecret', 'token', 'aes_key'],
+  // 注意：微信支付公钥（pub_key）与平台证书是公开信息，只用来验签，不加密。
+  // 一旦加密就受「留空表示不修改」约束，管理员将无法清掉填错的公钥，会把自己锁死在错误模式上。
   wxpay: ['api_v3_key', 'private_key', 'mch_cert_serial'],
   alipay: ['private_key', 'alipay_public_key'],
   tb: ['password'],
@@ -18,6 +20,8 @@ const DEFAULTS = {
   wxpay: {
     enabled: 0, mchid: '', appid: '', api_v3_key: '', mch_cert_serial: '',
     private_key: '', notify_url: '', trade_type: 'NATIVE',
+    // 微信支付公钥模式（2024 年起新商户无法下载平台证书，必须改用公钥验签）
+    pub_key_id: '', pub_key: '', platform_cert: '',
   },
   alipay: {
     enabled: 0, appid: '', private_key: '', alipay_public_key: '',

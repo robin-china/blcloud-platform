@@ -47,7 +47,11 @@ module.exports = async function payRoutes(app) {
       }
     } catch (e) {
       app.log.warn(`微信支付回调处理失败: ${e.message}`);
-      paydiag.push('error', 'notify', `回调处理失败：${e.message}（微信会重试，务必确认 API v3 密钥与平台证书正确）`);
+      const mode = wxpay.verifyMode();
+      const tail = mode === 'pubkey'
+        ? '（微信会重试；若持续失败，核对「微信支付公钥」内容与 API v3 密钥；已付款订单可在订单管理「向微信查单」补齐）'
+        : '（微信会重试；若商户号已不支持下载平台证书，请改用「微信支付公钥」模式；已付款订单可在订单管理「向微信查单」补齐）';
+      paydiag.push('error', 'notify', `回调处理失败：${e.message}${tail}`);
       return reply.code(500).send({ code: 'FAIL', message: e.message });
     }
     return { code: 'SUCCESS', message: '成功' };

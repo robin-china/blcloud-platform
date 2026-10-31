@@ -2,9 +2,62 @@ const db = require('../db');
 const { now, safeJson, genOrderNo, genCode } = require('../lib/util');
 const { requireUser } = require('../lib/auth');
 const { getSetting, getConfig, devMode } = require('../lib/config');
-const { createPayment } = require('../services/pay');
+const { createPayment, markPaid } = require('../services/pay');
+const wxpay = require('../services/wxpay');
+const paydiag = require('../lib/paydiag');
 const QRCode = require('qrcode');
 const bl = require('../lib/blcloud');
+
+/**
+ * 用户端自动补单的节流表：orderId -> 上次查单时间戳。
+ * 微信的查单接口不该被无限刷，同一订单 60 秒内只查一次。
+ */
+const lastSync = new Map();
+const SYNC_INTERVAL = 60 * 1000;
+
+/**
+ * 「我的订单」列表刷新时顺带给 pending 的微信订单查一次单。
+ *
+ * 回调一旦验签失败（配置刚修好前必然如此），微信只会重试有限次，
+ * 之后用户已付款、订单却永远停在 pending。与其等管理员手工补单，
+ * 不如让用户刷新页面时自己恢复 —— 这是丢单兜底的最后一道防线。
+ * 查单失败一律静默：列表加载不能被支付侧的问题拖垮。
+ */
+async function autoSyncPendingOrders(userId) {
+  try {
+    const cfg = getConfig('wxpay');
+    if (!cfg.enabled) return;
+    const rows = db.prepare(
+      `SELECT * FROM orders WHERE user_id = ? AND status = 'pending'
+       AND IFNULL(channel, 'wxpay') = 'wxpay' ORDER BY id DESC LIMIT 5`
+    ).all(userId);
+    const cutoff = Date.now() - 60 * 1000;
+    let budget = 3;
+    for (const o of rows) {
+      if (budget <= 0) break;
+      const created = Date.parse(o.created_at || '');
+      if (created && created > cutoff) continue; // 刚下单，还没来得及付款
+      if (Date.now() - (lastSync.get(o.id) || 0) < SYNC_INTERVAL) continue;
+      lastSync.set(o.id, Date.now());
+      budget -= 1;
+      try {
+        const data = await wxpay.queryOrder(o.order_no);
+        if (data.trade_state !== 'SUCCESS') continue;
+        const paidAmount = Number(data.amount?.total || 0) / 100;
+        const r = markPaid(data.out_trade_no, data.transaction_id, 'wxpay', JSON.stringify(data), paidAmount);
+        if (r && r.mismatch) {
+          paydiag.push('error', 'query', `自动补单发现金额不符：订单 ${o.order_no}，应收 ¥${r.expected}、实收 ¥${r.actual}，已拒发货`);
+        } else {
+          paydiag.push('ok', 'query', `自动补单成功：订单 ${o.order_no} 已标记为已支付并自动发货`);
+        }
+      } catch (e) {
+        paydiag.push('warn', 'query', `自动补单查单失败：订单 ${o.order_no}，${e.message}`);
+      }
+    }
+    // 防止表无限增长：只保留最近 500 条
+    if (lastSync.size > 500) lastSync.clear();
+  } catch { /* 兜底逻辑不能影响列表返回 */ }
+}
 
 const PUBLIC_SETTINGS = ['site_name', 'site_short_name', 'site_logo', 'site_favicon', 'site_icp',
   'site_copyright', 'site_contact', 'site_description', 'theme_color'];
@@ -121,6 +174,7 @@ module.exports = async function portalRoutes(app) {
 
   app.get('/api/portal/orders', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
+    await autoSyncPendingOrders(req.user.sub);
     const list = db.prepare('SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(req.user.sub);
     return { list: list.map((o) => ({ ...o, items: safeJson(o.items, []) })) };
   });

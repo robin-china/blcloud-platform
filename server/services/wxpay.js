@@ -37,10 +37,10 @@ function explainPayError(code = '', message = '', status = 0) {
 }
 
 /**
- * 商户私钥经常是从文本查看器里复制出来的，换行会变成字面量 \n 或被压成一行，
+ * 私钥/公钥经常是从文本查看器里复制出来的，换行会变成字面量 \n 或被压成一行，
  * 直接拿去签名会报 "DECODER routines::unsupported" 这类看不懂的错。
  */
-function normalizePrivateKey(pem) {
+function normalizePem(pem) {
   if (!pem) return '';
   let s = String(pem).trim().replace(/\r/g, '');
   s = s.replace(/\\n/g, '\n');
@@ -52,6 +52,10 @@ function normalizePrivateKey(pem) {
   const body = s.slice(head.index + head[0].length, tail.index)
     .replace(/\s+/g, '');
   return `${head[0]}\n${(body.match(/.{1,64}/g) || []).join('\n')}\n${tail[0]}\n`;
+}
+
+function normalizePrivateKey(pem) {
+  return normalizePem(pem);
 }
 
 let certCache = { pem: '', serial: '', expiresAt: 0 };
@@ -85,7 +89,19 @@ function readConfig() {
     api_v3_key: String(c.api_v3_key || '').trim(),
     notify_url: String(c.notify_url || '').trim(),
     private_key: normalizePrivateKey(c.private_key),
+    // 微信支付公钥模式（2024 年起新商户默认模式，无法下载平台证书）
+    pub_key_id: String(c.pub_key_id || '').trim().toUpperCase(),
+    pub_key: normalizePem(c.pub_key),
+    platform_cert: normalizePem(c.platform_cert),
   };
+}
+
+/** 验签模式：pubkey=微信支付公钥 / cert=手动平台证书 / auto=拉取平台证书 */
+function verifyMode() {
+  const cfg = readConfig();
+  if (cfg.platform_cert) return 'cert';
+  if (cfg.pub_key) return 'pubkey';
+  return 'auto';
 }
 
 async function call(method, urlPath, body) {
@@ -196,22 +212,62 @@ async function refund({ outTradeNo, outRefundNo, total, refundAmount, reason = '
   });
 }
 
-async function getPlatformCert(force = false) {
+/**
+ * 下载并解密微信支付平台证书。
+ * 注意：2024 年起新商户号已无法下载平台证书，微信会返回 RESOURCE_NOT_EXISTS，
+ * 要求改用「微信支付公钥」。这种情况必须给出可执行的指引，而不是让运维去查回调地址。
+ */
+async function fetchPlatformCert(force = false) {
   if (!force && certCache.pem && certCache.expiresAt > Date.now()) return certCache;
   const cfg = readConfig();
-  if (cfg.platform_cert) return { pem: cfg.platform_cert, serial: '' };
-  const data = await call('GET', '/v3/certificates');
+  let data;
+  try {
+    data = await call('GET', '/v3/certificates');
+  } catch (e) {
+    const code = String(e.code || '').toUpperCase();
+    if (code === 'RESOURCE_NOT_EXISTS' || /公钥/.test(String(e.message || ''))) {
+      throw new Error('该商户号已无法下载平台证书（微信已全面改用「微信支付公钥」）：'
+        + '请到 商户平台 → 账户中心 → API安全 → 申请「微信支付公钥」，把「微信支付公钥ID」和「公钥内容」'
+        + '填到本页并保存，回调即可本地验签成功｜' + e.message);
+    }
+    throw e;
+  }
   const cert = (data.data || [])[0];
   if (!cert) throw new Error('未获取到微信支付平台证书');
-  const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(cfg.api_v3_key, 'utf8'), Buffer.from(cert.encrypt_certificate.nonce, 'utf8'));
-  decipher.setAAD(Buffer.from(cert.encrypt_certificate.associated_data, 'utf8'));
-  decipher.setAuthTag(Buffer.from(cert.encrypt_certificate.ciphertext, 'base64').subarray(-16));
-  const pem = Buffer.concat([
-    decipher.update(Buffer.from(cert.encrypt_certificate.ciphertext, 'base64').subarray(0, -16)),
-    decipher.final(),
-  ]).toString('utf8');
+  let pem;
+  try {
+    const enc = cert.encrypt_certificate || {};
+    const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(cfg.api_v3_key, 'utf8'), Buffer.from(enc.nonce, 'utf8'));
+    decipher.setAAD(Buffer.from(enc.associated_data, 'utf8'));
+    const buf = Buffer.from(enc.ciphertext, 'base64');
+    decipher.setAuthTag(buf.subarray(-16));
+    pem = Buffer.concat([decipher.update(buf.subarray(0, -16)), decipher.final()]).toString('utf8');
+  } catch (e) {
+    // GCM tag 校验不过 = API v3 密钥不对，这是最典型的症状
+    throw new Error(`平台证书解密失败，几乎可以确定是 API v3 密钥填错：${e.message}`);
+  }
   certCache = { pem, serial: cert.serial_no, expiresAt: Date.now() + 12 * 3600 * 1000 };
   return certCache;
+}
+
+/**
+ * 取得「验签用的公钥」。
+ * 微信有两种模式：
+ *   - 平台证书模式：回调头 Wechatpay-Serial 是平台证书序列号，需要先联网下载证书
+ *   - 微信支付公钥模式：回调头是公钥ID（PUB_KEY_ID_xxx），用本地配置的公钥直接验签，不联网
+ * 公钥模式优先，因为它不依赖任何网络请求，回调链路最短也最稳。
+ */
+async function getVerifyKey(serial) {
+  const cfg = readConfig();
+  if (cfg.platform_cert) return { pem: cfg.platform_cert, source: '手动配置的平台证书' };
+  if (cfg.pub_key) {
+    if (cfg.pub_key_id && serial && String(serial).toUpperCase() !== cfg.pub_key_id) {
+      paydiag.push('warn', 'notify', `回调头 Wechatpay-Serial（${serial}）与后台填写的微信支付公钥ID（${cfg.pub_key_id}）不一致，仍尝试用已填公钥验签`);
+    }
+    return { pem: cfg.pub_key, source: '微信支付公钥' };
+  }
+  const cert = await fetchPlatformCert();
+  return { pem: cert.pem, source: '平台证书（自动下载）' };
 }
 
 function verifyNotify(headers, rawBody) {
@@ -226,28 +282,39 @@ function verifyNotify(headers, rawBody) {
 }
 
 async function verifyAndDecrypt(headers, rawBody) {
-  const { signature, timestamp, nonce, cfg } = verifyNotify(headers, rawBody);
+  const { signature, timestamp, nonce, serial, cfg } = verifyNotify(headers, rawBody);
   if (!String(rawBody || '').trim()) throw new Error('回调报文为空：拿不到原始 body 无法验签（检查 Nginx 是否转发完整请求体）');
-  let cert;
+  let key;
   try {
-    cert = await getPlatformCert();
+    key = await getVerifyKey(serial);
   } catch (e) {
-    // 拉不到证书就没法验签，这不是回调本身的问题，别让人去查回调地址
-    throw new Error(`拉取微信支付平台证书失败，回调无法验签：${e.message}`);
+    // 拿不到验签公钥就没法验签，这不是回调地址的问题，别让人去查回调地址
+    throw new Error(`无法获取验签公钥，回调无法验签：${e.message}`);
   }
-  const verifier = crypto.createVerify('RSA-SHA256');
-  verifier.update(`${timestamp}\n${nonce}\n${rawBody}\n`);
-  if (!verifier.verify(cert.pem, signature, 'base64')) {
-    certCache = { pem: '', serial: '', expiresAt: 0 };
-    let fresh;
-    try {
-      fresh = await getPlatformCert(true);
-    } catch (e) {
-      throw new Error(`拉取微信支付平台证书失败，回调无法验签：${e.message}`);
+  const message = `${timestamp}\n${nonce}\n${rawBody}\n`;
+  const check = (pem) => {
+    const v = crypto.createVerify('RSA-SHA256');
+    v.update(message);
+    try { return v.verify(pem, signature, 'base64'); } catch { return false; }
+  };
+  if (!check(key.pem)) {
+    // 平台证书可能是微信刚轮换的，强制刷新再试一次；本地公钥则无需刷新
+    if (key.source === '平台证书（自动下载）') {
+      certCache = { pem: '', serial: '', expiresAt: 0 };
+      let fresh;
+      try {
+        fresh = await fetchPlatformCert(true);
+      } catch (e) {
+        throw new Error(`拉取微信支付平台证书失败，回调无法验签：${e.message}`);
+      }
+      if (!check(fresh.pem)) throw new Error('微信支付回调验签失败（已强制刷新平台证书仍不通过）');
+    } else if (key.source === '微信支付公钥') {
+      throw new Error(`微信支付回调验签失败：已填的微信支付公钥与本次回调不匹配。`
+        + `请核对公钥内容完整（含 -----BEGIN PUBLIC KEY----- 两行）、且「微信支付公钥ID」与回调头一致（本次 Wechatpay-Serial=${serial}）；`
+        + `若商户平台实际用的是平台证书模式，请清空公钥两项`);
+    } else {
+      throw new Error('微信支付回调验签失败：手动配置的平台证书不正确或已过期');
     }
-    const v2 = crypto.createVerify('RSA-SHA256');
-    v2.update(`${timestamp}\n${nonce}\n${rawBody}\n`);
-    if (!v2.verify(fresh.pem, signature, 'base64')) throw new Error('微信支付回调验签失败');
   }
   let r;
   try { r = JSON.parse(rawBody).resource; } catch { throw new Error('回调报文不是合法 JSON'); }
@@ -272,11 +339,28 @@ function decryptResource(r, cfg) {
 }
 
 /**
- * 配置自检：调用「获取平台证书」接口并解密。
- * 这一步能同时验证四样配置：
- *   - 商户号 + 证书序列号 + 商户私钥 → 请求签名能否被微信接受
- *   - API v3 密钥                    → AEAD 解密能否通过（final() 会校验 GCM tag）
- * 不需要真实付款，是上线前唯一能完整验证支付配置的方法。
+ * 用「查询一个不存在的订单」探测商户请求签名是否被微信接受。
+ * 返回 404/ORDER_NOT_EXIST 恰恰说明签名是合法的（微信认出了这个商户），
+ * 反之若 SIGN_ERROR 就是商户号/证书序列号/私钥三者之一填错。
+ * 公钥模式下必须走这条路，因为平台证书接口已经不可用。
+ */
+async function probeSignature() {
+  const cfg = readConfig();
+  const probe = `SELFTEST${Date.now()}`;
+  try {
+    await call('GET', `/v3/pay/transactions/out-trade-no/${probe}?mchid=${encodeURIComponent(cfg.mchid)}`);
+    return { ok: true, note: '查询接口返回成功' };
+  } catch (e) {
+    if (e.status === 404 || /ORDER_?NOT_?EXIST/i.test(String(e.code || ''))) {
+      return { ok: true, note: '签名已被微信接受（订单不存在是预期结果）' };
+    }
+    throw new Error(`商户请求签名未被微信接受：${e.message}`);
+  }
+}
+
+/**
+ * 配置自检：不需要真实付款就能验证支付配置。
+ * 两种模式验证的能力不同，必须分开说清楚，否则运维会误以为「测过了但回调还是失败」。
  */
 async function testConfig() {
   const cfg = readConfig();
@@ -286,9 +370,31 @@ async function testConfig() {
     if (!cfg[k]) missing.push(label);
   }
   if (missing.length) throw new Error(`缺少配置：${missing.join('、')}`);
+  if (cfg.api_v3_key.length !== 32) {
+    throw new Error(`API v3 密钥应为 32 位字符串，当前 ${cfg.api_v3_key.length} 位（到商户平台 → API安全 → 设置 APIv3 密钥重新复制）`);
+  }
   certCache = { pem: '', serial: '', expiresAt: 0 };
-  const cert = await getPlatformCert(true);
-  return { ok: true, message: '微信支付配置可用（已成功拉取并解密平台证书）', serial: cert.serial };
+  const probe = await probeSignature();
+  // 公钥模式：验签公钥在本地，不必联网下载证书
+  if (cfg.pub_key || cfg.platform_cert) {
+    const mode = cfg.pub_key ? '微信支付公钥' : '手动平台证书';
+    return {
+      ok: true,
+      mode: cfg.pub_key ? 'pubkey' : 'cert',
+      message: `${mode}模式配置可用：${probe.note}，回调将用本地${mode}验签（API v3 密钥长度正确，其内容会在真实回调时校验）`,
+    };
+  }
+  const cert = await fetchPlatformCert(true);
+  return {
+    ok: true,
+    mode: 'auto',
+    message: `平台证书模式配置可用：${probe.note}，且已成功拉取并解密平台证书（说明 API v3 密钥正确）`,
+    serial: cert.serial,
+  };
 }
 
-module.exports = { nativePrepay, jsapiPrepay, queryOrder, refund, verifyAndDecrypt, testConfig, explainPayError, normalizePrivateKey, readConfig };
+module.exports = {
+  nativePrepay, jsapiPrepay, queryOrder, refund,
+  verifyAndDecrypt, testConfig, explainPayError,
+  normalizePrivateKey, normalizePem, readConfig, verifyMode, probeSignature,
+};

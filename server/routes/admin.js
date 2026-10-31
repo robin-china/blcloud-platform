@@ -187,7 +187,9 @@ module.exports = async function adminRoutes(app) {
       paydiag.push('error', 'selftest', `配置自检失败：${e.message}`);
       const extra = getConfig('wxpay').platform_cert
         ? '（当前配置了手动平台证书，不代表线上可用，建议清空后重测）' : '';
-      return reply.code(400).send({ error: `微信支付配置不可用：${e.message}${extra}` });
+      const hint = /平台证书|RESOURCE_NOT_EXISTS/.test(e.message) && !getConfig('wxpay').pub_key
+        ? '（建议改为「微信支付公钥」模式：商户平台 → API安全 → 申请微信支付公钥，填到本页后重测）' : '';
+      return reply.code(400).send({ error: `微信支付配置不可用：${e.message}${extra}${hint}` });
     }
   });
 
@@ -209,6 +211,7 @@ module.exports = async function adminRoutes(app) {
     if (cfg.notify_url && !/^https?:\/\//.test(cfg.notify_url)) {
       problems.push(`手动填的回调地址不是合法 URL：${cfg.notify_url}`);
     }
+    const mode = wxpay.verifyMode();
     const events = paydiag.list(20);
     // 配比检查只能看出「有没有填」，看不出「填的对不对」；
     // 真正卡住用户的是最近一次下单失败，必须直接在最上面点出来
@@ -216,11 +219,19 @@ module.exports = async function adminRoutes(app) {
     if (lastFail) problems.unshift(`最近一次下单失败：${lastFail.detail}`);
     const lastNotifyFail = events.find((e) => e.level === 'error' && e.type === 'notify');
     if (lastNotifyFail) problems.push(`最近一次支付回调处理失败：${lastNotifyFail.detail}`);
+    // 回调失败最常见的原因是「新商户号拉不到平台证书」，这条必须直接点名该做什么
+    if (/平台证书|RESOURCE_NOT_EXISTS|验签公钥/.test(lastNotifyFail ? lastNotifyFail.detail : '') && mode === 'auto') {
+      problems.unshift('该商户号已不支持下载平台证书：请到 商户平台 → 账户中心 → API安全 → 申请「微信支付公钥」，'
+        + '把「微信支付公钥ID」与「公钥内容」填到本页「微信支付公钥」两项后保存，回调即可本地验签成功');
+    }
     return {
       enabled: !!cfg.enabled,
+      mode, // pubkey=微信支付公钥 / cert=手动平台证书 / auto=自动下载平台证书
+      pub_key_id: cfg.pub_key_id || '',
       has: {
         mchid: !!cfg.mchid, appid: !!cfg.appid, mch_cert_serial: !!cfg.mch_cert_serial,
         private_key: !!cfg.private_key, api_v3_key: !!cfg.api_v3_key,
+        pub_key: !!cfg.pub_key,
       },
       mchid_tail: cfg.mchid ? cfg.mchid.slice(-4) : '',
       key_len: cfg.api_v3_key ? cfg.api_v3_key.length : 0,
