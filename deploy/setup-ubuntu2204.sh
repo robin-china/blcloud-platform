@@ -132,9 +132,14 @@ for p in 80 443 3000; do
   if [ -n "$who" ]; then
     proc=$(echo "$who" | grep -o 'users:(("[^"]*"' | cut -d'"' -f2)
     if [ "$p" = "3000" ]; then
-      warn "端口 $p 被占用 → ${proc:-未知进程}"
-      PORT3000_BUSY="${proc:-未知}"
-      info "本项目默认用 3000；若被别的程序占了，部署时可换 PORT（如 3100）"
+      # 可能是本项目自己占着（已部署过），那不是冲突
+      if ps -eo args 2>/dev/null | grep -q "[b]lcloud"; then
+        ok "端口 3000 已被本项目占用 → ${proc:-node}（说明服务已在运行，非冲突）"
+      else
+        warn "端口 $p 被占用 → ${proc:-未知进程}"
+        PORT3000_BUSY="${proc:-未知}"
+        info "本项目默认用 3000；若被别的程序占了，部署时可换 PORT（如 3100）"
+      fi
     else
       ok "端口 $p 使用中 → ${proc:-未知进程}（Web 端口本就该占用）"
     fi
@@ -231,7 +236,8 @@ TODO=()
 [ "$NEED_NODE" = "2" ] && TODO+=("Node 版本不符（需你决定是否替换，脚本不会自动动它）")
 [ "$NEED_NGINX" = "1" ] && TODO+=("安装 Nginx")
 [ "$NEED_PM2" = "1" ] && TODO+=("安装 PM2（或用 systemd）")
-[ "$NEED_CERTBOT" = "1" ] && TODO+=("安装 Certbot")
+# 已有 HTTPS 证书时不必装 Certbot（商业证书 / 已有 Lets Encrypt 都不需要）
+[ "$NEED_CERTBOT" = "1" ] && [ "$CERT_FROM" = "none" ] && TODO+=("安装 Certbot（用于申请/续期免费证书）")
 [ -n "$PORT3000_BUSY" ] && TODO+=("3000 端口被 ${PORT3000_BUSY} 占用，需改用其他端口")
 [ "$HAS_DB" = "1" ] && TODO+=("检测到既有数据库 → 走升级流程，先备份")
 [ -n "$DOMAIN" ] && [ "$CERT_FROM" = "none" ] && TODO+=("申请 HTTPS 证书")
@@ -273,7 +279,7 @@ if [ "$NEED_NGINX" = "1" ]; then
   else info "已跳过"; fi
 fi
 
-if [ "$NEED_CERTBOT" = "1" ]; then
+if [ "$NEED_CERTBOT" = "1" ] && [ "$CERT_FROM" = "none" ]; then
   h "安装 Certbot"
   if ask "安装 certbot 与 nginx 插件？" y; then
     export DEBIAN_FRONTEND=noninteractive
