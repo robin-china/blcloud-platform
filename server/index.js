@@ -20,6 +20,15 @@ function build() {
 
   app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
 
+  // 防混合内容：页面上若混入 http:// 的子资源，浏览器会显示「此页面不安全（HTTPS 连接断开）」，
+  // 且用户点过一次「加载不安全内容」后 Chrome 会长期记住、一直挂红。
+  // upgrade-insecure-requests 让浏览器把所有 http:// 子资源自动升级为 https，从源头杜绝。
+  // HSTS 促使浏览器此后一律走 https 访问本站（含之前点过「继续前往不安全」留下的坏印象）。
+  app.addHook('onSend', async (req, reply) => {
+    reply.header('Content-Security-Policy', 'upgrade-insecure-requests');
+    if (req.protocol === 'https') reply.header('Strict-Transport-Security', 'max-age=15552000');
+  });
+
   app.register(fastifyStatic, { root: UPLOAD_DIR, prefix: `${BASE}/uploads/`, decorateReply: false });
   app.register(fastifyStatic, {
     root: PUBLIC_DIR,
