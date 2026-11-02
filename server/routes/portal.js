@@ -181,9 +181,32 @@ module.exports = async function portalRoutes(app) {
 
   app.get('/api/portal/licenses', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
-    const list = db.prepare(`SELECT l.*, p.name AS product_name, p.type AS product_type, p.icon
+    const list = db.prepare(`SELECT l.*, p.name AS product_name, p.type AS product_type, p.icon,
+      (SELECT COUNT(*) FROM license_devices d WHERE d.license_id = l.id) AS bound_devices
       FROM licenses l LEFT JOIN products p ON p.id = l.product_id WHERE l.user_id = ? ORDER BY l.id DESC`).all(req.user.sub);
     return { list };
+  });
+
+  /* 换电脑 / 重装系统后 machine_id 变了，旧机器还占着名额。
+     让用户自己在「我的授权」里解绑，而不是每次都找客服。 */
+  app.get('/api/portal/licenses/:id/devices', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const lic = db.prepare('SELECT * FROM licenses WHERE id = ? AND user_id = ?').get(Number(req.params.id), req.user.sub);
+    if (!lic) return reply.code(404).send({ error: '授权不存在' });
+    const list = db.prepare('SELECT * FROM license_devices WHERE license_id = ? ORDER BY id DESC').all(lic.id);
+    return { list, max_devices: lic.max_devices };
+  });
+
+  app.delete('/api/portal/licenses/:id/devices/:did', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const lic = db.prepare('SELECT * FROM licenses WHERE id = ? AND user_id = ?').get(Number(req.params.id), req.user.sub);
+    if (!lic) return reply.code(404).send({ error: '授权不存在' });
+    const d = db.prepare('SELECT * FROM license_devices WHERE id = ? AND license_id = ?').get(Number(req.params.did), lic.id);
+    if (!d) return reply.code(404).send({ error: '该设备未绑定此授权' });
+    db.prepare('DELETE FROM license_devices WHERE id = ?').run(d.id);
+    db.prepare('UPDATE client_sessions SET status = ? WHERE license_id = ? AND machine_id = ?')
+      .run('revoked', lic.id, d.device_sn);
+    return { ok: true, freed: 1 };
   });
 
   app.get('/api/portal/devices', async (req, reply) => {

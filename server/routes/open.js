@@ -6,7 +6,7 @@
 const db = require('../db');
 const { now, today, genScene, genCode } = require('../lib/util');
 const { getConfig } = require('../lib/config');
-const { verifySignature, issueSession, requireClient, getSession, touchSession, revokeSession } = require('../lib/openauth');
+const { verifySignature, issueSession, requireClient, getSession, getSessionState, touchSession, revokeSession } = require('../lib/openauth');
 const wechatService = require('../services/wechat');
 const { ensureUser } = require('../routes/wechat');
 
@@ -104,6 +104,9 @@ module.exports = async function openRoutes(app) {
       version: a.version || '',
       download_url: a.download_url || '',
       release_note: a.release_note || '',
+      // 离线宽限天数必须下发，否则「后台配了宽限、客户端根本不知道」，
+      // 断网策略只能各自写死。0 = 必须联网校验。
+      offline_days: Number(a.offline_days || 0),
       force_update: false,
       server_time: now(),
     };
@@ -326,7 +329,12 @@ module.exports = async function openRoutes(app) {
     let appRow = null;
     let lic = null;
     let machineId = String(b.machine_id || b.device_sn || '').trim();
-    const tokenSess = getSession(String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
+    const tokenSt = getSessionState(String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
+    // 令牌被作废（解绑 / 吊销 / 后台踢下线）时要直说，别让客户端去猜是不是过期
+    if (tokenSt.code === 'SESSION_REVOKED') {
+      return reply.code(403).send({ valid: false, reason: '该机器已被解绑或授权已吊销，请重新激活', code: 'SESSION_REVOKED' });
+    }
+    const tokenSess = tokenSt.session;
 
     if (tokenSess) {
       appRow = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(tokenSess.app_id);
@@ -383,8 +391,16 @@ module.exports = async function openRoutes(app) {
     if (!st.valid) return { valid: false, reason: st.reason, code: st.code, server_time: now() };
 
     if (req.session.machine_id) {
-      db.prepare('UPDATE license_devices SET last_seen_at = ?, last_version = ? WHERE license_id = ? AND device_sn = ?')
-        .run(now(), String(b.version || ''), lic.id, req.session.machine_id);
+      // 必须确认这台机器仍然绑在这张授权上：后台/用户自助解绑之后，
+      // 老令牌不能继续 valid=true —— 否则「解绑」只是清了个名单，
+      // 占着名额的客户端还能照常用下去。
+      const bound = db.prepare('SELECT id FROM license_devices WHERE license_id = ? AND device_sn = ?')
+        .get(lic.id, req.session.machine_id);
+      if (!bound) {
+        return { valid: false, reason: '该机器已解绑此授权，请重新激活', code: 'MACHINE_NOT_BOUND', server_time: now() };
+      }
+      db.prepare('UPDATE license_devices SET last_seen_at = ?, last_version = ? WHERE id = ?')
+        .run(now(), String(b.version || ''), bound.id);
     }
     db.prepare('UPDATE client_sessions SET app_version = ? WHERE id = ?').run(String(b.version || req.session.app_version || ''), req.session.id);
     track(req.session.user_id, req.app.app_key, 'license.heartbeat');

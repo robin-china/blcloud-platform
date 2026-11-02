@@ -129,7 +129,7 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
-| GET | `/app/version` | 应用签名 | 版本号、安装包地址、更新说明 |
+| GET | `/app/version` | 应用签名 | 版本号、安装包地址、更新说明、**离线宽限天数** |
 | POST | `/auth/activate` | 应用签名 | **激活码 + 机器码激活**，返回令牌 |
 | POST | `/auth/qrcode` | 应用签名 | 生成微信扫码登录场景 |
 | GET | `/auth/qrcode/:scene` | 无（query 带 app_key） | 轮询扫码结果，确认后返回令牌 |
@@ -149,6 +149,28 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 
 ## 5. 接口详解
 
+### 应用信息
+
+`GET /app/version`（应用签名）
+
+```json
+{
+  "version": "1.2.0",
+  "download_url": "https://cdn.example.com/app-1.2.0.exe",
+  "release_note": "修复了断网后无法保存的问题",
+  "offline_days": 7,
+  "force_update": false,
+  "server_time": "2026-11-02T06:00:00.000Z"
+}
+```
+
+`offline_days` 是后台「开放接口 → 编辑应用 → 离线宽限（天）」配的值，**客户端要按它实现断网策略**：
+
+- `0` = 必须联网校验，断网即锁功能
+- `> 0` = 允许离线使用这么多天，超期必须联网校验一次
+
+> 服务端不代管离线状态，它只负责把这个数字准确地告诉你。
+
 ### 5.1 激活（最核心）
 
 `POST /auth/activate`
@@ -157,7 +179,7 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 
 ```json
 {
-  "license_key": "LIC-2026-XXXX-XXXX",
+  "license_key": "LIC-XXXXXXXX-XXXXXXXX-XXXXXXXX",
   "machine_id": "A1B2C3D4E5F6",
   "machine_name": "李雷的笔记本",
   "version": "1.2.0"
@@ -173,7 +195,7 @@ def sign(app_key, app_secret, method, path, body_obj=None):
   "expires_in": 7200, "refresh_expires_in": 2592000,
   "user": { "id": 12, "nickname": "李雷", "phone": "138****8888", "points": 320 },
   "license": {
-    "license_key": "LIC-2026-XXXX-XXXX",
+    "license_key": "LIC-XXXXXXXX-XXXXXXXX-XXXXXXXX",
     "product_id": 3, "product_name": "花盆卫士 Pro",
     "type": "subscription", "end_at": "2027-01-01T00:00:00.000Z",
     "max_devices": 2, "bound_devices": 1
@@ -218,6 +240,16 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 `POST /license/heartbeat`，body `{ "version": "1.2.0" }`
 
 建议每 5~10 分钟一次。服务端会更新最后活跃时间、客户端版本，并返回授权最新状态——**这是后台吊销/过期能否及时生效的关键**。
+
+三种失败要分开处理：
+
+| HTTP | code | 含义 | 客户端动作 |
+|---|---|---|---|
+| 401 | `SESSION_REVOKED` | 这台机器已被解绑，或授权被吊销 | 回激活页，提示「设备已解绑/授权已失效」 |
+| 401 | `UNAUTHORIZED` | 令牌过期 | 先 refresh，失败再回登录页 |
+| 200 | `valid: false` + `LICENSE_EXPIRED` 等 | 授权本身失效 | 弹窗提示并锁定功能 |
+
+> 解绑是**即时生效**的：后台或用户端一解绑，这台机器手上的旧令牌下次请求就会被拒，不用等令牌自然过期。
 
 ### 5.4 我的硬件与 TB 凭据
 
@@ -290,6 +322,7 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
 | 401 | `APP_DISABLED` | 应用被停用 | 提示联系客服 |
 | 401 | `UNAUTHORIZED` | 令牌过期或无效 | 用 refresh_token 续期，失败则重新登录 |
 | 401 | `REFRESH_INVALID` / `REFRESH_EXPIRED` | 刷新令牌无效/过期 | 强制重新登录或重新激活 |
+| 401 | `SESSION_REVOKED` | **该机器已被解绑，或授权被吊销/后台踢下线** | 不要重试、不要刷新，直接回激活页并说明原因 |
 | 403 | `LICENSE_NOT_FOUND` | 授权码不存在 | 提示激活码错误 |
 | 403 | `LICENSE_REVOKED` | 授权被吊销 | 提示联系客服 |
 | 403 | `LICENSE_INACTIVE` | 授权未激活 | 同上 |
@@ -332,7 +365,7 @@ const crypto = require('crypto');
 const BASE = 'http://localhost:3000';
 const AK = 'ak_xxx';
 const AS = 'sk_xxx';
-const LICENSE = 'LIC-2026-XXXX-XXXX';
+const LICENSE = 'LIC-XXXXXXXX-XXXXXXXX-XXXXXXXX';
 const MACHINE = 'A1B2C3D4E5F6';
 
 function signedHeaders(method, path, bodyObj) {
@@ -393,7 +426,17 @@ async function call(method, path, bodyObj, token) {
 - 查看客户端会话：用户、机器码、客户端版本、IP、最后活跃时间，并可**单台踢下线**
 - 顶部看板：应用数、在线客户端数、今日 API 调用、已激活机器数
 
-授权侧（授权管理页面）可以吊销/延期/查看某授权绑了哪些机器。客户端下一次心跳或校验就会立刻感知。
+授权侧（授权管理页面）：
+
+- **发放授权**：选用户 + 产品 + 类型（永久/订阅/试用）+ 设备上限；「数量」填 N 可**批量发码**（一次最多 200 个，整批一个事务，码可一键复制）
+- 授权列表按授权码 / 用户 / 产品搜索，按状态筛选
+- 点「设备数」列可查看该授权绑定的机器（机器码、名称、版本、IP、最后活跃），并**逐台解绑**——解绑会连带作废该机器的客户端会话
+- 续期 / 吊销 / 恢复 / 删除；吊销会同时作废该授权下**所有**客户端会话
+- 服务类商品（API 额度包）不允许发授权码，会直接报错提醒
+
+用户端「我的授权」也能自助解绑：用户换电脑、重装系统后自己解绑旧机器，不必找客服。
+
+客户端下一次心跳或校验就会立刻感知以上任何变化。
 
 ---
 

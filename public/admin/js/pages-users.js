@@ -280,7 +280,7 @@ window.PageLicenses = {
                 <td>{{ l.nickname || '-' }}<div style="color:var(--text-3);font-size:12px">{{ l.phone || '' }}</div></td>
                 <td>{{ l.product_name }}</td>
                 <td>{{ l.type==='permanent'?'永久':'订阅' }}</td>
-                <td>{{ l.bound_devices }} / {{ l.max_devices }}</td>
+                <td><button class="btn sm" @click="openDevices(l)">{{ l.bound_devices }} / {{ l.max_devices }}</button></td>
                 <td>{{ l.end_at ? fmt.date(l.end_at) : '永久' }}</td>
                 <td><span class="tag" :class="l.status==='active'?'success':'danger'">{{ l.status==='active'?'有效':'已吊销' }}</span></td>
                 <td>
@@ -327,10 +327,58 @@ window.PageLicenses = {
           </div>
           <div class="field" v-if="form.type!=='permanent'"><label>有效天数</label><input class="input" type="number" v-model.number="form.days" /></div>
           <div class="field"><label>备注</label><input class="input" v-model="form.remark" /></div>
+          <div class="field">
+            <label>数量（大于 1 则批量生成，最多 200）</label>
+            <input class="input" type="number" min="1" max="200" v-model.number="form.count" />
+          </div>
         </div>
         <div class="modal-foot">
           <button class="btn" @click="editing=false">取消</button>
           <button class="btn primary" @click="save">发放</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="mask" v-if="devLic" @click.self="devLic=null">
+      <div class="modal">
+        <div class="modal-head"><h3>已绑定机器 · {{ devLic.license_key }}</h3><button class="close-x" @click="devLic=null">&times;</button></div>
+        <div class="modal-body">
+          <div style="color:var(--text-3);font-size:12.5px;margin-bottom:12px">
+            {{ devices.length }} / {{ devLic.max_devices }} 台。解绑后该机器立刻失去会话，需要重新激活。
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>机器码</th><th>名称</th><th>版本</th><th>IP</th><th>最后活跃</th><th style="width:80px"></th></tr></thead>
+              <tbody>
+                <tr v-for="d in devices" :key="d.id">
+                  <td style="font-family:ui-monospace,monospace;font-size:12px">{{ d.device_sn }}</td>
+                  <td>{{ d.device_name || '-' }}</td>
+                  <td>{{ d.last_version || '-' }}</td>
+                  <td style="font-size:12px">{{ d.last_ip || '-' }}</td>
+                  <td>{{ d.last_seen_at ? fmt.time(d.last_seen_at) : '-' }}</td>
+                  <td><button class="btn sm danger" @click="unbindDevice(d)">解绑</button></td>
+                </tr>
+                <tr v-if="!devices.length"><td colspan="6"><div class="empty">还没有设备激活这张授权</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-foot"><button class="btn" @click="devLic=null">关闭</button></div>
+      </div>
+    </div>
+
+    <div class="mask" v-if="batchResult" @click.self="batchResult=null">
+      <div class="modal">
+        <div class="modal-head"><h3>已批量发放 {{ batchResult.count }} 个授权码</h3><button class="close-x" @click="batchResult=null">&times;</button></div>
+        <div class="modal-body">
+          <div style="color:var(--text-3);font-size:12.5px;margin-bottom:10px">
+            {{ batchResult.product }} · 复制后分发，关闭后可在列表里按用户/产品筛出来
+          </div>
+          <textarea class="input" style="height:220px;font-family:ui-monospace,monospace;font-size:12px" readonly :value="batchText"></textarea>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" @click="batchResult=null">关闭</button>
+          <button class="btn primary" @click="copyBatch">全部复制</button>
         </div>
       </div>
     </div>
@@ -345,7 +393,12 @@ window.PageLicenses = {
     const q = ref('');
     const status = ref('');
     const editing = ref(false);
-    const form = reactive({ user_id: '', product_id: '', type: 'permanent', max_devices: 1, days: 365, remark: '' });
+    const devLic = ref(null);
+    const devices = ref([]);
+    const batchResult = ref(null);
+    // 换行必须在 setup 里拼：写进模板会被模板字面量先求值成真实换行，Vue 编译报错
+    const batchText = computed(() => (batchResult.value ? batchResult.value.license_keys.join('\n') : ''));
+    const form = reactive({ user_id: '', product_id: '', type: 'permanent', max_devices: 1, days: 365, remark: '', count: 1 });
     const fmt = U.fmt;
     const pages = computed(() => Math.max(1, Math.ceil(total.value / 20)));
 
@@ -360,17 +413,52 @@ window.PageLicenses = {
       users.value = u.list;
       const p = await U.api.get('/api/products?pageSize=100');
       products.value = p.list;
-      Object.assign(form, { user_id: u.list[0]?.id || '', product_id: p.list[0]?.id || '', type: 'permanent', max_devices: 1, days: 365, remark: '' });
+      Object.assign(form, { user_id: u.list[0]?.id || '', product_id: p.list[0]?.id || '', type: 'permanent', max_devices: 1, days: 365, remark: '', count: 1 });
       editing.value = true;
     }
 
     async function save() {
+      if (!form.user_id || !form.product_id) return U.toast('请选择用户与产品', 'error');
       try {
-        const res = await U.api.post('/api/licenses', form);
-        U.toast(`授权已发放：${res.license_key}`, 'success');
+        if (Number(form.count) > 1) {
+          const res = await U.api.post('/api/licenses/batch', form);
+          batchResult.value = res;
+          U.toast(`已批量发放 ${res.count} 个授权码`, 'success');
+        } else {
+          const res = await U.api.post('/api/licenses', form);
+          U.toast(`授权已发放：${res.license_key}`, 'success');
+        }
         editing.value = false;
         load();
       } catch (e) { U.toast(e.message, 'error'); }
+    }
+
+    async function openDevices(l) {
+      devLic.value = l;
+      devices.value = [];
+      const res = await U.api.get(`/api/licenses/${l.id}/devices`);
+      devices.value = res.list;
+    }
+
+    async function unbindDevice(d) {
+      if (!confirm(`解绑机器 ${d.device_sn}？该机器的客户端会话会立即失效。`)) return;
+      try {
+        await U.api.del(`/api/license-devices/${d.id}`);
+        U.toast('已解绑', 'success');
+        const keep = devLic.value;
+        await openDevices(keep);
+        load();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
+    function copyBatch() {
+      const text = batchResult.value.license_keys.join('\n');
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text)
+          .then(() => U.toast('已复制全部授权码', 'success'), () => window.prompt('手动复制', text));
+      } else {
+        window.prompt('手动复制', text);
+      }
     }
 
     async function extend(l) {
@@ -399,7 +487,8 @@ window.PageLicenses = {
     }
 
     onMounted(load);
-    return { list, users, products, total, page, pages, q, status, editing, form, fmt, load, openCreate, save, extend, revoke, resume, remove };
+    return { list, users, products, total, page, pages, q, status, editing, form, fmt, load, openCreate, save,
+      extend, revoke, resume, remove, devLic, devices, batchResult, batchText, openDevices, unbindDevice, copyBatch };
   },
 };
 })();

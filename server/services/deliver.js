@@ -1,5 +1,5 @@
 const db = require('../db');
-const { now, safeJson } = require('../lib/util');
+const { now, safeJson, genLicenseKey } = require('../lib/util');
 const { addDays } = require('../routes/licenses');
 const tb = require('./tb');
 const blcloud = require('../lib/blcloud');
@@ -50,7 +50,9 @@ function deliverOrder(order) {
       });
       continue;
     }
-    const licenseKey = `LIC-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+    // 与后台手工发放共用同一个生成器：格式必须一致，
+    // 否则文档示例、客服核对、客户端校验兜底用的正则各说各话
+    const licenseKey = genLicenseKey();
     const info = db.prepare(`INSERT INTO licenses (license_key, user_id, product_id, type, max_devices, start_at, end_at, status, order_id, remark, created_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
       .run(licenseKey, order.user_id, product.id, product.type === 'software' ? 'permanent' : 'subscription',

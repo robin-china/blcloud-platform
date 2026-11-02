@@ -131,13 +131,23 @@ function readClientToken(req) {
   return '';
 }
 
-function getSession(token) {
-  if (!token) return null;
+/**
+ * 区分「没令牌」「被解绑/吊销」「过期」三种情况。
+ * 客户端要能给出不同提示：单纯「令牌过期」让人以为登录一下就好，
+ * 实际是被解绑了，重新登录也进不去 —— 必须说清楚。
+ */
+function getSessionState(token) {
+  if (!token) return { session: null, code: 'UNAUTHORIZED' };
   const s = db.prepare('SELECT * FROM client_sessions WHERE token = ?').get(token);
-  if (!s) return null;
-  if (s.status !== 'active') return null;
-  if (new Date(s.expires_at).getTime() < Date.now()) return null;
-  return s;
+  if (!s) return { session: null, code: 'UNAUTHORIZED' };
+  if (s.status !== 'active') return { session: s, code: 'SESSION_REVOKED' };
+  if (new Date(s.expires_at).getTime() < Date.now()) return { session: s, code: 'SESSION_EXPIRED' };
+  return { session: s, code: '' };
+}
+
+function getSession(token) {
+  const st = getSessionState(token);
+  return st.code ? null : st.session;
 }
 
 function touchSession(s, ip) {
@@ -145,11 +155,16 @@ function touchSession(s, ip) {
 }
 
 async function requireClient(req, reply) {
-  const s = getSession(readClientToken(req));
-  if (!s) {
+  const st = getSessionState(readClientToken(req));
+  if (st.code === 'SESSION_REVOKED') {
+    reply.code(401).send({ error: '该机器已被解绑或授权已吊销，请重新激活', code: 'SESSION_REVOKED' });
+    return null;
+  }
+  if (st.code) {
     reply.code(401).send({ error: '未授权或令牌已过期', code: 'UNAUTHORIZED' });
     return null;
   }
+  const s = st.session;
   const app = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(s.app_id);
   if (!app || app.status !== 'active') {
     reply.code(401).send({ error: '应用已停用', code: 'APP_DISABLED' });
@@ -167,6 +182,6 @@ function revokeSession(token) {
 module.exports = {
   genAppKey, genAppSecret, genClientToken,
   sign, verifySignature, buildSignPayload,
-  issueSession, getSession, touchSession, requireClient, revokeSession, readClientToken,
+  issueSession, getSession, getSessionState, touchSession, requireClient, revokeSession, readClientToken,
   ACCESS_TTL, REFRESH_TTL, SIGN_WINDOW,
 };

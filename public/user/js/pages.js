@@ -289,34 +289,112 @@ window.PageSpace = {
 
 window.PageMyLicenses = {
   template: `
-  <div class="card">
-    <div class="card-head"><h3>我的授权</h3></div>
-    <div class="card-body tight">
-      <table class="table">
-        <thead><tr><th>产品</th><th>授权码</th><th>类型</th><th>有效期</th><th>设备上限</th><th>状态</th></tr></thead>
-        <tbody>
-          <tr v-for="l in list" :key="l.id">
-            <td>{{ l.product_name }}</td>
-            <td style="font-family:ui-monospace,monospace;font-size:12.5px">{{ l.license_key }}</td>
-            <td>{{ l.type==='permanent'?'永久':'订阅' }}</td>
-            <td>{{ l.end_at ? fmt.date(l.end_at) : '永久' }}</td>
-            <td>{{ l.max_devices }}</td>
-            <td><span class="tag" :class="l.status==='active'?'success':'danger'">{{ l.status==='active'?'有效':'失效' }}</span></td>
-          </tr>
-          <tr v-if="!list.length"><td colspan="6"><div class="empty">暂无授权</div></td></tr>
-        </tbody>
-      </table>
+  <div>
+    <div class="card">
+      <div class="card-head">
+        <h3>我的授权</h3>
+        <span style="color:var(--text-3);font-size:12.5px">换电脑或重装系统后，先解绑旧机器再激活，不占名额</span>
+      </div>
+      <div class="card-body tight">
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>产品</th><th>授权码</th><th>类型</th><th>有效期</th><th>绑定设备</th><th>状态</th><th style="width:150px">操作</th></tr></thead>
+            <tbody>
+              <tr v-for="l in list" :key="l.id">
+                <td>{{ l.product_name }}</td>
+                <td style="font-family:ui-monospace,monospace;font-size:12.5px">{{ l.license_key }}</td>
+                <td>{{ typeText(l.type) }}</td>
+                <td>{{ l.end_at ? fmt.date(l.end_at) : '永久' }}</td>
+                <td>{{ l.bound_devices || 0 }} / {{ l.max_devices }}</td>
+                <td><span class="tag" :class="l.status==='active'?'success':'danger'">{{ l.status==='active'?'有效':'失效' }}</span></td>
+                <td>
+                  <div class="table-actions">
+                    <button class="btn sm" @click="copy(l.license_key)">复制</button>
+                    <button class="btn sm" @click="openDevices(l)">设备</button>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="!list.length"><td colspan="7"><div class="empty">暂无授权</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="mask" v-if="cur" @click.self="cur=null">
+      <div class="modal">
+        <div class="modal-head"><h3>绑定设备 · {{ cur.product_name }}</h3><button class="close-x" @click="cur=null">&times;</button></div>
+        <div class="modal-body">
+          <div style="color:var(--text-3);font-size:12.5px;margin-bottom:12px">
+            授权码 <b style="font-family:ui-monospace,monospace;color:var(--text)">{{ cur.license_key }}</b>，
+            已绑定 {{ devices.length }} / {{ cur.max_devices }} 台。换机器时先解绑旧机器，名额即刻释放。
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>机器码</th><th>名称</th><th>版本</th><th>最后活跃</th><th style="width:80px"></th></tr></thead>
+              <tbody>
+                <tr v-for="d in devices" :key="d.id">
+                  <td style="font-family:ui-monospace,monospace;font-size:12px">{{ d.device_sn }}</td>
+                  <td>{{ d.device_name || '-' }}</td>
+                  <td>{{ d.last_version || '-' }}</td>
+                  <td>{{ d.last_seen_at ? fmt.time(d.last_seen_at) : '-' }}</td>
+                  <td><button class="btn sm danger" @click="unbind(d)">解绑</button></td>
+                </tr>
+                <tr v-if="!devices.length"><td colspan="5"><div class="empty">还没有设备激活这张授权</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-foot"><button class="btn" @click="cur=null">关闭</button></div>
+      </div>
     </div>
   </div>
   `,
   setup() {
     const list = ref([]);
+    const cur = ref(null);
+    const devices = ref([]);
     const fmt = U.fmt;
+
+    async function load() {
+      list.value = (await U.api.get('/api/portal/licenses')).list;
+    }
+
+    async function openDevices(l) {
+      cur.value = l;
+      devices.value = [];
+      const res = await U.api.get(`/api/portal/licenses/${l.id}/devices`);
+      devices.value = res.list;
+    }
+
+    async function unbind(d) {
+      if (!confirm(`解绑机器 ${d.device_sn}？解绑后该机器需要重新激活才能使用。`)) return;
+      try {
+        await U.api.del(`/api/portal/licenses/${cur.value.id}/devices/${d.id}`);
+        U.toast('已解绑，名额已释放', 'success');
+        const keep = cur.value;
+        await openDevices(keep);
+        await load();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
+    function copy(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text)
+          .then(() => U.toast('已复制授权码', 'success'), () => window.prompt('手动复制授权码', text));
+      } else {
+        window.prompt('手动复制授权码', text);
+      }
+    }
+
+    const typeText = (t) => ({ permanent: '永久', subscription: '订阅', trial: '试用' }[t] || t);
+
     onMounted(async () => {
       if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
-      list.value = (await U.api.get('/api/portal/licenses')).list;
+      await load();
     });
-    return { list, fmt };
+
+    return { list, cur, devices, fmt, openDevices, unbind, copy, typeText };
   },
 };
 

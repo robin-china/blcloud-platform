@@ -38,12 +38,7 @@ function clearAttempts(username) {
   } catch { /* ignore */ }
 }
 
-function logAdmin(req, action, detail = '') {
-  try {
-    db.prepare('INSERT INTO admin_logs (admin_id, admin_name, action, detail, created_at) VALUES (?,?,?,?,?)')
-      .run(req.admin?.sub || 0, req.admin?.username || '', action, detail, now());
-  } catch { /* ignore */ }
-}
+const { logAdmin } = require('../lib/adminlog');
 
 module.exports = async function adminRoutes(app) {
   app.post('/api/admin/login', async (req, reply) => {
