@@ -7,6 +7,7 @@ const wxpay = require('../services/wxpay');
 const paydiag = require('../lib/paydiag');
 const QRCode = require('qrcode');
 const bl = require('../lib/blcloud');
+const bindSvc = require('../lib/licensebind');
 
 /**
  * 用户端自动补单的节流表：orderId -> 上次查单时间戳。
@@ -185,6 +186,30 @@ module.exports = async function portalRoutes(app) {
       (SELECT COUNT(*) FROM license_devices d WHERE d.license_id = l.id) AS bound_devices
       FROM licenses l LEFT JOIN products p ON p.id = l.product_id WHERE l.user_id = ? ORDER BY l.id DESC`).all(req.user.sub);
     return { list };
+  });
+
+  /* 线下买卡 / 渠道发卡：用户先登录，再把卡上的码贴进来。
+     绑定那一刻起算有效期（印卡时不开始计时）。 */
+  app.post('/api/portal/licenses/bind', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const g = bindSvc.guard(req.user.sub);
+    if (!g.ok) return reply.code(429).send({ error: g.reason, code: g.code });
+    const key = String((req.body || {}).license_key || '').trim().toUpperCase();
+    if (!key) return reply.code(400).send({ error: '请输入授权码' });
+    const lic = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(key);
+    const res = bindSvc.bind(lic, req.user.sub, 'self');
+    if (!res.ok) {
+      bindSvc.noteFail(req.user.sub);
+      return reply.code(400).send({ error: res.reason, code: res.code });
+    }
+    bindSvc.noteSuccess(req.user.sub);
+    return {
+      ok: true, already: !!res.already,
+      license: {
+        id: res.license.id, license_key: res.license.license_key,
+        type: res.license.type, end_at: res.license.end_at,
+      },
+    };
   });
 
   /* 换电脑 / 重装系统后 machine_id 变了，旧机器还占着名额。

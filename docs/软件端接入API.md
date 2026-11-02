@@ -130,6 +130,7 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
 | GET | `/app/version` | 应用签名 | 版本号、安装包地址、更新说明、**离线宽限天数** |
+| GET | `/app/pubkey` | 应用签名 | 离线票据验签公钥（排障用，客户端应内置公钥） |
 | POST | `/auth/activate` | 应用签名 | **激活码 + 机器码激活**，返回令牌 |
 | POST | `/auth/qrcode` | 应用签名 | 生成微信扫码登录场景 |
 | GET | `/auth/qrcode/:scene` | 无（query 带 app_key） | 轮询扫码结果，确认后返回令牌 |
@@ -143,6 +144,8 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 | POST | `/license/verify` | 令牌 或 应用签名 | 校验授权是否有效 |
 | POST | `/license/heartbeat` | 用户令牌 | 心跳，刷新在线状态与版本 |
 | POST | `/license/unbind` | 用户令牌 | 解绑某台机器，释放名额 |
+| POST | `/license/bind` | 用户令牌 | **绑定卡密**（渠道印的未分配码） |
+| POST | `/license/ticket` | 用户令牌 | **离线票据**（Ed25519 签名，断网自证） |
 | POST | `/telemetry` | 用户令牌 | 上报使用数据（可选） |
 
 ---
@@ -209,6 +212,9 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 - 同一台机器重复激活**不会**重复占用名额（幂等）
 - 绑定机器数达到 `max_devices` 时返回 `409 MACHINE_LIMIT`
 - 授权被吊销 / 过期 / 产品不匹配时返回 403，见错误码表
+- **卡密还没被绑定**（渠道印的卡、用户还没领）返回 `403 LICENSE_UNASSIGNED`，此时应引导用户先登录绑定，而不是重新激活
+
+> 卡密池的码在**绑定那一刻**才起算有效期。一张印了半年的卡不会被白白扣掉半年，所以「先绑后激活」是正常流程。
 
 **机器码怎么生成**：建议取稳定硬件指纹（主板序列号 + CPU ID + 主硬盘序列号 + 首个网卡 MAC）做一次 SHA-256，取前 16~32 位。不要包含会变的信息（IP、系统时间、临时目录）。生成后本地持久化，重装系统时才重新生成。
 
@@ -289,7 +295,82 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
 
 若软件需要 RBAC / 多设备汇总（而不是单设备直连），用 `tb.username` + `tb.password` 登录 TB REST API 即可（登录接口 `/api/auth/login`）。
 
-### 5.5 扫码登录
+### 5.5 绑定卡密（未分配的码）
+
+`POST /license/bind`，需要 `Authorization: Bearer <access_token>`（用户必须已登录）
+
+```json
+{ "license_key": "LIC-XXXXXXXX-XXXXXXXX-XXXXXXXX" }
+```
+
+```json
+{ "ok": true, "already": false, "license": { "license_key": "...", "type": "subscription", "end_at": "2027-11-02T..." } }
+```
+
+- `already: true` 表示这张码本来就在该账号下，重复调用是安全的
+- 别人的码、不存在的码**都返回** `400 LICENSE_TAKEN / LICENSE_NOT_FOUND` 且提示语一致（「授权码无效或已被使用」）—— 不要试图从中区分，这是防枚举设计
+- 同一账号 10 分钟内失败 10 次会返回 `429 TOO_MANY_ATTEMPTS`
+- 绑定成功后这张码的 `start_at` = 当前时间，`end_at` = 当前时间 + 卡面时长
+
+> 面向最终用户时，"绑定"这个动作也可以完全交给网页端「我的授权」页面，客户端只需在激活失败拿到 `LICENSE_UNASSIGNED` 时把用户引导过去。
+
+### 5.6 离线票据（断网也能用，且改时间骗不过）
+
+`POST /license/ticket`，需要 `Authorization: Bearer <access_token>`
+
+```json
+{
+  "ticket": "v1.<payload_base64url>.<signature_base64url>",
+  "alg": "Ed25519",
+  "kid": "9f3a1c7b2d40e851",
+  "payload": {
+    "v": 1,
+    "license_id": 42,
+    "license_key": "LIC-XXXXXXXX-XXXXXXXX-XXXXXXXX",
+    "user_id": 12,
+    "machine_id": "A1B2C3D4E5F6",
+    "product_id": 3,
+    "plan": "subscription",
+    "max_devices": 2,
+    "offline_days": 7,
+    "iat": 1793600000,
+    "exp": 1794204800
+  },
+  "public_key": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n",
+  "expires_in": 604800,
+  "server_time": "2026-11-02T08:00:00.000Z"
+}
+```
+
+**签名算法（客户端自行实现，不要依赖网络）**
+
+1. `ticket` 按 `.` 切成三段：`v1` / `payload` / `signature`
+2. `payload` 是 base64url 解码后的 JSON —— 但**验签用的是原始的 payload 字符串**，不要重新序列化
+3. 用内置公钥验证 `Ed25519(payload_base64url_bytes, signature)`
+4. 校验 `payload.machine_id` 与本地机器码一致
+5. 校验 `now <= payload.exp`，且 `now >= payload.iat`（后者不满足说明系统时间被往回拨了）
+
+```js
+// Node 示例
+const crypto = require('crypto');
+const [ver, body, sig] = ticket.split('.');
+const ok = crypto.verify(null, Buffer.from(body, 'utf8'),
+  crypto.createPublicKey(EMBEDDED_PUBLIC_KEY),
+  Buffer.from(sig.replace(/-/g, '+').replace(/_/g, '/'), 'base64'));
+```
+
+**有效期语义**
+
+| `offline_days` | 票据 `exp` | 客户端策略 |
+|---|---|---|
+| `0` | 本次会话到期时间（≤2 小时） | 断网即锁功能，必须联网校验 |
+| `> 0` | `iat + offline_days` 天，且不超过授权到期时间 | 断网可用到 `exp`，超期必须联网换新票 |
+
+**公钥固定（重要）**：把 `public_key` 打进安装包，并用 `kid` 校验是否是同一把钥匙。**不要**在运行时从 `/app/pubkey` 拉公钥来验签 —— 那等于让中间人决定验签结果；该接口只用于排障与核对 `kid`。
+
+**服务端密钥**：私钥在 `data/offline-signing-key.json`（0600）。它丢失不影响登录，只让已发出的票据全部失效（客户端退化为联网校验），所以备份 `data` 目录时要一起备份。
+
+### 5.7 扫码登录
 
 1. `POST /auth/qrcode` → `{ scene, qrcode_url, url, mode, expires_at }`
    - `mode: "wechat"` 时把 `qrcode_url` 渲染成二维码给用户扫
@@ -298,14 +379,14 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
 3. 用户扫码确认后返回 `{ status: "confirmed", access_token, refresh_token, user }`
 4. `status` 还可能为 `pending` / `expired`
 
-### 5.6 手机号登录
+### 5.8 手机号登录
 
 1. `POST /auth/sms/send` body `{ "phone": "13800138000" }` → 返回 `{ ok: true }`（未接短信网关时响应里还有 `dev_code`，联调可直接用）
 2. `POST /auth/login/phone` body `{ "phone": "...", "code": "123456", "machine_id": "..." }`
 
 新手机号会**自动建档**，并按规则生成 TB 账户（`p_13800138000@tb.cn`，密码 `p_13800138000`）。
 
-### 5.7 刷新令牌
+### 5.9 刷新令牌
 
 `POST /auth/refresh`，body `{ "refresh_token": "ct_yyy" }` → 返回新的一对令牌，旧令牌立即失效。
 
@@ -323,6 +404,9 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
 | 401 | `UNAUTHORIZED` | 令牌过期或无效 | 用 refresh_token 续期，失败则重新登录 |
 | 401 | `REFRESH_INVALID` / `REFRESH_EXPIRED` | 刷新令牌无效/过期 | 强制重新登录或重新激活 |
 | 401 | `SESSION_REVOKED` | **该机器已被解绑，或授权被吊销/后台踢下线** | 不要重试、不要刷新，直接回激活页并说明原因 |
+| 403 | `LICENSE_UNASSIGNED` | 卡密还没绑定账号 | 引导用户登录后绑定（`/license/bind` 或网页「我的授权」） |
+| 400 | `LICENSE_TAKEN` | 这张码已绑到别的账号 | 提示「授权码无效或已被使用」，不要提示「属于别人」 |
+| 429 | `TOO_MANY_ATTEMPTS` | 绑定尝试过于频繁 | 提示 10 分钟后再试 |
 | 403 | `LICENSE_NOT_FOUND` | 授权码不存在 | 提示激活码错误 |
 | 403 | `LICENSE_REVOKED` | 授权被吊销 | 提示联系客服 |
 | 403 | `LICENSE_INACTIVE` | 授权未激活 | 同上 |

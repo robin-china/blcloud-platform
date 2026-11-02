@@ -260,39 +260,62 @@ window.PageLicenses = {
   template: `
   <div>
     <div class="toolbar">
-      <input class="input" v-model="q" placeholder="授权码 / 用户 / 产品" @keyup.enter="load" />
-      <select class="select" v-model="status">
-        <option value="">全部状态</option><option value="active">有效</option><option value="revoked">已吊销</option>
+      <input class="input" v-model="q" placeholder="授权码 / 用户 / 产品 / 渠道" @keyup.enter="load" />
+      <select class="select" v-model="status" @change="page=1;load()">
+        <option value="">全部状态</option>
+        <option value="bound">已绑定</option>
+        <option value="unassigned">未绑定（卡密池）</option>
+        <option value="revoked">已作废</option>
       </select>
-      <button class="btn" @click="load">查询</button>
+      <button class="btn" @click="page=1;load()">查询</button>
       <div class="spacer"></div>
-      <button class="btn primary" @click="openCreate">+ 发放授权</button>
+      <button class="btn" @click="openBatches">批次</button>
+      <button class="btn" @click="exportCsv">导出 CSV</button>
+      <button class="btn primary" @click="openCreate">+ 发放 / 印卡</button>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-body" style="display:flex;gap:26px;flex-wrap:wrap;font-size:13px">
+        <div><span style="color:var(--text-3)">已绑定</span> <b>{{ stats.bound || 0 }}</b></div>
+        <div><span style="color:var(--text-3)">未绑定（卡密池）</span> <b style="color:var(--warning,#b45309)">{{ stats.unassigned || 0 }}</b></div>
+        <div><span style="color:var(--text-3)">已作废</span> <b>{{ stats.revoked || 0 }}</b></div>
+        <div style="color:var(--text-3)">卡密池的码「绑定那一刻」才开始计时，印卡后放多久都不损耗有效期</div>
+      </div>
     </div>
 
     <div class="card">
       <div class="card-body tight">
         <div class="table-wrap">
           <table class="table">
-            <thead><tr><th>授权码</th><th>用户</th><th>产品</th><th>类型</th><th>设备数</th><th>有效期</th><th>状态</th><th style="width:200px">操作</th></tr></thead>
+            <thead><tr><th>授权码</th><th>批次 / 渠道</th><th>用户</th><th>产品</th><th>类型</th><th>设备数</th><th>有效期</th><th>状态</th><th style="width:230px">操作</th></tr></thead>
             <tbody>
               <tr v-for="l in list" :key="l.id">
                 <td style="font-family:ui-monospace,monospace;font-size:12.5px">{{ l.license_key }}</td>
-                <td>{{ l.nickname || '-' }}<div style="color:var(--text-3);font-size:12px">{{ l.phone || '' }}</div></td>
+                <td style="font-size:12px;color:var(--text-3)">
+                  {{ l.batch_no || '-' }}<div v-if="l.channel">{{ l.channel }}</div>
+                </td>
+                <td>
+                  <template v-if="l.user_id">{{ l.nickname || '-' }}<div style="color:var(--text-3);font-size:12px">{{ l.phone || '' }}</div></template>
+                  <span v-else class="tag warning">未绑定</span>
+                </td>
                 <td>{{ l.product_name }}</td>
-                <td>{{ l.type==='permanent'?'永久':'订阅' }}</td>
-                <td><button class="btn sm" @click="openDevices(l)">{{ l.bound_devices }} / {{ l.max_devices }}</button></td>
-                <td>{{ l.end_at ? fmt.date(l.end_at) : '永久' }}</td>
-                <td><span class="tag" :class="l.status==='active'?'success':'danger'">{{ l.status==='active'?'有效':'已吊销' }}</span></td>
+                <td>{{ typeText(l.type) }}<div v-if="l.status==='unassigned' && l.duration_days" style="font-size:12px;color:var(--text-3)">{{ l.duration_days }} 天</div></td>
+                <td><button class="btn sm" @click="openDevices(l)" :disabled="!l.user_id">{{ l.bound_devices }} / {{ l.max_devices }}</button></td>
+                <td>{{ l.end_at ? fmt.date(l.end_at) : (l.status==='unassigned' ? '绑定后起算' : '永久') }}</td>
+                <td>
+                  <span class="tag" :class="l.status==='active'?'success':l.status==='unassigned'?'warning':'danger'">{{ statusText(l.status) }}</span>
+                </td>
                 <td>
                   <div class="table-actions">
-                    <button class="btn sm" @click="extend(l)">续期</button>
+                    <button class="btn sm primary" v-if="l.status==='unassigned'" @click="openBind(l)">绑定用户</button>
+                    <button class="btn sm" @click="extend(l)">{{ l.status==='unassigned' ? '加时长' : '续期' }}</button>
                     <button class="btn sm" v-if="l.status==='active'" @click="revoke(l)">吊销</button>
                     <button class="btn sm" v-else @click="resume(l)">恢复</button>
                     <button class="btn sm danger" @click="remove(l)">删除</button>
                   </div>
                 </td>
               </tr>
-              <tr v-if="!list.length"><td colspan="8"><div class="empty">暂无授权记录</div></td></tr>
+              <tr v-if="!list.length"><td colspan="9"><div class="empty">暂无授权记录</div></td></tr>
             </tbody>
           </table>
         </div>
@@ -307,9 +330,19 @@ window.PageLicenses = {
 
     <div class="mask" v-if="editing" @click.self="editing=false">
       <div class="modal">
-        <div class="modal-head"><h3>发放授权</h3><button class="close-x" @click="editing=false">&times;</button></div>
+        <div class="modal-head"><h3>发放授权 / 印卡</h3><button class="close-x" @click="editing=false">&times;</button></div>
         <div class="modal-body">
-          <div class="field"><label>选择用户</label>
+          <div class="field">
+            <label>发放方式</label>
+            <select class="select" v-model="form.mode">
+              <option value="assigned">指定用户（立刻绑定）</option>
+              <option value="pool">卡密池（先发码，用户自己绑）</option>
+            </select>
+          </div>
+          <div class="hint" v-if="form.mode==='pool'">
+            卡密池的码不带用户、不带到期时间，用户登录后在「我的授权」里绑定，从绑定那一刻开始计时。
+          </div>
+          <div class="field" v-if="form.mode==='assigned'"><label>选择用户</label>
             <select class="select" v-model="form.user_id">
               <option v-for="u in users" :key="u.id" :value="u.id">{{ u.nickname || '未命名' }} · {{ u.phone || u.openid }}</option>
             </select>
@@ -325,7 +358,11 @@ window.PageLicenses = {
             </div>
             <div class="field"><label>设备数上限</label><input class="input" type="number" v-model.number="form.max_devices" /></div>
           </div>
-          <div class="field" v-if="form.type!=='permanent'"><label>有效天数</label><input class="input" type="number" v-model.number="form.days" /></div>
+          <div class="field" v-if="form.type!=='permanent'">
+            <label>{{ form.mode==='pool' ? '有效天数（绑定后起算）' : '有效天数' }}</label>
+            <input class="input" type="number" v-model.number="form.days" />
+          </div>
+          <div class="field"><label>渠道（可选，如 京东 / 华东代理）</label><input class="input" v-model="form.channel" /></div>
           <div class="field"><label>备注</label><input class="input" v-model="form.remark" /></div>
           <div class="field">
             <label>数量（大于 1 则批量生成，最多 200）</label>
@@ -334,8 +371,59 @@ window.PageLicenses = {
         </div>
         <div class="modal-foot">
           <button class="btn" @click="editing=false">取消</button>
-          <button class="btn primary" @click="save">发放</button>
+          <button class="btn primary" @click="save">生成</button>
         </div>
+      </div>
+    </div>
+
+    <div class="mask" v-if="bindLic" @click.self="bindLic=null">
+      <div class="modal" style="max-width:460px">
+        <div class="modal-head"><h3>绑定卡密</h3><button class="close-x" @click="bindLic=null">&times;</button></div>
+        <div class="modal-body">
+          <div class="hint">授权码 <b style="font-family:ui-monospace,monospace">{{ bindLic.license_key }}</b> 绑给哪个用户？绑定后从此刻开始计时。</div>
+          <div class="field"><label>用户</label>
+            <select class="select" v-model="bindUserId">
+              <option v-for="u in users" :key="u.id" :value="u.id">{{ u.nickname || '未命名' }} · {{ u.phone || u.openid }}</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" @click="bindLic=null">取消</button>
+          <button class="btn primary" @click="doBind">绑定</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="mask" v-if="batches" @click.self="batches=null">
+      <div class="modal" style="max-width:820px">
+        <div class="modal-head"><h3>批次</h3><button class="close-x" @click="batches=null">&times;</button></div>
+        <div class="modal-body">
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>批次号</th><th>产品</th><th>渠道</th><th>总数</th><th>已领</th><th>未领</th><th>作废</th><th>创建</th><th style="width:190px">操作</th></tr></thead>
+              <tbody>
+                <tr v-for="b in batches" :key="b.batch_no">
+                  <td style="font-family:ui-monospace,monospace;font-size:12px">{{ b.batch_no }}</td>
+                  <td>{{ b.product_name }}</td>
+                  <td>{{ b.channel || '-' }}</td>
+                  <td>{{ b.total }}</td>
+                  <td>{{ b.bound }}</td>
+                  <td><b :style="b.unassigned?'color:var(--warning,#b45309)':''">{{ b.unassigned }}</b></td>
+                  <td>{{ b.revoked }}</td>
+                  <td style="font-size:12px">{{ fmt.date(b.created_at) }}</td>
+                  <td>
+                    <div class="table-actions">
+                      <button class="btn sm" @click="copyBatchKeys(b)">复制未领码</button>
+                      <button class="btn sm danger" v-if="b.unassigned" @click="revokeBatch(b)">作废未领</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="!batches.length"><td colspan="9"><div class="empty">还没有批次（单张发放不计批次）</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-foot"><button class="btn" @click="batches=null">关闭</button></div>
       </div>
     </div>
 
@@ -369,10 +457,11 @@ window.PageLicenses = {
 
     <div class="mask" v-if="batchResult" @click.self="batchResult=null">
       <div class="modal">
-        <div class="modal-head"><h3>已批量发放 {{ batchResult.count }} 个授权码</h3><button class="close-x" @click="batchResult=null">&times;</button></div>
+        <div class="modal-head"><h3>已生成 {{ batchResult.count }} 个授权码</h3><button class="close-x" @click="batchResult=null">&times;</button></div>
         <div class="modal-body">
           <div style="color:var(--text-3);font-size:12.5px;margin-bottom:10px">
-            {{ batchResult.product }} · 复制后分发，关闭后可在列表里按用户/产品筛出来
+            {{ batchResult.product }} · 批次 {{ batchResult.batch_no }}
+            {{ batchResult.mode==='pool' ? '· 未绑定用户，用户领取后自行绑定' : '' }}
           </div>
           <textarea class="input" style="height:220px;font-family:ui-monospace,monospace;font-size:12px" readonly :value="batchText"></textarea>
         </div>
@@ -389,6 +478,7 @@ window.PageLicenses = {
     const users = ref([]);
     const products = ref([]);
     const total = ref(0);
+    const stats = ref({});
     const page = ref(1);
     const q = ref('');
     const status = ref('');
@@ -396,40 +486,127 @@ window.PageLicenses = {
     const devLic = ref(null);
     const devices = ref([]);
     const batchResult = ref(null);
+    const batches = ref(null);
+    const bindLic = ref(null);
+    const bindUserId = ref('');
     // 换行必须在 setup 里拼：写进模板会被模板字面量先求值成真实换行，Vue 编译报错
     const batchText = computed(() => (batchResult.value ? batchResult.value.license_keys.join('\n') : ''));
-    const form = reactive({ user_id: '', product_id: '', type: 'permanent', max_devices: 1, days: 365, remark: '', count: 1 });
+    const form = reactive({
+      mode: 'assigned', user_id: '', product_id: '', type: 'permanent',
+      max_devices: 1, days: 365, remark: '', count: 1, channel: '',
+    });
     const fmt = U.fmt;
     const pages = computed(() => Math.max(1, Math.ceil(total.value / 20)));
+    const typeText = (t) => ({ permanent: '永久', subscription: '订阅', trial: '试用' }[t] || t);
+    const statusText = (s) => ({ active: '有效', unassigned: '未绑定', revoked: '已作废' }[s] || s);
 
     async function load() {
       const res = await U.api.get(`/api/licenses?page=${page.value}&pageSize=20&q=${encodeURIComponent(q.value)}&status=${status.value}`);
       list.value = res.list;
       total.value = res.total;
+      stats.value = res.stats || {};
     }
 
-    async function openCreate() {
+    async function loadRefs() {
+      if (users.value.length && products.value.length) return;
       const u = await U.api.get('/api/users?pageSize=100');
       users.value = u.list;
       const p = await U.api.get('/api/products?pageSize=100');
       products.value = p.list;
-      Object.assign(form, { user_id: u.list[0]?.id || '', product_id: p.list[0]?.id || '', type: 'permanent', max_devices: 1, days: 365, remark: '', count: 1 });
+    }
+
+    async function openCreate() {
+      await loadRefs();
+      Object.assign(form, {
+        mode: 'assigned', user_id: users.value[0] ? users.value[0].id : '',
+        product_id: products.value[0] ? products.value[0].id : '',
+        type: 'permanent', max_devices: 1, days: 365, remark: '', count: 1, channel: '',
+      });
       editing.value = true;
     }
 
     async function save() {
-      if (!form.user_id || !form.product_id) return U.toast('请选择用户与产品', 'error');
+      if (!form.product_id) return U.toast('请选择产品', 'error');
+      if (form.mode === 'assigned' && !form.user_id) return U.toast('请选择用户，或改为卡密池', 'error');
+      const payload = { ...form };
+      if (form.mode === 'pool') payload.user_id = 0;
       try {
         if (Number(form.count) > 1) {
-          const res = await U.api.post('/api/licenses/batch', form);
+          const res = await U.api.post('/api/licenses/batch', payload);
           batchResult.value = res;
-          U.toast(`已批量发放 ${res.count} 个授权码`, 'success');
+          U.toast(`已生成 ${res.count} 个授权码`, 'success');
         } else {
-          const res = await U.api.post('/api/licenses', form);
-          U.toast(`授权已发放：${res.license_key}`, 'success');
+          const res = await U.api.post('/api/licenses', payload);
+          U.toast(res.status === 'unassigned' ? `已生成卡密：${res.license_key}` : `授权已发放：${res.license_key}`, 'success');
         }
         editing.value = false;
+        page.value = 1;
         load();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
+    async function openBind(l) {
+      await loadRefs();
+      bindLic.value = l;
+      bindUserId.value = users.value[0] ? users.value[0].id : '';
+    }
+
+    async function doBind() {
+      if (!bindUserId.value) return U.toast('请选择用户', 'error');
+      try {
+        await U.api.post(`/api/licenses/${bindLic.value.id}/bind`, { user_id: bindUserId.value });
+        U.toast('已绑定，有效期从此刻开始计算', 'success');
+        bindLic.value = null;
+        load();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
+    async function openBatches() {
+      const res = await U.api.get('/api/licenses/batches');
+      batches.value = res.list;
+    }
+
+    async function copyBatchKeys(b) {
+      const res = await U.api.get(`/api/licenses/batches/${encodeURIComponent(b.batch_no)}/keys?unbound=1`);
+      const text = res.list.map((x) => x.license_key).join('\n');
+      if (!text) return U.toast('这批没有未领取的码', 'error');
+      copyToClipboard(text, `已复制 ${res.list.length} 个未领取的码`);
+    }
+
+    function copyToClipboard(text, okMsg) {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text)
+          .then(() => U.toast(okMsg, 'success'), () => window.prompt('手动复制', text));
+      } else {
+        window.prompt('手动复制', text);
+      }
+    }
+
+    async function revokeBatch(b) {
+      if (!confirm(`作废批次 ${b.batch_no} 里 ${b.unassigned} 个还没被领取的码？作废后无法再绑定。`)) return;
+      const res = await U.api.post(`/api/licenses/batches/${encodeURIComponent(b.batch_no)}/revoke`, {});
+      U.toast(`已作废 ${res.revoked} 个`, 'success');
+      openBatches();
+      load();
+    }
+
+    /* 导出走原生 fetch：U.api 只解析 JSON，拿不到 CSV 流 */
+    async function exportCsv() {
+      const token = U.api.getToken('admin');
+      const qs = new URLSearchParams({ q: q.value, status: status.value });
+      const url = `${U.basePath}/api/licenses/export.csv?${qs.toString()}`;
+      try {
+        const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+        if (!res.ok) throw new Error(`导出失败 ${res.status}`);
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `licenses-${new Date().toISOString().slice(0, 10)}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        U.toast('已导出当前筛选结果', 'success');
       } catch (e) { U.toast(e.message, 'error'); }
     }
 
@@ -452,25 +629,19 @@ window.PageLicenses = {
     }
 
     function copyBatch() {
-      const text = batchResult.value.license_keys.join('\n');
-      if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(text)
-          .then(() => U.toast('已复制全部授权码', 'success'), () => window.prompt('手动复制', text));
-      } else {
-        window.prompt('手动复制', text);
-      }
+      copyToClipboard(batchResult.value.license_keys.join('\n'), '已复制全部授权码');
     }
 
     async function extend(l) {
-      const d = prompt('续期天数', '30');
+      const d = prompt(l.status === 'unassigned' ? '增加多少天（绑定后生效）' : '续期天数', '30');
       if (d == null) return;
       await U.api.post(`/api/licenses/${l.id}/extend`, { days: Number(d) });
-      U.toast('已续期', 'success');
+      U.toast('已处理', 'success');
       load();
     }
 
     async function revoke(l) {
-      if (!confirm('确定吊销该授权？')) return;
+      if (!confirm('确定吊销该授权？该授权下所有机器会立即掉线。')) return;
       await U.api.post(`/api/licenses/${l.id}/revoke`, {});
       load();
     }
@@ -487,8 +658,10 @@ window.PageLicenses = {
     }
 
     onMounted(load);
-    return { list, users, products, total, page, pages, q, status, editing, form, fmt, load, openCreate, save,
-      extend, revoke, resume, remove, devLic, devices, batchResult, batchText, openDevices, unbindDevice, copyBatch };
+    return { list, users, products, total, stats, page, pages, q, status, editing, form, fmt, load, openCreate, save,
+      extend, revoke, resume, remove, devLic, devices, batchResult, batchText, openDevices, unbindDevice, copyBatch,
+      batches, openBatches, copyBatchKeys, revokeBatch, exportCsv, bindLic, bindUserId, openBind, doBind,
+      typeText, statusText };
   },
 };
 })();

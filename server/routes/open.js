@@ -9,6 +9,8 @@ const { getConfig } = require('../lib/config');
 const { verifySignature, issueSession, requireClient, getSession, getSessionState, touchSession, revokeSession } = require('../lib/openauth');
 const wechatService = require('../services/wechat');
 const { ensureUser } = require('../routes/wechat');
+const offlineKey = require('../lib/offlinekey');
+const bindSvc = require('../lib/licensebind');
 
 const ACCESS_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -38,6 +40,10 @@ async function withApp(req, reply) {
 function licenseState(lic) {
   if (!lic) return { valid: false, reason: '授权不存在', code: 'LICENSE_NOT_FOUND' };
   if (lic.status === 'revoked') return { valid: false, reason: '授权已被吊销', code: 'LICENSE_REVOKED' };
+  // 卡密池里的码还没绑账号：要说清楚「登录后绑定」，否则用户只会看到「授权未激活」
+  if (lic.status === 'unassigned' || !lic.user_id) {
+    return { valid: false, reason: '该授权码尚未绑定账号，请登录后在「我的授权」中绑定', code: 'LICENSE_UNASSIGNED' };
+  }
   if (lic.status !== 'active') return { valid: false, reason: '授权未激活', code: 'LICENSE_INACTIVE' };
   if (lic.end_at && new Date(lic.end_at).getTime() < Date.now()) {
     return { valid: false, reason: '授权已过期', code: 'LICENSE_EXPIRED' };
@@ -110,6 +116,15 @@ module.exports = async function openRoutes(app) {
       force_update: false,
       server_time: now(),
     };
+  });
+
+  /**
+   * 离线票据验签公钥。客户端应当把它**内置在安装包里**并固定（pinning）：
+   * 运行时从网络拉公钥等于把验签交给中间人决定，这个接口只在排障时对照 kid 用。
+   */
+  app.get('/api/open/v1/app/pubkey', async (req, reply) => {
+    if (!(await withApp(req, reply))) return;
+    return offlineKey.publicKey();
   });
 
   /* ---------------- 激活 ---------------- */
@@ -429,6 +444,84 @@ module.exports = async function openRoutes(app) {
       db.prepare('UPDATE client_sessions SET status = ? WHERE id = ?').run('revoked', req.session.id);
     }
     return { ok: true, license: licensePayload(lic) };
+  });
+
+  /**
+   * 离线票据：让客户端在断网时也能证明「这台机器在某个时刻确实有有效授权」。
+   *
+   * 用 Ed25519 签名，客户端只拿公钥验签 —— 公钥泄露无所谓，私钥在服务器上。
+   * 票据里带 exp（硬到期）与 iat（签发时刻），客户端两样都要校验：
+   *   - 本地时间 > exp  → 过期，必须联网
+   *   - 本地时间 < iat  → 系统时间被往回拨了，视为过期
+   * 这样「改本机时间无限续命」这条路就走不通了。
+   */
+  app.post('/api/open/v1/license/ticket', async (req, reply) => {
+    if (!(await requireClient(req, reply))) return;
+    touchSession(req.session, clientIp(req));
+    const lic = req.session.license_id
+      ? db.prepare('SELECT * FROM licenses WHERE id = ?').get(req.session.license_id) : null;
+    if (!lic) return reply.code(404).send({ error: '会话未绑定授权', code: 'LICENSE_NOT_BOUND' });
+    const st = licenseState(lic);
+    if (!st.valid) return reply.code(403).send({ valid: false, ...st });
+
+    const appRow = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(req.session.app_id);
+    const offlineDays = Number((appRow && appRow.offline_days) || 0);
+    const iat = Date.now();
+    // offline_days = 0 表示必须联网：票据只覆盖本次会话，不额外给离线时长
+    const graceMs = offlineDays > 0 ? offlineDays * 86400000 : ACCESS_TTL_MS;
+    let exp = iat + graceMs;
+    if (lic.end_at) exp = Math.min(exp, new Date(lic.end_at).getTime());
+    if (req.session.expires_at) {
+      const se = new Date(req.session.expires_at).getTime();
+      if (offlineDays <= 0 && se > iat) exp = Math.min(exp, se);
+    }
+
+    const payload = {
+      v: 1,
+      license_id: lic.id,
+      license_key: lic.license_key,
+      user_id: req.session.user_id,
+      machine_id: req.session.machine_id || '',
+      product_id: lic.product_id,
+      plan: lic.type,
+      max_devices: lic.max_devices,
+      offline_days: offlineDays,
+      iat: Math.floor(iat / 1000),
+      exp: Math.floor(exp / 1000),
+    };
+    const signed = offlineKey.issue(payload);
+    db.prepare('UPDATE client_sessions SET last_seen_at = ? WHERE id = ?').run(now(), req.session.id);
+    return {
+      ticket: signed.ticket,
+      alg: signed.alg,
+      kid: signed.kid,
+      payload,
+      public_key: signed.public_key,
+      expires_in: Math.max(0, Math.floor((exp - iat) / 1000)),
+      server_time: now(),
+    };
+  });
+
+  /**
+   * 客户端绑定卡密（已登录）。线下买卡 / 渠道发卡的场景：
+   * 用户先登录，再把卡上的码贴进来，绑定后这张码才开始计时。
+   */
+  app.post('/api/open/v1/license/bind', async (req, reply) => {
+    if (!(await requireClient(req, reply))) return;
+    touchSession(req.session, clientIp(req));
+    const g = bindSvc.guard(req.session.user_id);
+    if (!g.ok) return reply.code(429).send({ error: g.reason, code: g.code });
+    const key = String((req.body || {}).license_key || '').trim();
+    if (!key) return reply.code(400).send({ error: '缺少 license_key', code: 'PARAM_MISSING' });
+    const lic = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(key);
+    const res = bindSvc.bind(lic, req.session.user_id, 'self');
+    if (!res.ok) {
+      bindSvc.noteFail(req.session.user_id);
+      return reply.code(400).send({ error: res.reason, code: res.code });
+    }
+    bindSvc.noteSuccess(req.session.user_id);
+    if (req.app && req.app.id) track(req.session.user_id, req.app.app_key, 'license.bind');
+    return { ok: true, already: !!res.already, license: licensePayload(res.license) };
   });
 
   /* ---------------- 遥测上报 ---------------- */

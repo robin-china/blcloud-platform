@@ -290,6 +290,19 @@ window.PageSpace = {
 window.PageMyLicenses = {
   template: `
   <div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-head"><h3>绑定授权码</h3></div>
+      <div class="card-body">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <input class="input" style="max-width:340px;font-family:ui-monospace,monospace"
+                 v-model="keyInput" placeholder="LIC-XXXX-XXXX-XXXX-XXXX"
+                 @keyup.enter="bindKey" />
+          <button class="btn primary" :disabled="binding" @click="bindKey">{{ binding ? '绑定中…' : '绑定' }}</button>
+          <span style="color:var(--text-3);font-size:12.5px">买到实体卡 / 渠道发的码，在这里绑定，从绑定这一刻开始计算有效期</span>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-head">
         <h3>我的授权</h3>
@@ -354,7 +367,22 @@ window.PageMyLicenses = {
     const list = ref([]);
     const cur = ref(null);
     const devices = ref([]);
+    const keyInput = ref('');
+    const binding = ref(false);
     const fmt = U.fmt;
+
+    async function bindKey() {
+      const key = String(keyInput.value || '').trim();
+      if (!key) { U.toast('请输入授权码', 'error'); return; }
+      binding.value = true;
+      try {
+        const res = await U.api.post('/api/portal/licenses/bind', { license_key: key });
+        U.toast(res.already ? '这张码已经在你的账号下了' : '绑定成功，有效期从现在开始计算', 'success');
+        keyInput.value = '';
+        await load();
+      } catch (e) { U.toast(e.message, 'error'); }
+      finally { binding.value = false; }
+    }
 
     async function load() {
       list.value = (await U.api.get('/api/portal/licenses')).list;
@@ -394,7 +422,7 @@ window.PageMyLicenses = {
       await load();
     });
 
-    return { list, cur, devices, fmt, openDevices, unbind, copy, typeText };
+    return { list, cur, devices, fmt, openDevices, unbind, copy, typeText, keyInput, binding, bindKey };
   },
 };
 

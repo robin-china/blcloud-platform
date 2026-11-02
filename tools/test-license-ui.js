@@ -61,6 +61,13 @@ const LICENSE = {
   start_at: '2026-10-01T00:00:00.000Z', end_at: null, status: 'active',
   bound_devices: 1, nickname: '李雷', phone: '13800138000',
 };
+const POOL_LIC = {
+  id: 9, license_key: 'LIC-9F8E7D6C-5B4A3928-17061504', user_id: 0, product_id: 2,
+  product_name: '花盆卫士 PC 客户端', type: 'subscription', max_devices: 1,
+  start_at: '2026-10-01T00:00:00.000Z', end_at: null, status: 'unassigned',
+  bound_devices: 0, batch_no: 'B20261102-AB12', channel: '华东代理', duration_days: 365,
+  nickname: null, phone: null,
+};
 const MACHINE = {
   id: 11, license_id: 7, device_sn: 'MACHINE-A', device_name: '李雷的笔记本',
   last_version: '1.2.0', last_ip: '1.2.3.4', last_seen_at: '2026-11-02T02:00:00.000Z',
@@ -79,8 +86,20 @@ const MACHINE = {
       api: {
         get: async (u) => {
           calls.push(['GET', String(u)]);
+          if (String(u).includes('/batches/') && String(u).includes('/keys')) return { list: [{ license_key: 'LIC-9F8E7D6C-5B4A3928-17061504' }] };
+          if (String(u) === '/api/licenses/batches') {
+            return { list: [{ batch_no: 'B20261102-AB12', product_name: '花盆卫士 PC 客户端', channel: '华东代理', total: 10, bound: 4, unassigned: 6, revoked: 0, created_at: '2026-11-02T02:00:00.000Z' }] };
+          }
           if (String(u).startsWith('/api/licenses/')) return { list: [MACHINE], max_devices: 2 };
-          if (String(u).startsWith('/api/licenses')) return { list: [LICENSE], total: 1 };
+          if (String(u).startsWith('/api/licenses')) {
+            return { list: [LICENSE, POOL_LIC], total: 2, stats: { bound: 1, unassigned: 1, revoked: 0 } };
+          }
+          if (String(u).startsWith('/api/users')) {
+            return { list: [{ id: 3, nickname: '李雷', phone: '13800138000' }], total: 1 };
+          }
+          if (String(u).startsWith('/api/products')) {
+            return { list: [{ id: 2, name: '花盆卫士 PC 客户端', type: 'software' }], total: 1 };
+          }
           return { list: [], total: 0 };
         },
         post: async (u) => { calls.push(['POST', String(u)]); return { ok: true, license_key: 'LIC-AAAA' }; },
@@ -112,13 +131,47 @@ const MACHINE = {
       }
     }
 
-    const createBtn = [...doc.querySelectorAll('button')].find((b) => b.textContent.trim() === '+ 发放授权');
-    check('存在「+ 发放授权」按钮', !!createBtn);
+    check('卡密池统计显示未绑定数量', /未绑定（卡密池）\s*1/.test(text()), text().slice(0, 400));
+    check('未绑定的码标出「未绑定」', text().includes('未绑定'), text().slice(0, 400));
+    check('未绑定的码显示「绑定后起算」', text().includes('绑定后起算'), text().slice(0, 400));
+    check('未绑定的码显示批次与渠道', text().includes('B20261102-AB12') && text().includes('华东代理'));
+
+    const createBtn = [...doc.querySelectorAll('button')].find((b) => b.textContent.trim() === '+ 发放 / 印卡');
+    check('存在「+ 发放 / 印卡」按钮', !!createBtn);
     if (createBtn) {
       click(win, createBtn);
       await wait(250);
       check('发放弹窗有「数量」字段（批量发码入口）', text().includes('数量（大于 1 则批量生成'), text().slice(-300));
+      check('发放弹窗有「卡密池」选项', text().includes('卡密池（先发码，用户自己绑）'), text().slice(-500));
+      const modeSel = doc.querySelector('select');
+      check('默认是「指定用户」模式', text().includes('选择用户'));
     }
+
+    const bindBtn = [...doc.querySelectorAll('button')].find((b) => b.textContent.trim() === '绑定用户');
+    check('未绑定的码有「绑定用户」按钮', !!bindBtn, [...doc.querySelectorAll('button')].map((b) => b.textContent.trim()).join('|'));
+    if (bindBtn) {
+      click(win, bindBtn);
+      await wait(200);
+      check('打开绑定弹窗', text().includes('绑给哪个用户'), text().slice(-300));
+      const ok = [...doc.querySelectorAll('button')].find((b) => b.textContent.trim() === '绑定');
+      if (ok) {
+        click(win, ok);
+        await wait(200);
+        check('绑定发出 POST /api/licenses/9/bind',
+          calls.some(([m, u]) => m === 'POST' && u === '/api/licenses/9/bind'), JSON.stringify(calls));
+      }
+    }
+
+    const batchBtn = [...doc.querySelectorAll('button')].find((b) => b.textContent.trim() === '批次');
+    check('存在「批次」按钮', !!batchBtn, [...doc.querySelectorAll('button')].map((b) => b.textContent.trim()).join('|'));
+    if (batchBtn) {
+      click(win, batchBtn);
+      await wait(250);
+      check('批次弹窗列出批次号', text().includes('B20261102-AB12'), text().slice(-400));
+      check('批次弹窗显示未领数量', text().includes('未领'));
+      check('批次弹窗有「复制未领码」', text().includes('复制未领码'));
+    }
+    check('存在「导出 CSV」按钮', [...doc.querySelectorAll('button')].some((b) => b.textContent.trim() === '导出 CSV'));
     win.close();
   }
 
@@ -136,7 +189,7 @@ const MACHINE = {
           if (String(u).includes('/devices')) return { list: [MACHINE], max_devices: 2 };
           return { list: [LICENSE] };
         },
-        post: async () => ({ ok: true }),
+        post: async (u) => { calls.push(['POST', String(u)]); return { ok: true, already: false }; },
         del: async (u) => { calls.push(['DEL', String(u)]); return { ok: true, freed: 1 }; },
       },
     };
@@ -149,6 +202,20 @@ const MACHINE = {
     check('用户端授权页零渲染错误', errors.length === 0, errors.join(' ; '));
     check('显示绑定数量 1 / 2', /1\s*\/\s*2/.test(text()), text().slice(0, 200));
     check('有复制与设备按钮', [...doc.querySelectorAll('button')].some((b) => b.textContent.trim() === '设备'));
+    check('有「绑定授权码」入口', text().includes('绑定授权码'), text().slice(0, 300));
+    check('绑定输入框存在', !!doc.querySelector('input[placeholder="LIC-XXXX-XXXX-XXXX-XXXX"]'));
+    const bindBtnU = [...doc.querySelectorAll('button')].find((b) => b.textContent.trim() === '绑定');
+    check('有绑定按钮', !!bindBtnU);
+    if (bindBtnU) {
+      const input = doc.querySelector('input[placeholder="LIC-XXXX-XXXX-XXXX-XXXX"]');
+      input.value = 'LIC-9F8E7D6C-5B4A3928-17061504';
+      input.dispatchEvent(new win.Event('input', { bubbles: true }));
+      await wait(50);
+      click(win, bindBtnU);
+      await wait(250);
+      check('绑定走用户端接口 /api/portal/licenses/bind',
+        calls.some(([m, u]) => m === 'POST' && u === '/api/portal/licenses/bind'), JSON.stringify(calls));
+    }
 
     const devBtn = [...doc.querySelectorAll('button')].find((b) => b.textContent.trim() === '设备');
     if (devBtn) {

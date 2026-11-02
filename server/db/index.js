@@ -37,7 +37,18 @@ ensureColumn('products', 'quota', 'quota INTEGER DEFAULT 0');
 ensureColumn('orders', 'deliver_result', 'deliver_result TEXT DEFAULT \'\'');
 // 物联账户开通失败的原因存下来：否则管理员只能看到一个「待激活」，不知道卡在哪一步
 ensureColumn('users', 'tb_message', 'tb_message TEXT DEFAULT \'\'');
+// 卡密池：渠道要先印卡、客户后注册，码必须能「先发出去、后绑定账号」。
+// user_id 保持 NOT NULL（SQLite 改列要重建表，风险大），用 0 表示未分配；
+// status = 'unassigned' 的码在绑定前不允许激活。
+ensureColumn('licenses', 'batch_no', 'batch_no TEXT DEFAULT \'\'');
+ensureColumn('licenses', 'channel', 'channel TEXT DEFAULT \'\'');
+ensureColumn('licenses', 'bound_at', 'bound_at TEXT DEFAULT \'\'');
+ensureColumn('licenses', 'bound_by', 'bound_by TEXT DEFAULT \'\'');
+// 卡密池有效期从「绑定/首次激活」起算，而不是印卡那天；
+// 所以要单独记住这张码的时长，否则三个月前印的卡白丢三个月。
+ensureColumn('licenses', 'duration_days', 'duration_days INTEGER DEFAULT 0');
 db.exec('CREATE INDEX IF NOT EXISTS idx_license_devices_machine ON license_devices(machine_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_licenses_batch ON licenses(batch_no)');
 
 // 常见弱口令：命中即强制登录后修改密码
 const WEAK_PASSWORDS = ['admin123', 'admin', '123456', '12345678', 'admin888', 'password', 'root', 'test123'];
