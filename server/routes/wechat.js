@@ -5,6 +5,7 @@ const { signUser } = require('../lib/auth');
 const wechat = require('../services/wechat');
 const wxdiag = require('../lib/wxdiag');
 const tb = require('../services/tb');
+const plans = require('../lib/plans');
 
 async function ensureUser(openid, profile = {}) {
   let user = db.prepare('SELECT * FROM users WHERE openid = ?').get(openid);
@@ -23,6 +24,9 @@ async function ensureUser(openid, profile = {}) {
       console.log(`[tb] 补开 ${res.username} → ${res.status}：${res.message}`);
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
     }
+    // 历史账号补发免费档授权：软件端 activate 强制要 license_key，
+    // 没有码就登不进来。已有任何授权（含付费）则不发，避免列表里多出废码。
+    plans.ensureFreeLicense(user.id);
     return { user, isNew: false };
   }
   const info = db.prepare('INSERT INTO users (openid, unionid, nickname, avatar, phone, points, status, created_at, last_login_at) VALUES (?,?,?,?,?,?,?,?,?)')
@@ -46,6 +50,8 @@ async function ensureUser(openid, profile = {}) {
   }
   const date = new Date().toISOString().slice(0, 10);
   db.prepare('INSERT INTO stats_daily (date, new_users) VALUES (?,1) ON CONFLICT(date) DO UPDATE SET new_users = new_users + 1').run(date);
+  // 注册即发一张免费档授权码，让所有档位共用同一套 activate / verify / heartbeat 链路
+  plans.ensureFreeLicense(user.id);
   return { user, isNew: true };
 }
 

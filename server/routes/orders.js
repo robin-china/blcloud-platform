@@ -6,6 +6,7 @@ const tb = require('../services/tb');
 const { addDays } = require('./licenses');
 const { deliverOrder } = require('../services/deliver');
 const { markPaid } = require('../services/pay');
+const commission = require('../lib/commission');
 const paydiag = require('../lib/paydiag');
 
 module.exports = async function orderRoutes(app) {
@@ -107,8 +108,24 @@ module.exports = async function orderRoutes(app) {
       }
     }
     db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('refunded', order.id);
+    // 授权吊销必须同时踢掉客户端会话，否则名额释放了、老令牌还能继续用
+    db.prepare(`UPDATE client_sessions SET status = 'revoked'
+      WHERE license_id IN (SELECT id FROM licenses WHERE order_id = ?)`).run(order.id);
     db.prepare('UPDATE licenses SET status = ? WHERE order_id = ?').run('revoked', order.id);
-    return { ok: true };
+    // 佣金冲正：付款→代理商提现→用户退款 这条链路不堵住就是净亏钱
+    const reversed = commission.reverseForOrder(order.id);
+    // 消费返的积分也要收回来（此前退款只改状态，积分白送）
+    const gained = Math.floor(order.pay_amount);
+    if (gained > 0) {
+      const buyer = db.prepare('SELECT points FROM users WHERE id = ?').get(order.user_id);
+      if (buyer) {
+        const balance = Math.max(0, Number(buyer.points || 0) - gained);
+        db.prepare('UPDATE users SET points = ? WHERE id = ?').run(balance, order.user_id);
+        db.prepare('INSERT INTO points_logs (user_id, change, balance, reason, created_at) VALUES (?,?,?,?,?)')
+          .run(order.user_id, -gained, balance, `订单 ${order.order_no} 退款收回积分`, now());
+      }
+    }
+    return { ok: true, reversed_commissions: reversed };
   });
 
   app.get('/api/stats/revenue', async (req, reply) => {

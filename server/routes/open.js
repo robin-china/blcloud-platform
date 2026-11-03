@@ -4,13 +4,15 @@
  *  2) 用户级：Authorization: Bearer <access_token>，登录后访问个人数据
  */
 const db = require('../db');
+const crypto = require('crypto');
 const { now, today, genScene, genCode } = require('../lib/util');
-const { getConfig } = require('../lib/config');
+const { getConfig, basePath } = require('../lib/config');
 const { verifySignature, issueSession, requireClient, getSession, getSessionState, touchSession, revokeSession } = require('../lib/openauth');
 const wechatService = require('../services/wechat');
 const { ensureUser } = require('../routes/wechat');
 const offlineKey = require('../lib/offlinekey');
 const bindSvc = require('../lib/licensebind');
+const plans = require('../lib/plans');
 
 const ACCESS_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -23,6 +25,21 @@ function track(userId, apiKey, endpoint) {
 
 function clientIp(req) {
   return String(req.ip || req.headers['x-forwarded-for'] || '');
+}
+
+/**
+ * 对外可访问的站点根地址（含子路径前缀）。
+ *
+ * 生产是 `www.bliot.cn/platform/` 这种子路径部署，写死域名换环境就废，
+ * 所以按请求头现拼：反代下取 x-forwarded-proto / x-forwarded-host（TRUST_PROXY=1 已开）。
+ */
+function publicBase(req) {
+  // trustProxy 打开时 req.protocol 已经取了反代透传的真实协议；本地直连时它就是 http。
+  // 不要硬默认 https —— 本机自测会生成一个根本打不开的链接。
+  const proto =
+    String(req.protocol || req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim() || 'http'
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim()
+  return `${proto}://${host}${basePath()}`
 }
 
 /* 应用签名守卫 */
@@ -53,12 +70,14 @@ function licenseState(lic) {
 
 function licensePayload(lic) {
   const product = db.prepare('SELECT id, name, type, version, icon FROM products WHERE id = ?').get(lic.product_id);
+  const ent = plans.licenseEntitlement(lic);
   const bound = db.prepare('SELECT COUNT(*) AS c FROM license_devices WHERE license_id = ?').get(lic.id).c;
   return {
     license_key: lic.license_key,
     license_id: lic.id,
     product_id: lic.product_id,
-    product_name: product ? product.name : '',
+    // 套餐授权 product_id=0（schema 该列 NOT NULL），JOIN 不到商品时用档位名兜底
+    product_name: product ? product.name : (ent.plan_name || '套餐授权'),
     product_type: product ? product.type : '',
     type: lic.type,
     start_at: lic.start_at,
@@ -66,6 +85,8 @@ function licensePayload(lic) {
     status: lic.status,
     max_devices: lic.max_devices,
     bound_devices: bound,
+    plan: ent.plan_code,
+    entitlement: ent,
   };
 }
 
@@ -113,6 +134,12 @@ module.exports = async function openRoutes(app) {
       // 离线宽限天数必须下发，否则「后台配了宽限、客户端根本不知道」，
       // 断网策略只能各自写死。0 = 必须联网校验。
       offline_days: Number(a.offline_days || 0),
+      // 套餐目录一并下发，客户端可据此展示可购买档位；真正的权益判断仍以票据签名字段为准
+      plan_catalog: plans.list(true).map((p) => ({
+        code: p.code, name: p.name, tier: p.tier, billing: p.billing,
+        price: p.price, period_days: p.period_days, offline_days: p.offline_days,
+        max_devices: p.max_devices, seats: p.seats, features: p.features,
+      })),
       force_update: false,
       server_time: now(),
     };
@@ -141,7 +168,9 @@ module.exports = async function openRoutes(app) {
     const st = licenseState(lic);
     if (!st.valid) return reply.code(403).send({ valid: false, ...st });
 
-    if (req.app.product_id && lic.product_id !== req.app.product_id) {
+    // 套餐授权 product_id=0，不绑定具体商品，跳过商品匹配；
+    // 老的商品授权仍按 app.product_id 校验，避免 A 软件的码拿到 B 软件上用
+    if (req.app.product_id && Number(lic.product_id) > 0 && Number(lic.product_id) !== Number(req.app.product_id)) {
       return reply.code(403).send({ valid: false, reason: '授权与当前应用不匹配', code: 'PRODUCT_MISMATCH' });
     }
 
@@ -199,7 +228,9 @@ module.exports = async function openRoutes(app) {
     db.prepare('INSERT INTO wechat_sessions (scene, ticket, qrcode_url, status, openid, user_id, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)')
       .run(scene, '', qrcodeUrl, 'pending', '', null, now(), expiresAt);
     track(0, req.app.app_key, 'auth.qrcode');
-    return { scene, mode, qrcode_url: qrcodeUrl, url, expires_at: expiresAt };
+    // simulate 时没有真二维码，但客户端仍要画点东西出来（否则界面只能报错）。
+    // 拿 scene 当内容：扫出来是一串文本，登不了录，但流程和提示都对得上。
+    return { scene, mode, qrcode_url: qrcodeUrl || scene, url, expires_at: expiresAt };
   });
 
   app.get('/api/open/v1/auth/qrcode/:scene', async (req, reply) => {
@@ -226,6 +257,49 @@ module.exports = async function openRoutes(app) {
       return { status: 'confirmed', ...token, user: userPayload(user) };
     }
     return { status: s.status };
+  });
+
+  /* ---------------- 软件端 → 浏览器免登（用户中心） ---------------- */
+
+  /**
+   * 生成一个打开「用户中心」的一次性链接。
+   *
+   * 为什么不让客户端把 access_token 拼进 URL：
+   * 1. 会留在浏览历史、代理日志、Referer 里，等于把 2 小时的令牌帖在公告板上；
+   * 2. 网页端用的是另一套 JWT（localStorage user_token），access_token 在那边根本不认。
+   * 所以这里发一个 5 分钟、用一次即焚的 code，由 /api/portal/handoff 换成网页登录态。
+   *
+   * `to` 只接受白名单里的页面名，避免被当成任意跳转（开放重定向）。
+   */
+  const HANDOFF_PAGES = new Set(['account', 'licenses', 'devices', 'orders', 'space', 'earnings']);
+
+  app.post('/api/open/v1/auth/handoff', async (req, reply) => {
+    const s = await requireClient(req, reply);
+    if (!s) return;
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(s.user_id);
+    if (!user) return reply.code(404).send({ error: '用户不存在', code: 'USER_NOT_FOUND' });
+    if (user.status && user.status !== 'active') {
+      return reply.code(403).send({ error: '账号已被停用，请联系客服', code: 'USER_DISABLED' });
+    }
+
+    const rawTo = String((req.body || {}).to || 'account').trim();
+    const to = HANDOFF_PAGES.has(rawTo) ? rawTo : 'account';
+
+    // 每次只保留该用户最近一张有效票：旧票在被点开前就作废，
+    // 免得用户在软件里点了三次「用户中心」，三个链接都能进。
+    db.prepare("DELETE FROM handoff_tickets WHERE user_id = ? AND used = 0").run(user.id);
+    const code = 'ho_' + crypto.randomBytes(24).toString('hex');
+    const ttlMs = 5 * 60 * 1000;
+    db.prepare('INSERT INTO handoff_tickets (code, user_id, app_id, machine_id, used, expires_at, created_at) VALUES (?,?,?,?,0,?,?)')
+      .run(code, user.id, s.app_id || null, s.machine_id || '', new Date(Date.now() + ttlMs).toISOString(), now());
+
+    track(user.id, s.app_id, 'auth.handoff');
+    return {
+      url: `${publicBase(req)}/user/?t=${code}#/${to}`,
+      page: to,
+      expires_in: Math.floor(ttlMs / 1000),
+      user: userPayload(user),
+    };
   });
 
   /* ---------------- 手机号登录 ---------------- */
@@ -368,7 +442,7 @@ module.exports = async function openRoutes(app) {
 
     const st = licenseState(lic);
     if (!st.valid) return reply.code(403).send({ valid: false, ...st });
-    if (appRow.product_id && lic.product_id !== appRow.product_id) {
+    if (appRow.product_id && Number(lic.product_id) > 0 && Number(lic.product_id) !== Number(appRow.product_id)) {
       return reply.code(403).send({ valid: false, reason: '授权与当前应用不匹配', code: 'PRODUCT_MISMATCH' });
     }
 
@@ -465,7 +539,11 @@ module.exports = async function openRoutes(app) {
     if (!st.valid) return reply.code(403).send({ valid: false, ...st });
 
     const appRow = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(req.session.app_id);
-    const offlineDays = Number((appRow && appRow.offline_days) || 0);
+    const ent = plans.licenseEntitlement(lic);
+    // 套餐授权按档位的 offline_days 走；历史（无档位）授权仍用应用级的离线宽限。
+    // 断网时客户端问不了服务端，权益必须跟着 Ed25519 签名一起下发。
+    const hasPlan = !!ent.plan_name;
+    const offlineDays = hasPlan ? Number(ent.offline_days || 0) : Number((appRow && appRow.offline_days) || 0);
     const iat = Date.now();
     // offline_days = 0 表示必须联网：票据只覆盖本次会话，不额外给离线时长
     const graceMs = offlineDays > 0 ? offlineDays * 86400000 : ACCESS_TTL_MS;
@@ -483,7 +561,13 @@ module.exports = async function openRoutes(app) {
       user_id: req.session.user_id,
       machine_id: req.session.machine_id || '',
       product_id: lic.product_id,
-      plan: lic.type,
+      plan: ent.plan_code || lic.type,
+      plan_code: ent.plan_code,
+      plan_name: ent.plan_name || '',
+      tier: ent.tier || 0,
+      features: ent.features,
+      seats: ent.seats,
+      online_required: ent.online_required,
       max_devices: lic.max_devices,
       offline_days: offlineDays,
       iat: Math.floor(iat / 1000),

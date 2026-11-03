@@ -47,8 +47,23 @@ ensureColumn('licenses', 'bound_by', 'bound_by TEXT DEFAULT \'\'');
 // 卡密池有效期从「绑定/首次激活」起算，而不是印卡那天；
 // 所以要单独记住这张码的时长，否则三个月前印的卡白丢三个月。
 ensureColumn('licenses', 'duration_days', 'duration_days INTEGER DEFAULT 0');
+// 套餐档位：plan_id 供后台查配置，plan_code 是快照（后台改套餐名/改价不能改写已售授权）。
+// 离线票据里带的就是 plan_code + features，客户端不依赖服务端自增 ID。
+ensureColumn('licenses', 'plan_id', 'plan_id INTEGER');
+ensureColumn('licenses', 'plan_code', "plan_code TEXT DEFAULT ''");
+// 订单区分「新购 / 升级 / 续费」：升级与续费都不发新码，只改原授权。
+ensureColumn('orders', 'kind', "kind TEXT DEFAULT 'purchase'");
+ensureColumn('orders', 'ref_license_id', 'ref_license_id INTEGER');
+ensureColumn('orders', 'plan_id', 'plan_id INTEGER');
+// 代理商：手动授权身份 + 名下用户归属。agent_code 是邀请码，注册/自助绑定时用。
+ensureColumn('users', 'agent_id', 'agent_id INTEGER DEFAULT 0');
+ensureColumn('users', 'agent_rate', 'agent_rate REAL');
+ensureColumn('users', 'agent_status', "agent_status TEXT DEFAULT 'none'");
+ensureColumn('users', 'agent_code', "agent_code TEXT DEFAULT ''");
 db.exec('CREATE INDEX IF NOT EXISTS idx_license_devices_machine ON license_devices(machine_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_licenses_batch ON licenses(batch_no)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_users_agent ON users(agent_id)');
+ensureColumn('agent_commissions', 'kind', "kind TEXT DEFAULT 'commission'");
 
 // 常见弱口令：命中即强制登录后修改密码
 const WEAK_PASSWORDS = ['admin123', 'admin', '123456', '12345678', 'admin888', 'password', 'root', 'test123'];
@@ -70,6 +85,11 @@ const DEFAULT_SETTINGS = {
   blcloud_free_quota: '10000',
   blcloud_credits_per_point: '100',
   blcloud_daily_limit: '0',
+  // 到期前第几天提醒（逗号分隔）；佣金账期天数；最低提现金额；升级是否按剩余天数折算差价
+  renew_remind_days: '7,3,1',
+  agent_settle_days: '7',
+  agent_withdraw_min: '10',
+  upgrade_proration: '1',
 };
 
 function seed() {
@@ -134,6 +154,40 @@ function seed() {
       VALUES (@type,@name,@subtitle,@description,@category,@price,@original_price,@version,
        @total_downloads,@total_installs,@active_users,@total_sales,@stock,'on',0,@t,@t)`);
     for (const p of samples) stmt.run({ stock: 0, ...p, t: now() });
+  }
+
+  // 五档默认套餐。价格/周期/权益都是占位值，上线前到「产品运营 → 套餐档位」按实际改；
+  // 导出 JSON 可纳入版本管理，运行时始终以本表为准。
+  const planCount = db.prepare('SELECT COUNT(*) AS c FROM plans').get().c;
+  if (planCount === 0) {
+    const defaults = [
+      { code: 'free', name: '在线免费版', tier: 0, billing: 'free', price: 0, period_days: 0,
+        online_required: 1, offline_days: 0, max_devices: 1, seats: 1,
+        features: ['basic.view', 'device.read'] },
+      { code: 'member', name: '在线会员版', tier: 10, billing: 'period', price: 99, original_price: 129,
+        period_days: 365, online_required: 1, offline_days: 3, max_devices: 2, seats: 1,
+        features: ['basic.view', 'device.read', 'data.export', 'sync.cloud'] },
+      { code: 'pro', name: '在线高级会员版', tier: 20, billing: 'period', price: 299, original_price: 399,
+        period_days: 365, online_required: 1, offline_days: 7, max_devices: 5, seats: 1,
+        features: ['basic.view', 'device.read', 'data.export', 'sync.cloud', 'advanced.report', 'api.access'] },
+      { code: 'enterprise', name: '离线企业版', tier: 30, billing: 'period', price: 1999,
+        period_days: 365, online_required: 0, offline_days: 90, max_devices: 10, seats: 10,
+        features: ['basic.view', 'device.read', 'data.export', 'sync.cloud', 'advanced.report',
+          'api.access', 'offline.mode', 'device.write'] },
+      { code: 'enterprise_dist', name: '离线企业分布式版', tier: 40, billing: 'period', price: 6999,
+        period_days: 365, online_required: 0, offline_days: 365, max_devices: 50, seats: 100,
+        features: ['basic.view', 'device.read', 'data.export', 'sync.cloud', 'advanced.report',
+          'api.access', 'offline.mode', 'device.write', 'distributed.seats'] },
+    ];
+    const stmt = db.prepare(`INSERT INTO plans
+      (app_id, code, name, tier, billing, price, original_price, period_days, online_required,
+       offline_days, max_devices, seats, features, status, sort, remark, created_at, updated_at)
+      VALUES (NULL, @code, @name, @tier, @billing, @price, @original_price, @period_days,
+        @online_required, @offline_days, @max_devices, @seats, @features, 'on', @sort, '', @t, @t)`);
+    defaults.forEach((p, i) => stmt.run({
+      ...p, sort: 100 - i * 10, features: JSON.stringify(p.features),
+      original_price: p.original_price || 0, t: now(),
+    }));
   }
 
   const dayCount = db.prepare('SELECT COUNT(*) AS c FROM stats_daily').get().c;

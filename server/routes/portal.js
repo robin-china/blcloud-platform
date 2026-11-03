@@ -1,6 +1,6 @@
 const db = require('../db');
 const { now, safeJson, genOrderNo, genCode } = require('../lib/util');
-const { requireUser } = require('../lib/auth');
+const { requireUser, signUser } = require('../lib/auth');
 const { getSetting, getConfig, devMode } = require('../lib/config');
 const { createPayment, markPaid } = require('../services/pay');
 const wxpay = require('../services/wxpay');
@@ -8,6 +8,9 @@ const paydiag = require('../lib/paydiag');
 const QRCode = require('qrcode');
 const bl = require('../lib/blcloud');
 const bindSvc = require('../lib/licensebind');
+const plans = require('../lib/plans');
+const commission = require('../lib/commission');
+const reminders = require('../lib/reminders');
 
 /**
  * 用户端自动补单的节流表：orderId -> 上次查单时间戳。
@@ -82,6 +85,43 @@ module.exports = async function portalRoutes(app) {
     return { settings: out, pay_channels: channels };
   });
 
+  /**
+   * 软件端点「用户中心」时，用一次性票据换网页登录态。
+   *
+   * 票据由开放接口 /auth/handoff 发出（软件端已登录才有），这里只负责兑换并作废。
+   * 换失败时「不存在 / 已用过 / 已过期」给同一句提示 —— 区分开等于告诉别人
+   * 哪个 code 存在过，白送一个试探入口。
+   */
+  app.post('/api/portal/handoff', async (req, reply) => {
+    const code = String((req.body || {}).t || '').trim();
+    if (!/^ho_[a-f0-9]{48}$/.test(code)) {
+      return reply.code(400).send({ error: '链接无效或已过期，请在软件里重新打开', code: 'HANDOFF_INVALID' });
+    }
+    // 顺手清掉两天前的死票，表不会无限长
+    db.prepare("DELETE FROM handoff_tickets WHERE created_at < ?").run(new Date(Date.now() - 2 * 86400000).toISOString());
+    const row = db.prepare('SELECT * FROM handoff_tickets WHERE code = ?').get(code);
+    if (!row || row.used) {
+      return reply.code(400).send({ error: '链接无效或已过期，请在软件里重新打开', code: 'HANDOFF_INVALID' });
+    }
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      return reply.code(400).send({ error: '链接已过期，请在软件里重新打开', code: 'HANDOFF_EXPIRED' });
+    }
+    db.prepare('UPDATE handoff_tickets SET used = 1 WHERE code = ?').run(code);
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(row.user_id);
+    if (!user) return reply.code(404).send({ error: '用户不存在', code: 'USER_NOT_FOUND' });
+    if (user.status && user.status !== 'active') {
+      return reply.code(403).send({ error: '账号已被停用，请联系客服', code: 'USER_DISABLED' });
+    }
+    db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now(), user.id);
+    return {
+      token: signUser(user),
+      user: {
+        id: user.id, openid: user.openid, nickname: user.nickname, avatar: user.avatar,
+        phone: user.phone || '', points: user.points || 0, balance: user.balance || 0,
+      },
+    };
+  });
+
   app.get('/api/portal/shop', async (req) => {
     const type = String(req.query.type || '');
     const where = type ? 'WHERE type = ? AND status = ?' : 'WHERE status = ?';
@@ -127,34 +167,94 @@ module.exports = async function portalRoutes(app) {
     return { ok: true };
   });
 
+  /**
+   * 升级差价按「剩余可用时长」折算，避免用户刚买一个月却被要求补一整年差价。
+   * 价格一律服务端算：前端只传 plan_id / ref_license_id，传 price 也一概不认。
+   */
+  function upgradePrice(cur, target, lic, proration) {
+    if (target.billing !== 'period') return plans.round2(target.price);
+    const diff = plans.round2(target.price - Number(cur?.price || 0));
+    if (diff <= 0) return 0;
+    if (!proration || !cur || !cur.period_days || !lic.end_at) return diff;
+    const remain = Math.max(0, Date.parse(lic.end_at) - Date.now());
+    const total = Number(cur.period_days) * 86400000;
+    return Math.max(0.01, plans.round2(diff * Math.min(1, remain / total)));
+  }
+
   app.post('/api/portal/orders', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
     const b = req.body || {};
-    const items = Array.isArray(b.items) ? b.items : [];
-    if (!items.length) return reply.code(400).send({ error: '购物车为空' });
-    let amount = 0;
-    const detail = [];
-    for (const it of items) {
-      const p = db.prepare('SELECT * FROM products WHERE id = ? AND status = ?').get(Number(it.product_id), 'on');
-      if (!p) return reply.code(400).send({ error: '包含不可购买的商品' });
-      const qty = Math.max(Number(it.qty) || 1, 1);
-      amount += p.price * qty;
-      detail.push({ product_id: p.id, product_name: p.name, product_type: p.type, price: p.price, qty });
+    const kind = String(b.kind || 'purchase');
+    if (!['purchase', 'upgrade', 'renew'].includes(kind)) {
+      return reply.code(400).send({ error: '不支持的订单类型' });
     }
+    const planId = b.plan_id ? Number(b.plan_id) : 0;
+    let amount = 0;
+    let detail = [];
+    let refLicenseId = 0;
+    let resolvedPlanId = 0;
+
+    if (planId) {
+      const plan = plans.get(planId);
+      if (!plan || plan.status !== 'on') return reply.code(400).send({ error: '套餐档位不存在或已下架' });
+      if (plan.billing === 'free') return reply.code(400).send({ error: '免费档无需下单' });
+      resolvedPlanId = plan.id;
+      const label = { purchase: '购买', upgrade: '升级', renew: '续费' }[kind];
+      if (kind === 'purchase') {
+        amount = plans.round2(plan.price);
+      } else {
+        refLicenseId = Number(b.ref_license_id) || 0;
+        const lic = db.prepare('SELECT * FROM licenses WHERE id = ? AND user_id = ?').get(refLicenseId, req.user.sub);
+        if (!lic) return reply.code(400).send({ error: '待升级/续费的授权不存在' });
+        if (lic.status === 'revoked') return reply.code(400).send({ error: '授权已吊销，无法升级或续费' });
+        const cur = plans.licensePlan(lic);
+        if (kind === 'upgrade') {
+          if (cur && Number(plan.tier) <= Number(cur.tier)) {
+            return reply.code(400).send({ error: '只能升级到更高档位' });
+          }
+          amount = upgradePrice(cur, plan, lic, String(getSetting('upgrade_proration', '1')) === '1');
+          if (amount <= 0) return reply.code(400).send({ error: '无需补差价，请联系客服调整' });
+        } else {
+          if (cur && Number(cur.id) !== Number(plan.id)) {
+            return reply.code(400).send({ error: '续费档位与当前授权不一致，请先升级' });
+          }
+          amount = plans.round2(plan.price);
+        }
+      }
+      detail = [{ product_id: 0, product_name: `${plan.name}（${label}）`, qty: 1,
+        price: amount, plan_id: plan.id, kind }];
+    } else {
+      if (kind !== 'purchase') return reply.code(400).send({ error: '升级 / 续费必须指定套餐档位' });
+      const items = Array.isArray(b.items) ? b.items : [];
+      if (!items.length) return reply.code(400).send({ error: '购物车为空' });
+      for (const it of items) {
+        const p = db.prepare('SELECT * FROM products WHERE id = ? AND status = ?').get(Number(it.product_id), 'on');
+        if (!p) return reply.code(400).send({ error: '包含不可购买的商品' });
+        const qty = Math.max(Number(it.qty) || 1, 1);
+        amount += p.price * qty;
+        detail.push({ product_id: p.id, product_name: p.name, product_type: p.type, price: p.price, qty });
+      }
+    }
+
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.sub);
     const usePoints = Number(b.use_points) || 0;
     const discount = Math.min(Math.floor((user.points || 0) / 100), Math.floor(amount * 100) / 100, usePoints);
     const orderNo = genOrderNo();
-    const info = db.prepare(`INSERT INTO orders (order_no, user_id, amount, pay_amount, discount, channel, status, items, remark, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(orderNo, req.user.sub, amount, Math.max(amount - discount, 0), discount, b.channel || '', 'pending', JSON.stringify(detail), b.remark || '', now());
+    const info = db.prepare(`INSERT INTO orders
+      (order_no, user_id, amount, pay_amount, discount, channel, status, items, remark,
+       kind, ref_license_id, plan_id, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(orderNo, req.user.sub, amount, Math.max(amount - discount, 0), discount,
+        b.channel || '', 'pending', JSON.stringify(detail), b.remark || '',
+        kind, refLicenseId || null, resolvedPlanId || null, now());
     if (discount > 0) {
       const balance = (user.points || 0) - discount * 100;
       db.prepare('UPDATE users SET points = ? WHERE id = ?').run(balance, req.user.sub);
       db.prepare('INSERT INTO points_logs (user_id, change, balance, reason, created_at) VALUES (?,?,?,?,?)')
         .run(req.user.sub, -discount * 100, balance, `订单 ${orderNo} 积分抵扣`, now());
     }
-    return { id: info.lastInsertRowid, order_no: orderNo, amount, pay_amount: Math.max(amount - discount, 0), discount };
+    return { id: info.lastInsertRowid, order_no: orderNo, amount,
+      pay_amount: Math.max(amount - discount, 0), discount, kind };
   });
 
   app.post('/api/portal/orders/:orderNo/pay', async (req, reply) => {
@@ -183,9 +283,114 @@ module.exports = async function portalRoutes(app) {
   app.get('/api/portal/licenses', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
     const list = db.prepare(`SELECT l.*, p.name AS product_name, p.type AS product_type, p.icon,
+      pl.name AS plan_name, pl.tier AS plan_tier, pl.price AS plan_price,
       (SELECT COUNT(*) FROM license_devices d WHERE d.license_id = l.id) AS bound_devices
-      FROM licenses l LEFT JOIN products p ON p.id = l.product_id WHERE l.user_id = ? ORDER BY l.id DESC`).all(req.user.sub);
-    return { list };
+      FROM licenses l LEFT JOIN products p ON p.id = l.product_id
+      LEFT JOIN plans pl ON pl.id = l.plan_id
+      WHERE l.user_id = ? ORDER BY l.id DESC`).all(req.user.sub);
+    return {
+      list: list.map((l) => ({
+        ...l,
+        // 套餐授权的 product_id=0，LEFT JOIN 不到商品，用档位名兜底显示
+        product_name: l.product_name || l.plan_name || '套餐授权',
+        days_left: l.end_at ? Math.ceil((Date.parse(l.end_at) - Date.now()) / 86400000) : null,
+      })),
+    };
+  });
+
+  /* ---------------- 套餐档位 / 升级与续费 ---------------- */
+
+  app.get('/api/portal/plans', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    return { list: plans.list(true) };
+  });
+
+  /** 某张授权可升级到的档位 + 续费报价，全部服务端算好给前端展示 */
+  app.get('/api/portal/licenses/:id/options', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const lic = db.prepare('SELECT * FROM licenses WHERE id = ? AND user_id = ?').get(Number(req.params.id), req.user.sub);
+    if (!lic) return reply.code(404).send({ error: '授权不存在' });
+    const cur = plans.licensePlan(lic);
+    const all = plans.list(true);
+    const upgrades = all.filter((p) => p.billing !== 'free' && (!cur || Number(p.tier) > Number(cur.tier)))
+      .map((p) => ({ ...p, price: upgradePrice(cur, p, lic, String(getSetting('upgrade_proration', '1')) === '1') }));
+    return {
+      current: cur,
+      renew: cur ? { plan_id: cur.id, plan_code: cur.code, name: cur.name, price: plans.round2(cur.price),
+        period_days: cur.period_days } : null,
+      upgrades,
+    };
+  });
+
+  app.get('/api/portal/notices', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    return { list: reminders.listForUser(req.user.sub) };
+  });
+
+  /* ---------------- 代理商收益 / 提现 ---------------- */
+
+  app.get('/api/portal/agent', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const me = db.prepare('SELECT id, agent_id, agent_status, agent_rate, agent_code FROM users WHERE id = ?').get(req.user.sub);
+    let upline = null;
+    if (me && me.agent_id) {
+      const a = db.prepare('SELECT id, nickname, agent_code FROM users WHERE id = ?').get(me.agent_id);
+      if (a) upline = { id: a.id, nickname: a.nickname, code: a.agent_code };
+    }
+    return {
+      is_agent: !!(me && me.agent_status === 'active'),
+      agent_code: me?.agent_code || '',
+      agent_rate: me?.agent_rate || 0,
+      upline,
+      settle_days: commission.settleDays(),
+      withdraw_min: commission.withdrawMin(),
+    };
+  });
+
+  /** 用邀请码绑定归属。只在没有上级、且不是自己、且不是代理商本人时生效。 */
+  app.post('/api/portal/agent/bind', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const code = String((req.body || {}).code || '').trim().toUpperCase();
+    if (!code) return reply.code(400).send({ error: '请输入邀请码' });
+    const agent = db.prepare("SELECT * FROM users WHERE UPPER(agent_code) = ? AND agent_status = 'active'").get(code);
+    if (!agent) return reply.code(404).send({ error: '邀请码无效' });
+    const me = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.sub);
+    if (Number(agent.id) === Number(req.user.sub)) return reply.code(400).send({ error: '不能把自己设为上级' });
+    if (me.agent_status === 'active') return reply.code(400).send({ error: '代理商账号不能绑定其他上级' });
+    if (me.agent_id) return reply.code(400).send({ error: '已有归属代理商，如需变更请联系客服' });
+    db.prepare('UPDATE users SET agent_id = ? WHERE id = ?').run(agent.id, req.user.sub);
+    return { ok: true, agent: { id: agent.id, nickname: agent.nickname } };
+  });
+
+  app.get('/api/portal/earnings', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const isAgent = db.prepare("SELECT agent_status FROM users WHERE id = ?").get(req.user.sub);
+    if (!isAgent || isAgent.agent_status !== 'active') {
+      return { is_agent: false, summary: commission.summary(req.user.sub), list: [], withdrawals: [] };
+    }
+    return {
+      is_agent: true,
+      summary: commission.summary(req.user.sub),
+      list: commission.listForAgent(req.user.sub),
+      withdrawals: commission.listWithdrawalsForAgent(req.user.sub),
+      settle_days: commission.settleDays(),
+      withdraw_min: commission.withdrawMin(),
+    };
+  });
+
+  app.post('/api/portal/withdrawals', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const me = db.prepare('SELECT agent_status FROM users WHERE id = ?').get(req.user.sub);
+    if (!me || me.agent_status !== 'active') return reply.code(403).send({ error: '当前账号不是代理商' });
+    const r = commission.requestWithdrawal(req.user.sub,
+      (req.body || {}).pay_account || '', (req.body || {}).remark || '');
+    if (!r.ok) return reply.code(400).send({ error: r.error });
+    return { ok: true, withdrawal: r.withdrawal };
+  });
+
+  app.get('/api/portal/withdrawals', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    return { list: commission.listWithdrawalsForAgent(req.user.sub) };
   });
 
   /* 线下买卡 / 渠道发卡：用户先登录，再把卡上的码贴进来。

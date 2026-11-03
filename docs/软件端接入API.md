@@ -134,6 +134,7 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 | POST | `/auth/activate` | 应用签名 | **激活码 + 机器码激活**，返回令牌 |
 | POST | `/auth/qrcode` | 应用签名 | 生成微信扫码登录场景 |
 | GET | `/auth/qrcode/:scene` | 无（query 带 app_key） | 轮询扫码结果，确认后返回令牌 |
+| POST | `/auth/handoff` | 用户令牌 | **免登跳转用户中心**：发一张 5 分钟一次性链接 |
 | POST | `/auth/sms/send` | 应用签名 | 发送短信验证码 |
 | POST | `/auth/login/phone` | 应用签名 | 手机号验证码登录（新手机号自动建档） |
 | POST | `/auth/refresh` | 无 | 用 refresh_token 换新令牌 |
@@ -329,10 +330,16 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
     "license_key": "LIC-XXXXXXXX-XXXXXXXX-XXXXXXXX",
     "user_id": 12,
     "machine_id": "A1B2C3D4E5F6",
-    "product_id": 3,
-    "plan": "subscription",
+    "product_id": 0,
+    "plan": "member",
+    "plan_code": "member",
+    "plan_name": "在线会员版",
+    "tier": 10,
+    "features": ["basic.view", "device.read", "data.export"],
+    "seats": 1,
+    "online_required": 1,
     "max_devices": 2,
-    "offline_days": 7,
+    "offline_days": 3,
     "iat": 1793600000,
     "exp": 1794204800
   },
@@ -341,6 +348,10 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
   "server_time": "2026-11-02T08:00:00.000Z"
 }
 ```
+
+**套餐权益字段（新增）**：`plan_code` / `plan_name` / `tier` / `features` / `seats` / `online_required` 都随签名一起下发。客户端断网时问不了服务端，**功能开关只能以验签通过的 `features` 为准**，不要用本地缓存的旧档位，也不要相信接口单独返回的目录。套餐授权的 `product_id=0`（不绑定具体商品），因此不受 `app.product_id` 商品匹配约束。历史商品授权与卡密池码没有档位，这些字段为 `""` / `0` / `[]`，`offline_days` 回退到开放应用里的「离线宽限」。
+
+`/app/version` 现在额外返回 `plan_catalog`（已上架档位摘要），仅供展示可购买档位；权益判定仍以票据签名字段为准。
 
 **签名算法（客户端自行实现，不要依赖网络）**
 
@@ -379,8 +390,42 @@ const ok = crypto.verify(null, Buffer.from(body, 'utf8'),
 3. 用户扫码确认后返回 `{ status: "confirmed", access_token, refresh_token, user }`
 4. `status` 还可能为 `pending` / `expired`
 
-### 5.8 手机号登录
+### 5.7.1 免登跳转用户中心（`/auth/handoff`）
 
+软件里已经有用户登录态了，点「用户中心」不该在浏览器里再扫一次码。
+
+`POST /auth/handoff`，需要 `Authorization: Bearer <access_token>`
+
+```json
+{ "to": "account" }
+```
+
+`to` 走白名单：`account`（默认）/ `licenses` / `devices` / `orders` / `space` / `earnings`（我的收益），填别的会被收敛成 `account`（防开放重定向）。
+
+响应：
+
+```json
+{
+  "url": "https://www.bliot.cn/platform/user/?t=ho_9f3a…c7#/account",
+  "page": "account",
+  "expires_in": 300,
+  "user": { "id": 12, "nickname": "李雷" }
+}
+```
+
+客户端拿到 `url` 直接 `shell.openExternal` / `startActivity` 打开即可。网页端 `app.js` 启动时会把 `?t=` 拿去兑换：
+
+`POST /api/portal/handoff`（body `{ "t": "ho_…" }`）→ `{ "token": "<网页 JWT>", "user": {...} }`
+
+换完立刻写进 localStorage 并把 `t` 从地址栏抹掉，所以**同一张票只能换一次**。
+
+要点：
+
+- 票据 5 分钟有效，用一次即作废；同一用户再发一次会让**旧票提前失效**（连点三次只有一个链接有效）
+- 不要把 `access_token` 直接拼进 URL：会留在浏览历史、代理日志和 Referer 里，而且网页端用的是另一套 JWT，根本认不了
+- 网页端兑换失败给的是同一句「链接无效或已过期」——区分「不存在 / 用过 / 过期」等于白送一个试探入口
+
+### 5.8 手机号登录
 1. `POST /auth/sms/send` body `{ "phone": "13800138000" }` → 返回 `{ ok: true }`（未接短信网关时响应里还有 `dev_code`，联调可直接用）
 2. `POST /auth/login/phone` body `{ "phone": "...", "code": "123456", "machine_id": "..." }`
 

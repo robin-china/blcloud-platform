@@ -45,8 +45,8 @@ function build() {
 
   // 所有业务路由统一挂到 BASE 前缀下
   const opts = BASE ? { prefix: BASE } : {};
-  for (const name of ['admin', 'products', 'users', 'licenses', 'orders', 'stats',
-    'pay', 'wechat', 'portal', 'open', 'openapps', 'blcloud', 'blcloud-admin']) {
+  for (const name of ['admin', 'products', 'plans', 'users', 'licenses', 'orders', 'stats',
+    'pay', 'wechat', 'portal', 'open', 'openapps', 'agents', 'blcloud', 'blcloud-admin']) {
     app.register(require(`./routes/${name}`), opts);
   }
 
@@ -68,6 +68,14 @@ async function start() {
   const app = build();
   const port = Number(process.env.PORT) || 3000;
   const host = process.env.HOST || '0.0.0.0';
+  // 到期提醒扫描放在 start() 而不是 build()：测试会反复 build()，
+  // 在 build 里起定时器会泄漏句柄，导致测试进程挂住不退出。
+  const reminders = require('./lib/reminders');
+  try { reminders.scan(); } catch (e) { app.log.warn(`到期提醒扫描失败: ${e.message}`); }
+  const timer = setInterval(() => {
+    try { reminders.scan(); } catch (e) { app.log.warn(`到期提醒扫描失败: ${e.message}`); }
+  }, 6 * 60 * 60 * 1000);
+  timer.unref();
   try {
     await app.listen({ port, host });
     console.log(`\n  管理后台: http://localhost:${port}/admin/`);

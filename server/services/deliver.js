@@ -1,6 +1,6 @@
 const db = require('../db');
 const { now, safeJson, genLicenseKey } = require('../lib/util');
-const { addDays } = require('../routes/licenses');
+const plans = require('../lib/plans');
 const tb = require('./tb');
 const blcloud = require('../lib/blcloud');
 
@@ -26,8 +26,92 @@ function resolveQuota(product) {
   return 100000;
 }
 
+/**
+ * 套餐新购：发一张绑定档位的授权码。
+ * product_id = 0 表示「套餐授权，不绑定具体商品」（schema 里该列 NOT NULL）。
+ */
+function deliverPlanPurchase(order) {
+  const plan = plans.get(order.plan_id);
+  if (!plan) throw new Error(`套餐档位 ${order.plan_id} 不存在，无法发货`);
+  const ts = now();
+  const key = genLicenseKey();
+  const endAt = plan.billing === 'period' ? plans.addDays(plan.period_days) : null;
+  const licType = plan.billing === 'period' ? 'subscription' : 'permanent';
+  const info = db.prepare(`INSERT INTO licenses
+    (license_key, user_id, product_id, type, max_devices, start_at, end_at, status,
+     plan_id, plan_code, order_id, remark, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(key, order.user_id, 0, licType, Number(plan.max_devices) || 1,
+      ts, endAt, 'active', plan.id, plan.code, order.id, `订单自动发放：${plan.name}`, ts);
+  return {
+    type: 'license', license_key: key, product: plan.name,
+    license_id: info.lastInsertRowid, plan_code: plan.code,
+    end_at: endAt,
+  };
+}
+
+/**
+ * 取订单指向的授权，必须属于下单人。
+ * 这一步不能省：否则别人拿自己的订单号 + 任意 license_id 就能改别人的授权。
+ */
+function ownedLicense(order) {
+  const lic = db.prepare('SELECT * FROM licenses WHERE id = ?').get(Number(order.ref_license_id) || 0);
+  if (!lic) throw new Error('待升级/续费的授权不存在');
+  if (Number(lic.user_id) !== Number(order.user_id)) throw new Error('授权与订单用户不一致');
+  if (lic.status === 'revoked') throw new Error('授权已吊销，无法升级或续费');
+  return lic;
+}
+
+/**
+ * 续费：只延长同一张授权的 end_at，绝不发新码。
+ * licenseState / verify / heartbeat / ticket 全绑在 license_id + machine_id 上，
+ * 发新码会让老设备立刻被判 MACHINE_NOT_BOUND，用户续一次费就得重新激活。
+ */
+function deliverRenew(order) {
+  const lic = ownedLicense(order);
+  const plan = plans.get(order.plan_id) || plans.licensePlan(lic);
+  if (!plan) throw new Error('找不到续费对应的档位');
+  const days = plan.billing === 'period' ? (Number(plan.period_days) || 365) : 365;
+  const base = lic.end_at ? Math.max(Date.parse(lic.end_at), Date.now()) : Date.now();
+  const endAt = new Date(base + days * 86400000).toISOString();
+  db.prepare(`UPDATE licenses SET end_at = ?, plan_id = ?, plan_code = ?, status = 'active' WHERE id = ?`)
+    .run(endAt, plan.id, plan.code, lic.id);
+  return {
+    type: 'license_renew', license_key: lic.license_key, license_id: lic.id,
+    product: plan.name, plan_code: plan.code, days, end_at: endAt,
+  };
+}
+
+/** 升级：原地改档位/设备数，保留 license_key 与所有已绑定机器。 */
+function deliverUpgrade(order) {
+  const lic = ownedLicense(order);
+  const plan = plans.get(order.plan_id);
+  if (!plan) throw new Error('找不到升级目标档位');
+  const cur = plans.licensePlan(lic);
+  if (cur && Number(plan.tier) <= Number(cur.tier)) {
+    throw new Error('只能升级到更高档位');
+  }
+  let endAt = lic.end_at;
+  if (plan.billing === 'period' && !endAt) endAt = plans.addDays(plan.period_days || 365);
+  if (plan.billing !== 'period') endAt = null;
+  db.prepare(`UPDATE licenses SET plan_id = ?, plan_code = ?, max_devices = ?, end_at = ?,
+    type = ?, status = 'active' WHERE id = ?`)
+    .run(plan.id, plan.code, Number(plan.max_devices) || 1, endAt,
+      plan.billing === 'period' ? 'subscription' : 'permanent', lic.id);
+  return {
+    type: 'license_upgrade', license_key: lic.license_key, license_id: lic.id,
+    product: plan.name, plan_code: plan.code,
+    from_plan: cur ? cur.code : '', max_devices: plan.max_devices, end_at: endAt,
+  };
+}
+
 /** 支付成功后自动发放授权与硬件 */
 function deliverOrder(order) {
+  const kind = String(order.kind || 'purchase');
+  if (kind === 'renew') return [deliverRenew(order)];
+  if (kind === 'upgrade') return [deliverUpgrade(order)];
+  if (order.plan_id) return [deliverPlanPurchase(order)];
+
   const items = safeJson(order.items, []);
   const created = [];
   for (const it of items) {
@@ -56,7 +140,7 @@ function deliverOrder(order) {
     const info = db.prepare(`INSERT INTO licenses (license_key, user_id, product_id, type, max_devices, start_at, end_at, status, order_id, remark, created_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
       .run(licenseKey, order.user_id, product.id, product.type === 'software' ? 'permanent' : 'subscription',
-        Number(it.qty) || 1, now(), product.type === 'software' ? null : addDays(365), 'active', order.id, '订单自动发放', now());
+        Number(it.qty) || 1, now(), product.type === 'software' ? null : plans.addDays(365), 'active', order.id, '订单自动发放', now());
     db.prepare('UPDATE products SET total_sales = total_sales + ? WHERE id = ?').run(Number(it.qty) || 1, product.id);
     created.push({ type: 'license', license_key: licenseKey, product: product.name, license_id: info.lastInsertRowid });
 

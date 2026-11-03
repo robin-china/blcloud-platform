@@ -290,6 +290,18 @@ window.PageSpace = {
 window.PageMyLicenses = {
   template: `
   <div>
+    <div class="card" style="margin-bottom:14px" v-if="notices.length">
+      <div class="card-head"><h3>到期提醒</h3><span class="tag warning">记得续费</span></div>
+      <div class="card-body">
+        <div v-for="n in notices" :key="n.id" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0">
+          <span>授权 <b style="font-family:ui-monospace,monospace">{{ n.license_key }}</b>
+            （{{ n.plan_name || n.plan_code || '套餐' }}）还有 <b>{{ n.days_left }}</b> 天到期，
+            到期日 {{ fmt.date(n.end_at) }}</span>
+          <button class="btn sm primary" @click="openRenew(n.license_id)">一键续费</button>
+        </div>
+      </div>
+    </div>
+
     <div class="card" style="margin-bottom:14px">
       <div class="card-head"><h3>绑定授权码</h3></div>
       <div class="card-body">
@@ -311,26 +323,101 @@ window.PageMyLicenses = {
       <div class="card-body tight">
         <div class="table-wrap">
           <table class="table">
-            <thead><tr><th>产品</th><th>授权码</th><th>类型</th><th>有效期</th><th>绑定设备</th><th>状态</th><th style="width:150px">操作</th></tr></thead>
+            <thead><tr><th>产品</th><th>档位</th><th>授权码</th><th>类型</th><th>有效期</th><th>绑定设备</th><th>状态</th><th style="width:230px">操作</th></tr></thead>
             <tbody>
               <tr v-for="l in list" :key="l.id">
                 <td>{{ l.product_name }}</td>
+                <td><span class="tag">{{ l.plan_name || l.plan_code || '-' }}</span></td>
                 <td style="font-family:ui-monospace,monospace;font-size:12.5px">{{ l.license_key }}</td>
                 <td>{{ typeText(l.type) }}</td>
-                <td>{{ l.end_at ? fmt.date(l.end_at) : '永久' }}</td>
+                <td>
+                  {{ l.end_at ? fmt.date(l.end_at) : '永久' }}
+                  <div v-if="l.days_left !== null && l.days_left !== undefined" style="font-size:12px"
+                       :style="{ color: l.days_left <= 7 ? 'var(--danger)' : 'var(--text-3)' }">
+                    剩 {{ leftDays(l.days_left) }} 天
+                  </div>
+                </td>
                 <td>{{ l.bound_devices || 0 }} / {{ l.max_devices }}</td>
                 <td><span class="tag" :class="l.status==='active'?'success':'danger'">{{ l.status==='active'?'有效':'失效' }}</span></td>
                 <td>
                   <div class="table-actions">
                     <button class="btn sm" @click="copy(l.license_key)">复制</button>
                     <button class="btn sm" @click="openDevices(l)">设备</button>
+                    <button class="btn sm primary" v-if="l.plan_code && l.end_at" @click="openRenew(l.id)">续费</button>
+                    <button class="btn sm" v-if="l.plan_code" @click="openUpgrade(l.id)">升级</button>
                   </div>
                 </td>
               </tr>
-              <tr v-if="!list.length"><td colspan="7"><div class="empty">暂无授权</div></td></tr>
+              <tr v-if="!list.length"><td colspan="8"><div class="empty">暂无授权</div></td></tr>
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <div class="mask" v-if="planDialog" @click.self="closePlan">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>{{ planMode === 'renew' ? '一键续费' : '升级档位' }}</h3>
+          <button class="close-x" @click="closePlan">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="!payResult">
+            <div class="hint" style="margin-top:0" v-if="planMode === 'renew'">
+              续费只延长原授权的有效期，<b>不会换授权码、不需要重新激活</b>，已绑定的机器全部保留。
+            </div>
+            <div class="hint" style="margin-top:0" v-else>
+              升级只改档位与设备数，同样<b>保留原授权码和已绑定机器</b>；差价按当前剩余天数折算。
+            </div>
+
+            <div class="card" style="margin-bottom:12px" v-if="planMode === 'renew' && options.renew">
+              <div class="card-body">
+                <div><b>{{ options.renew.name }}</b> · {{ options.renew.period_days }} 天</div>
+                <div style="font-size:20px;margin-top:6px">{{ fmt.money(options.renew.price) }}</div>
+                <button class="btn primary" style="margin-top:10px" :disabled="submitting" @click="submit('renew', options.renew.plan_id)">
+                  {{ submitting ? '提交中…' : '立即续费' }}
+                </button>
+              </div>
+            </div>
+
+            <div v-if="planMode === 'upgrade'">
+              <div class="card" style="margin-bottom:10px" v-for="p in options.upgrades" :key="p.id">
+                <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+                  <div>
+                    <b>{{ p.name }}</b>
+                    <div style="font-size:12px;color:var(--text-3);margin-top:4px">
+                      {{ p.max_devices }} 台设备 · {{ p.seats }} 席位 · {{ p.offline_days ? '离线 ' + p.offline_days + ' 天' : '需联网' }}
+                    </div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px">
+                    <b>补差价 {{ fmt.money(p.price) }}</b>
+                    <button class="btn primary sm" :disabled="submitting" @click="submit('upgrade', p.id)">升级</button>
+                  </div>
+                </div>
+              </div>
+              <div class="empty" v-if="!options.upgrades || !options.upgrades.length">当前已是最高档位</div>
+            </div>
+          </div>
+
+          <div v-else>
+            <div class="qr-box" v-if="payResult.mode==='qrcode'">
+              <img v-if="payResult.code_url" :src="basePath + '/api/portal/qrcode?text=' + encodeURIComponent(payResult.code_url)" />
+              <div class="hint">请使用微信扫码支付</div>
+            </div>
+            <div v-else-if="payResult.mode==='redirect'">
+              <a class="btn primary" :href="payResult.pay_url" target="_blank">前往支付宝付款</a>
+            </div>
+            <div v-else class="qr-placeholder" style="width:100%;height:auto;padding:18px">
+              当前为模拟支付模式，点击下方按钮完成支付
+            </div>
+            <div class="btn-group" style="margin-top:14px;justify-content:center">
+              <button class="btn" v-if="payResult.mode==='simulate'" @click="simulatePay">模拟支付完成</button>
+              <button class="btn" @click="checkPaid">我已支付</button>
+            </div>
+          </div>
+          <div class="hint" v-if="planError" style="color:var(--danger)">{{ planError }}</div>
+        </div>
+        <div class="modal-foot"><button class="btn" @click="closePlan">关闭</button></div>
       </div>
     </div>
 
@@ -370,6 +457,18 @@ window.PageMyLicenses = {
     const keyInput = ref('');
     const binding = ref(false);
     const fmt = U.fmt;
+    // 模板只能看见 setup 暴露的标识符，脚本里取一次全局值再传出去
+    const basePath = window.U ? (window.U.basePath || '') : '';
+
+    const notices = ref([]);
+    const planDialog = ref(false);
+    const planMode = ref('renew');
+    const planError = ref('');
+    const submitting = ref(false);
+    const refLicenseId = ref(0);
+    const options = ref({ renew: null, upgrades: [] });
+    const payResult = ref(null);
+    const orderNo = ref('');
 
     async function bindKey() {
       const key = String(keyInput.value || '').trim();
@@ -386,6 +485,8 @@ window.PageMyLicenses = {
 
     async function load() {
       list.value = (await U.api.get('/api/portal/licenses')).list;
+      try { notices.value = (await U.api.get('/api/portal/notices')).list.slice(0, 5); }
+      catch (e) { notices.value = []; }
     }
 
     async function openDevices(l) {
@@ -416,13 +517,72 @@ window.PageMyLicenses = {
     }
 
     const typeText = (t) => ({ permanent: '永久', subscription: '订阅', trial: '试用' }[t] || t);
+    const leftDays = (n) => Math.max(0, Number(n) || 0);
+
+    async function openOptions(mode, licenseId) {
+      planMode.value = mode;
+      planError.value = '';
+      payResult.value = null;
+      orderNo.value = '';
+      refLicenseId.value = Number(licenseId) || 0;
+      try {
+        options.value = await U.api.get(`/api/portal/licenses/${refLicenseId.value}/options`);
+        planDialog.value = true;
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+    function openRenew(id) { openOptions('renew', id); }
+    function openUpgrade(id) { openOptions('upgrade', id); }
+    function closePlan() { planDialog.value = false; payResult.value = null; }
+
+    async function submit(kind, planId) {
+      submitting.value = true;
+      planError.value = '';
+      try {
+        const res = await U.api.post('/api/portal/orders', {
+          kind, plan_id: planId, ref_license_id: refLicenseId.value,
+        });
+        orderNo.value = res.order_no;
+        const site = await U.api.get('/api/portal/site');
+        const channels = site.pay_channels || [];
+        const channel = channels[0] || 'wxpay';
+        payResult.value = await U.api.post(`/api/portal/orders/${res.order_no}/pay`, { channel });
+      } catch (e) { planError.value = e.message; }
+      finally { submitting.value = false; }
+    }
+
+    async function simulatePay() {
+      try {
+        await U.api.post(`/api/pay/simulate/${orderNo.value}`, {});
+        U.toast('支付成功，授权已续期/升级', 'success');
+        closePlan();
+        await load();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
+    async function checkPaid() {
+      try {
+        const res = await U.api.get('/api/portal/orders');
+        const hit = (res.list || []).find((o) => o.order_no === orderNo.value);
+        if (hit && hit.status === 'paid') {
+          U.toast('支付成功', 'success');
+          closePlan();
+          await load();
+        } else {
+          U.toast('尚未检测到支付结果，请稍后再试', 'error');
+        }
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
 
     onMounted(async () => {
       if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
       await load();
     });
 
-    return { list, cur, devices, fmt, openDevices, unbind, copy, typeText, keyInput, binding, bindKey };
+    return {
+      list, cur, devices, fmt, basePath, openDevices, unbind, copy, typeText, leftDays,
+      keyInput, binding, bindKey, notices, planDialog, planMode, planError, submitting,
+      options, payResult, openRenew, openUpgrade, closePlan, submit, simulatePay, checkPaid,
+    };
   },
 };
 
@@ -536,6 +696,8 @@ window.PageMyOrders = {
       return arr.map((c) => {
         if (c.type === 'api_quota') return `API 额度 ${c.quota} 次`;
         if (c.type === 'license') return `授权码 ${c.license_key}`;
+        if (c.type === 'license_renew') return `授权 ${c.license_key} 续期 ${c.days} 天`;
+        if (c.type === 'license_upgrade') return `授权 ${c.license_key} 升级为 ${c.product}`;
         if (c.type === 'device') return `设备 ${c.sn}`;
         return '';
       }).filter(Boolean).join('，');

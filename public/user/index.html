@@ -21,6 +21,7 @@
         <a href="#/licenses" :class="state.route==='licenses'?'active':''">我的授权</a>
         <a href="#/devices" :class="state.route==='devices'?'active':''">我的硬件</a>
         <a href="#/orders" :class="state.route==='orders'?'active':''">我的订单</a>
+        <a href="#/earnings" :class="state.route==='earnings'?'active':''">我的收益</a>
         <a href="#/blcloud" :class="state.route==='blcloud'?'active':''">blcloud</a>
         <a href="#/account" :class="state.route==='account'?'active':''">账户中心</a>
       </nav>
@@ -41,6 +42,7 @@
     <page-my-licenses v-if="state.route === 'licenses'"></page-my-licenses>
     <page-my-devices v-if="state.route === 'devices'"></page-my-devices>
     <page-my-orders v-if="state.route === 'orders'"></page-my-orders>
+    <page-earnings v-if="state.route === 'earnings'"></page-earnings>
     <page-user-blcloud v-if="state.route === 'blcloud'"></page-user-blcloud>
     <page-account v-if="state.route === 'account'"></page-account>
     <page-user-login v-if="state.route === 'login'" @logged="onLogged"></page-user-login>
@@ -56,9 +58,10 @@
 <script src="../assets/api.js"></script>
 <script src="js/app.js"></script>
 <script src="js/pages.js"></script>
+<script src="js/pages-earnings.js"></script>
 <script src="js/pages-blcloud.js"></script>
 <script>
-  const PAGES = ['Shop', 'Product', 'Space', 'MyLicenses', 'MyDevices', 'MyOrders', 'UserBlcloud', 'Account', 'UserLogin'];
+  const PAGES = ['Shop', 'Product', 'Space', 'MyLicenses', 'MyDevices', 'MyOrders', 'Earnings', 'UserBlcloud', 'Account', 'UserLogin'];
   const kebab = (s) => s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
   for (const name of PAGES) {
     const comp = window['Page' + name];

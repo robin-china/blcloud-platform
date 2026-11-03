@@ -8,6 +8,7 @@
       group: '产品运营',
       items: [
         { key: 'products', name: '产品管理', icon: 'box' },
+        { key: 'plans', name: '套餐档位', icon: 'shield' },
         { key: 'storefront', name: '官方上架', icon: 'store' },
         { key: 'licenses', name: '授权管理', icon: 'shield' },
       ],
@@ -24,6 +25,7 @@
       group: '用户',
       items: [
         { key: 'users', name: '用户管理', icon: 'users' },
+        { key: 'agents', name: '代理商与佣金', icon: 'users' },
         { key: 'blcloud', name: 'blcloud 调用', icon: 'cloud' },
       ],
     },

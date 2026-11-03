@@ -5,12 +5,15 @@ const wxpay = require('./wxpay');
 const alipay = require('./alipay');
 const paydiag = require('../lib/paydiag');
 const { deliverOrder } = require('./deliver');
+const commission = require('../lib/commission');
 
 /** 把发货结果说成人话，便于诊断与客服核对 */
 function describeDelivery(created) {
   return (created || []).map((c) => {
     if (c.type === 'api_quota') return `API 额度 +${c.quota} 次（账户余额 ${c.after}）`;
     if (c.type === 'license') return `授权码 ${c.license_key}（${c.product}）`;
+    if (c.type === 'license_renew') return `授权 ${c.license_key} 续期 ${c.days} 天，至 ${String(c.end_at).slice(0, 10)}`;
+    if (c.type === 'license_upgrade') return `授权 ${c.license_key} 升级至 ${c.product}（${c.plan_code}）`;
     if (c.type === 'device') return `设备 ${c.sn}（${c.product}）`;
     return String(c.type || '未知');
   }).join('；');
@@ -121,6 +124,9 @@ function markPaid(orderNo, tradeNo, channel, raw = '', paidAmount = null) {
     db.prepare('INSERT INTO points_logs (user_id, change, balance, reason, created_at) VALUES (?,?,?,?,?)')
       .run(order.user_id, gained, balance, `订单 ${orderNo} 消费返积分`, now());
   }
+  // 代理商佣金按实收计。放在最后：即便发货抛错也不影响记账，
+  // UNIQUE(order_id, agent_user_id, kind) 保证回调与主动查单重复触发不会记两笔。
+  commission.accrueForOrder(fresh);
   return fresh;
 }
 

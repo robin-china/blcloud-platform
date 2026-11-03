@@ -322,3 +322,97 @@ CREATE TABLE IF NOT EXISTS api_nonces (
   created_at TEXT NOT NULL,
   PRIMARY KEY (app_key, nonce)
 );
+
+-- 软件端 → 浏览器的一次性免登票据
+--
+-- 客户端已经用 access_token 登录过了，用户点「用户中心」不该在浏览器里再扫一次码。
+-- 但 access_token 不能直接塞进 URL（会被浏览历史、代理日志、Referer 带走），
+-- 所以换一个 5 分钟、用一次就作废的 code：URL 里只有这个 code，换完即焚。
+CREATE TABLE IF NOT EXISTS handoff_tickets (
+  code TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  app_id INTEGER,
+  machine_id TEXT DEFAULT '',
+  used INTEGER DEFAULT 0,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_handoff_user ON handoff_tickets(user_id);
+
+-- 套餐档位：同一个软件产品的五个等级，不是五个独立商品。
+-- 运行时以本表为准；plans.json 只作导入/导出的版本化载体，不参与请求链路。
+CREATE TABLE IF NOT EXISTS plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id INTEGER,
+  code TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  tier INTEGER DEFAULT 0,
+  billing TEXT DEFAULT 'period',
+  price REAL DEFAULT 0,
+  original_price REAL DEFAULT 0,
+  period_days INTEGER DEFAULT 365,
+  online_required INTEGER DEFAULT 1,
+  offline_days INTEGER DEFAULT 0,
+  max_devices INTEGER DEFAULT 1,
+  seats INTEGER DEFAULT 1,
+  features TEXT DEFAULT '[]',
+  status TEXT DEFAULT 'on',
+  sort INTEGER DEFAULT 0,
+  remark TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plans_tier ON plans(tier);
+
+-- 代理商佣金账本。status: pending(账期内) → settled(可提现) → withdrawn(已提现)
+-- 退款时置 reversed；已提现后才退款的另记一条负数 adjustment，从后续可提现里扣。
+CREATE TABLE IF NOT EXISTS agent_commissions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER NOT NULL,
+  order_no TEXT NOT NULL,
+  agent_user_id INTEGER NOT NULL,
+  buyer_user_id INTEGER NOT NULL,
+  base_amount REAL NOT NULL,
+  rate REAL NOT NULL,
+  amount REAL NOT NULL,
+  kind TEXT DEFAULT 'commission',
+  status TEXT DEFAULT 'pending',
+  available_at TEXT,
+  withdrawal_id INTEGER,
+  remark TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE(order_id, agent_user_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_comm_agent ON agent_commissions(agent_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_comm_order ON agent_commissions(order_id);
+
+-- 提现单。一期走人工审核/线下打款，二期接「商家转账到零钱」后把 channel 换成 wxpay_transfer
+CREATE TABLE IF NOT EXISTS withdrawals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  withdrawal_no TEXT UNIQUE NOT NULL,
+  agent_user_id INTEGER NOT NULL,
+  amount REAL NOT NULL,
+  channel TEXT DEFAULT 'manual',
+  status TEXT DEFAULT 'pending',
+  pay_account TEXT DEFAULT '',
+  wx_bill_no TEXT DEFAULT '',
+  remark TEXT DEFAULT '',
+  reviewed_by TEXT DEFAULT '',
+  reviewed_at TEXT,
+  paid_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_withdraw_agent ON withdrawals(agent_user_id, status);
+
+-- 到期提醒去重表：同一张授权同一档剩余天数只提醒一次
+CREATE TABLE IF NOT EXISTS license_reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  license_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  days_left INTEGER NOT NULL,
+  end_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(license_id, days_left)
+);
+CREATE INDEX IF NOT EXISTS idx_remind_user ON license_reminders(user_id);
+

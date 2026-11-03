@@ -5,6 +5,7 @@ const USER_MENU = [
   { key: 'licenses', name: '我的授权' },
   { key: 'devices', name: '我的硬件' },
   { key: 'orders', name: '我的订单' },
+  { key: 'earnings', name: '我的收益' },
   { key: 'blcloud', name: 'blcloud' },
   { key: 'account', name: '账户中心' },
 ];
@@ -65,6 +66,32 @@ const userApp = createApp({
       go('shop');
     }
 
+    /**
+     * 软件端点「用户中心」跳过来时，地址上带 `?t=<一次性票据>`。
+     *
+     * 票据只能换一次，所以要做的第一件事是**把它从地址栏抹掉**（replaceState）：
+     * 否则用户刷新一次就第二次兑换失败，把链接发给别人也永远打不开。
+     * 兑换失败不挡浏览 —— 顶多是没自动登录，用户还可以扫码进。
+     */
+    async function claimHandoff() {
+      const q = new URLSearchParams(location.search);
+      const t = q.get('t');
+      if (!t) return;
+      q.delete('t');
+      const rest = q.toString();
+      history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+      try {
+        const res = await U.api.post('/api/portal/handoff', { t });
+        if (res && res.token) {
+          U.api.setToken('user', res.token);
+          state.token = res.token;
+          state.user = res.user || null;
+        }
+      } catch (e) {
+        console.warn('[handoff] 免登链接无效：', e && e.message);
+      }
+    }
+
     async function onLogged() {
       state.token = localStorage.getItem('user_token') || '';
       await loadMe();
@@ -78,6 +105,8 @@ const userApp = createApp({
     onMounted(async () => {
       syncHash();
       window.addEventListener('hashchange', syncHash);
+      // 先换票再拉资料：否则第一屏会是「未登录」，换完才跳回来闪一下
+      await claimHandoff();
       await loadSite();
       await loadMe();
     });
