@@ -139,7 +139,8 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 | POST | `/auth/login/phone` | 应用签名 | 手机号验证码登录（新手机号自动建档） |
 | POST | `/auth/refresh` | 无 | 用 refresh_token 换新令牌 |
 | POST | `/auth/logout` | 用户令牌 | 退出，令牌作废 |
-| GET | `/user/profile` | 用户令牌 | 用户资料、积分、TB 账号 |
+| GET | `/user/profile` | 用户令牌 | 用户资料（昵称、头像、积分、TB 状态），实时读库 |
+| POST | `/user/profile` | 用户令牌 | **修改昵称 / 头像**，与网页端共用校验 |
 | GET | `/user/licenses` | 用户令牌 | 我的全部授权及绑定机器数 |
 | GET | `/user/devices` | 用户令牌 | **我的硬件 + TB 连接凭据** |
 | POST | `/license/verify` | 令牌 或 应用签名 | 校验授权是否有效 |
@@ -163,6 +164,11 @@ def sign(app_key, app_secret, method, path, body_obj=None):
   "download_url": "https://cdn.example.com/app-1.2.0.exe",
   "release_note": "修复了断网后无法保存的问题",
   "offline_days": 7,
+  "plan_catalog": [
+    { "app_id": 3, "product_id": 7, "code": "free", "name": "在线免费版", "tier": 0,
+      "billing": "free", "price": 0, "period_days": 0, "offline_days": 0,
+      "max_devices": 1, "seats": 1, "features": ["basic.view"] }
+  ],
   "force_update": false,
   "server_time": "2026-11-02T06:00:00.000Z"
 }
@@ -172,6 +178,8 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 
 - `0` = 必须联网校验，断网即锁功能
 - `> 0` = 允许离线使用这么多天，超期必须联网校验一次
+
+`plan_catalog` **只包含本应用自己那一套档位**（每个软件产品的档位各自独立，`app_id` 标明归属），仅用于展示可购买档位；真正的权益判定必须以离线票据签名里的字段为准。产品还没配套餐时会回退到通用模板档位，此时 `app_id` 为 `null`，授权码本身仍受 `licenses.app_id` 约束，不会因此跨产品通用。
 
 > 服务端不代管离线状态，它只负责把这个数字准确地告诉你。
 
@@ -197,12 +205,16 @@ def sign(app_key, app_secret, method, path, body_obj=None):
   "valid": true,
   "access_token": "ct_xxx", "refresh_token": "ct_yyy",
   "expires_in": 7200, "refresh_expires_in": 2592000,
-  "user": { "id": 12, "nickname": "李雷", "phone": "138****8888", "points": 320 },
+  "user": { "id": 12, "nickname": "李雷", "avatar": "https://wx.qlogo.cn/...", "phone": "138****8888", "points": 320 },
   "license": {
     "license_key": "LIC-XXXXXXXX-XXXXXXXX-XXXXXXXX",
-    "product_id": 3, "product_name": "花盆卫士 Pro",
+    "app_id": 3, "product_id": 3, "product_name": "花盆卫士 Pro",
     "type": "subscription", "end_at": "2027-01-01T00:00:00.000Z",
-    "max_devices": 2, "bound_devices": 1
+    "max_devices": 2, "bound_devices": 1,
+    "plan": "member",
+    "entitlement": { "plan_code": "member", "plan_name": "在线会员版", "tier": 10,
+      "features": ["basic.view", "device.read"], "seats": 1, "offline_days": 3,
+      "online_required": 1, "app_id": 3 }
   },
   "server_time": "2026-10-21T06:00:00.000Z"
 }
@@ -213,6 +225,8 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 - 同一台机器重复激活**不会**重复占用名额（幂等）
 - 绑定机器数达到 `max_devices` 时返回 `409 MACHINE_LIMIT`
 - 授权被吊销 / 过期 / 产品不匹配时返回 403，见错误码表
+- **套餐授权按软件产品隔离**：`license.app_id` 和档位的 `app_id` 必须等于当前应用，否则返回 `403 PRODUCT_MISMATCH` —— A 软件的码不能在 B 软件里激活。`app_id` 为空的历史通用码继续放行，不锁死老客户
+- `user.nickname` / `user.avatar` 默认来自微信资料，用户在网页端「账户中心」改过之后这里实时返回最新值（软件端可用 `POST /user/profile` 改，与网页端共用校验）
 - **卡密还没被绑定**（渠道印的卡、用户还没领）返回 `403 LICENSE_UNASSIGNED`，此时应引导用户先登录绑定，而不是重新激活
 
 > 卡密池的码在**绑定那一刻**才起算有效期。一张印了半年的卡不会被白白扣掉半年，所以「先绑后激活」是正常流程。
@@ -331,6 +345,7 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
     "user_id": 12,
     "machine_id": "A1B2C3D4E5F6",
     "product_id": 0,
+    "app_id": 3,
     "plan": "member",
     "plan_code": "member",
     "plan_name": "在线会员版",
@@ -349,9 +364,9 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
 }
 ```
 
-**套餐权益字段（新增）**：`plan_code` / `plan_name` / `tier` / `features` / `seats` / `online_required` 都随签名一起下发。客户端断网时问不了服务端，**功能开关只能以验签通过的 `features` 为准**，不要用本地缓存的旧档位，也不要相信接口单独返回的目录。套餐授权的 `product_id=0`（不绑定具体商品），因此不受 `app.product_id` 商品匹配约束。历史商品授权与卡密池码没有档位，这些字段为 `""` / `0` / `[]`，`offline_days` 回退到开放应用里的「离线宽限」。
+**套餐权益字段**：`plan_code` / `plan_name` / `tier` / `features` / `seats` / `online_required` / `app_id` 都随签名一起下发，`app_id` 标明档位归属哪个软件产品。客户端断网时问不了服务端，**功能开关只能以验签通过的 `features` 为准**，不要用本地缓存的旧档位，也不要相信接口单独返回的目录。套餐授权的 `product_id=0`（不绑定具体商品），激活时改由 `licenses.app_id` / 档位 `app_id` 做产品匹配；`app_id` 为空的历史通用码按「不限应用」放行。历史商品授权与卡密池码没有档位，这些字段为 `""` / `0` / `[]` / `null`，`offline_days` 回退到开放应用里的「离线宽限」。
 
-`/app/version` 现在额外返回 `plan_catalog`（已上架档位摘要），仅供展示可购买档位；权益判定仍以票据签名字段为准。
+`/app/version` 额外返回 `plan_catalog`（**只包含本应用自己的档位**），仅供展示可购买档位；权益判定仍以票据签名字段为准。
 
 **签名算法（客户端自行实现，不要依赖网络）**
 
@@ -549,7 +564,8 @@ async function call(method, path, bodyObj, token) {
 
 后台 → 开放接口 页面可以：
 
-- 创建/编辑应用，绑定产品，设置版本号与安装包地址（客户端 `/app/version` 直接读到）
+- 创建/编辑应用，绑定产品，设置版本号与安装包地址（客户端 `/app/version` 直接读到）；列表会显示每个应用已配的**套餐档位数**
+- 「产品运营 → 套餐档位」按应用分组管理档位，支持「从模板复制到该产品」、按产品导出/导入 JSON；同一 code 在不同产品下可重复
 - 重置 AppSecret（会使该应用下所有客户端令牌立即失效）
 - 停用应用（客户端全部被挡在门外）
 - 查看客户端会话：用户、机器码、客户端版本、IP、最后活跃时间，并可**单台踢下线**

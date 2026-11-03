@@ -34,14 +34,23 @@ window.PageOpenapi = {
       <div class="card-body tight">
         <div class="table-wrap">
           <table class="table">
-            <thead><tr><th>应用</th><th>绑定产品</th><th>AppKey</th><th>AppSecret</th><th>状态</th><th>会话 / 在线</th><th>API 调用</th><th style="width:230px">操作</th></tr></thead>
+            <thead><tr><th>应用</th><th>绑定上架商品</th><th>套餐档位</th><th>AppKey</th><th>AppSecret</th><th>状态</th><th>会话 / 在线</th><th>API 调用</th><th style="width:230px">操作</th></tr></thead>
             <tbody>
               <tr v-for="a in list" :key="a.id">
                 <td>
                   <b>{{ a.name }}</b>
                   <div style="color:var(--text-3);font-size:12px">{{ a.version || '未设版本' }}<span v-if="a.remark"> · {{ a.remark }}</span></div>
                 </td>
-                <td>{{ a.product_name || '不限产品' }}</td>
+                <td>
+                  {{ a.product_name || '未绑定' }}
+                  <div style="color:var(--text-3);font-size:12px">
+                    {{ a.product_name ? '商品 ID ' + a.product_id : '未绑定商品，用户端不展示' }}
+                  </div>
+                </td>
+                <td>
+                  <span class="tag" :class="a.plan_count ? 'success' : ''">{{ a.plan_count || 0 }} 档</span>
+                  <div style="color:var(--text-3);font-size:12px" v-if="!a.plan_count">去「套餐档位」复制模板</div>
+                </td>
                 <td style="font-family:ui-monospace,monospace;font-size:12px">{{ a.app_key }}</td>
                 <td style="font-family:ui-monospace,monospace;font-size:12px">{{ a.app_secret_masked }}</td>
                 <td><span class="tag" :class="a.status === 'active' ? 'success' : 'danger'">{{ a.status === 'active' ? '启用' : '停用' }}</span></td>
@@ -57,7 +66,7 @@ window.PageOpenapi = {
                   </div>
                 </td>
               </tr>
-              <tr v-if="!list.length"><td colspan="8"><div class="empty">还没有接入应用，点击「新建应用」创建第一对凭证</div></td></tr>
+              <tr v-if="!list.length"><td colspan="9"><div class="empty">还没有接入应用，点击「新建应用」创建第一对凭证</div></td></tr>
             </tbody>
           </table>
         </div>
@@ -73,11 +82,12 @@ window.PageOpenapi = {
         <div class="modal-body">
           <div class="field"><label>应用名称</label><input class="input" v-model="form.name" placeholder="例如：花盆卫士 PC 客户端" /></div>
           <div class="field-row">
-            <div class="field"><label>绑定产品</label>
+            <div class="field"><label>绑定后台上架商品</label>
               <select class="select" v-model="form.product_id">
-                <option :value="null">不限（校验时跳过产品匹配）</option>
+                <option :value="null">未绑定（用户端不展示该产品）</option>
                 <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }}</option>
               </select>
+              <div class="hint" style="margin-bottom:0">软件端应用 ↔ 上架商品一一对应。建好后到「套餐档位」选中本应用复制模板；未绑定商品或未启用时，用户「我的空间」看不到它。</div>
             </div>
             <div class="field"><label>状态</label>
               <select class="select" v-model="form.status"><option value="active">启用</option><option value="disabled">停用</option></select>
@@ -164,8 +174,18 @@ window.PageOpenapi = {
         products.value = res.list || [];
       } catch (e) { /* ignore */ }
     }
+    /** 档位数从 /api/plans/apps 拿，方便一眼看出哪个新应用还没配套餐 */
+    async function loadPlanCounts() {
+      try {
+        const res = await U.api.get('/api/plans/apps');
+        const counts = {};
+        (res.list || []).forEach((a) => { counts[a.id] = a.plan_count || 0; });
+        list.value = list.value.map((a) => ({ ...a, plan_count: counts[a.id] || 0 }));
+      } catch (e) { /* ignore */ }
+    }
     async function loadAll() {
       await Promise.all([load(), loadSummary(), loadProducts()]);
+      await loadPlanCounts();
     }
 
     function openCreate() {

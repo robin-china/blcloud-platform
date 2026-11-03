@@ -27,7 +27,8 @@
       </nav>
       <div class="spacer"></div>
       <div v-if="state.user" class="user-chip">
-        <div class="avatar">{{ (state.user.nickname || 'U').slice(0, 1) }}</div>
+        <img v-if="state.user.avatar" :src="state.user.avatar" alt="" class="avatar" style="object-fit:cover" />
+        <div v-else class="avatar">{{ (state.user.nickname || 'U').slice(0, 1) }}</div>
         <span>{{ state.user.nickname }}</span>
         <button class="btn sm" @click="logout">退出</button>
       </div>

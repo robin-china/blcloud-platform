@@ -12,6 +12,62 @@ db.pragma('foreign_keys = ON');
 
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
 
+/**
+ * 旧库 plans 表的 code 是列级 UNIQUE，全站只能存在一套档位。
+ * 多软件产品上架后，每个产品都要有自己的 free / member，必须改成 (app_id, code) 唯一。
+ * SQLite 删不掉列级 UNIQUE 自动索引，只能重建表；plans 表数据量极小、无外键引用，
+ * 用事务一次性完成。以表结构判定是否已迁移，重复启动幂等。
+ */
+function migratePlansScope() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'plans'").get();
+  if (!row || !/code\s+TEXT\s+UNIQUE/i.test(row.sql || '')) return; // 新库或已迁移
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // schema.sql 可能已在旧表上建了同名表达式索引；先摘掉，否则 RENAME 后它仍挂在
+    // plans_legacy 上，后面的 CREATE INDEX IF NOT EXISTS 会被跳过，新表反而没有唯一约束。
+    db.exec('DROP INDEX IF EXISTS idx_plans_app_code');
+    db.exec('ALTER TABLE plans RENAME TO plans_legacy');
+    db.exec(`CREATE TABLE plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      app_id INTEGER,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      tier INTEGER DEFAULT 0,
+      billing TEXT DEFAULT 'period',
+      price REAL DEFAULT 0,
+      original_price REAL DEFAULT 0,
+      period_days INTEGER DEFAULT 365,
+      online_required INTEGER DEFAULT 1,
+      offline_days INTEGER DEFAULT 0,
+      max_devices INTEGER DEFAULT 1,
+      seats INTEGER DEFAULT 1,
+      features TEXT DEFAULT '[]',
+      status TEXT DEFAULT 'on',
+      sort INTEGER DEFAULT 0,
+      remark TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`);
+    db.exec(`INSERT INTO plans (id,app_id,code,name,tier,billing,price,original_price,period_days,
+      online_required,offline_days,max_devices,seats,features,status,sort,remark,created_at,updated_at)
+      SELECT id,app_id,code,name,tier,billing,price,original_price,period_days,
+      online_required,offline_days,max_devices,seats,features,status,sort,remark,created_at,updated_at
+      FROM plans_legacy`);
+    db.exec('DROP TABLE plans_legacy');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_app_code ON plans(IFNULL(app_id, 0), code)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_plans_tier ON plans(tier)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_plans_app ON plans(app_id)');
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+migratePlansScope();
+
 // 轻量迁移：为已存在的旧库补充新增列
 function ensureColumn(table, column, definition) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all();
@@ -60,6 +116,12 @@ ensureColumn('users', 'agent_id', 'agent_id INTEGER DEFAULT 0');
 ensureColumn('users', 'agent_rate', 'agent_rate REAL');
 ensureColumn('users', 'agent_status', "agent_status TEXT DEFAULT 'none'");
 ensureColumn('users', 'agent_code', "agent_code TEXT DEFAULT ''");
+// 套餐授权归属应用（跨产品不可通用）；用户手动改过资料后不再被微信资料覆盖
+ensureColumn('licenses', 'app_id', 'app_id INTEGER');
+ensureColumn('orders', 'app_id', 'app_id INTEGER');
+ensureColumn('users', 'profile_custom', 'profile_custom INTEGER DEFAULT 0');
+db.exec('CREATE INDEX IF NOT EXISTS idx_licenses_app ON licenses(app_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_plans_app ON plans(app_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_license_devices_machine ON license_devices(machine_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_licenses_batch ON licenses(batch_no)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_users_agent ON users(agent_id)');
@@ -156,8 +218,9 @@ function seed() {
     for (const p of samples) stmt.run({ stock: 0, ...p, t: now() });
   }
 
-  // 五档默认套餐。价格/周期/权益都是占位值，上线前到「产品运营 → 套餐档位」按实际改；
-  // 导出 JSON 可纳入版本管理，运行时始终以本表为准。
+  // 五档「通用模板」套餐：app_id = NULL，只作为复制到具体软件产品的底稿，不直接售卖。
+  // 多产品上架后在「产品运营 → 套餐档位」选中产品、点「从模板复制」生成该产品专属档位；
+  // 运行时下单/激活只认带 app_id 的档位。价格/周期/权益都是占位值，上线前按实际改。
   const planCount = db.prepare('SELECT COUNT(*) AS c FROM plans').get().c;
   if (planCount === 0) {
     const defaults = [

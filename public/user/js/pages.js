@@ -204,19 +204,71 @@ window.PageProduct = {
 window.PageSpace = {
   template: `
   <div>
-    <div class="hero" style="background:linear-gradient(120deg,#0f766e 0%,#2563eb 100%)">
-      <h2>你好，{{ user?.nickname || '用户' }}</h2>
-      <p>{{ user?.phone ? '已绑定手机 ' + user.phone : '未绑定手机号，建议前往账户中心绑定' }}</p>
+    <div class="hero" style="background:linear-gradient(120deg,#0f766e 0%,#2563eb 100%);display:flex;align-items:center;gap:14px">
+      <img v-if="data.user && data.user.avatar" :src="data.user.avatar" alt=""
+           style="width:56px;height:56px;border-radius:50%;object-fit:cover;background:#fff" />
+      <div v-else class="avatar" style="width:56px;height:56px;font-size:22px">
+        {{ (data.user && data.user.nickname ? data.user.nickname : 'U').slice(0, 1) }}
+      </div>
+      <div>
+        <h2 style="margin:0">你好，{{ data.user && data.user.nickname ? data.user.nickname : '用户' }}</h2>
+        <p style="margin:4px 0 0">{{ data.user && data.user.phone ? '已绑定手机 ' + data.user.phone : '未绑定手机号，建议前往账户中心绑定' }}</p>
+      </div>
     </div>
     <div class="grid g4" style="margin-bottom:16px">
-      <div class="stat"><div class="label">我的授权</div><div class="value">{{ licenses.length }}</div></div>
-      <div class="stat"><div class="label">我的硬件</div><div class="value">{{ devices.length }}</div><div class="delta">在线 {{ onlineCount }}</div></div>
-      <div class="stat"><div class="label">积分</div><div class="value">{{ user?.points || 0 }}</div><div class="delta">可抵 ¥{{ ((user?.points||0)/100).toFixed(2) }}</div></div>
-      <div class="stat"><div class="label">订单</div><div class="value">{{ orders.length }}</div><div class="delta">已支付 {{ paidCount }}</div></div>
+      <div class="stat"><div class="label">使用中的产品</div><div class="value">{{ data.apps.length }}</div></div>
+      <div class="stat"><div class="label">我的授权</div><div class="value">{{ data.licenses.length }}</div></div>
+      <div class="stat"><div class="label">我的硬件</div><div class="value">{{ data.devices.length }}</div><div class="delta">在线 {{ onlineCount }}</div></div>
+      <div class="stat"><div class="label">积分 / 订单</div><div class="value">{{ data.user && data.user.points || 0 }}</div><div class="delta">已支付 {{ paidCount }} 单</div></div>
     </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head">
+        <h3>我使用的软件产品</h3>
+        <span style="color:var(--text-3);font-size:12.5px">每个产品独立档位，升级 / 续费不换授权码</span>
+      </div>
+      <div class="card-body tight">
+        <div class="prod-grid" style="padding:16px">
+          <div class="prod-card" v-for="a in data.apps" :key="a.app_id" style="cursor:default">
+            <div class="thumb" v-html="thumb(a.product)"></div>
+            <div class="body">
+              <h4>{{ a.product.name }}</h4>
+              <div class="desc">{{ a.product.subtitle || a.app_name }}</div>
+              <div style="margin:8px 0;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+                <span class="tag" :class="a.plan && a.plan.billing !== 'free' ? 'success' : ''">
+                  {{ a.plan ? a.plan.name : '未开通' }}
+                </span>
+                <span class="tag info" v-if="a.version">v{{ a.version }}</span>
+                <span class="tag danger" v-if="a.license && a.license.days_left !== null && a.license.days_left <= 7">即将到期</span>
+              </div>
+              <div class="kv" style="font-size:12.5px">
+                <div class="k">授权码</div>
+                <div style="font-family:ui-monospace,monospace">{{ a.license ? a.license.license_key : '—' }}</div>
+                <div class="k">有效期</div><div>{{ expireText(a) }}</div>
+                <div class="k">设备</div>
+                <div>{{ a.license ? a.license.bound_devices + ' / ' + a.license.max_devices : '—' }}</div>
+                <div class="k">离线</div>
+                <div>{{ a.plan && a.plan.offline_days ? a.plan.offline_days + ' 天宽限' : '需联网' }}</div>
+              </div>
+              <div class="btn-group" style="margin-top:10px;flex-wrap:wrap">
+                <button class="btn sm primary" v-if="a.license && a.upgrades && a.upgrades.length" @click="openUpgrade(a)">升级档位</button>
+                <button class="btn sm" v-if="a.license && a.renew" @click="openRenew(a)">续费</button>
+                <button class="btn sm" @click="download(a)">下载</button>
+                <button class="btn sm" v-if="a.license" @click="copy(a.license.license_key)">复制授权码</button>
+              </div>
+              <div v-if="a.plan && a.upgrades && !a.upgrades.length" style="margin-top:8px;color:var(--text-3);font-size:12px">
+                当前已是该产品最高档位
+              </div>
+            </div>
+          </div>
+          <div class="empty" v-if="!data.apps.length" style="grid-column:1/-1">还没有上架的软件产品，可先去「官方产品」看看</div>
+        </div>
+      </div>
+    </div>
+
     <div class="grid g2">
       <div class="card">
-        <div class="card-head"><h3>blcloud 物联服务</h3><span class="tag" :class="tbStatus==='active'?'success':'warning'">{{ tbText }}</span></div>
+        <div class="card-head"><h3>blcloud 物联服务</h3><span class="tag" :class="tbStatus==='active'?'success':''">{{ tbText }}</span></div>
         <div class="card-body">
           <div class="kv">
             <div class="k">服务状态</div><div>{{ tbStatus==='active' ? '已开通，设备数据自动同步' : '开通中 / 待同步' }}</div>
@@ -231,59 +283,187 @@ window.PageSpace = {
           <div class="btn-group">
             <button class="btn" @click="$root.go('shop')">浏览官方产品</button>
             <button class="btn" @click="$root.go('licenses')">查看授权</button>
-            <button class="btn" @click="$root.go('devices')">绑定硬件</button>
+            <button class="btn" @click="$root.go('account')">修改昵称头像</button>
             <button class="btn" @click="$root.go('orders')">我的订单</button>
             <button class="btn primary" @click="signin">每日签到</button>
           </div>
         </div>
       </div>
     </div>
-    <div class="card" style="margin-top:16px">
-      <div class="card-head"><h3>我的产品</h3><button class="btn sm" @click="$root.go('shop')">去购买</button></div>
-      <div class="card-body tight">
-        <div class="prod-grid" style="padding:16px">
-          <div class="prod-card" v-for="l in licenses" :key="l.id">
-            <div class="thumb" v-html="thumb(l)"></div>
-            <div class="body">
-              <h4>{{ l.product_name }}</h4>
-              <div class="desc" style="font-family:ui-monospace,monospace;font-size:12px">{{ l.license_key }}</div>
-              <div style="margin-top:8px"><span class="tag success">有效</span></div>
+
+    <div class="mask" v-if="planDialog" @click.self="closePlan">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>{{ planMode === 'renew' ? '续费' : '升级档位' }} · {{ curApp && curApp.product ? curApp.product.name : '' }}</h3>
+          <button class="close-x" @click="closePlan">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="!payResult">
+            <div class="hint" style="margin-top:0">
+              {{ planMode === 'renew' ? '续费只延长原授权有效期，不换授权码、不需要重新激活，已绑定的机器全部保留。' : '升级只改档位与设备数，同样保留原授权码和已绑定机器；差价按当前剩余天数折算。' }}
+            </div>
+            <div v-if="planMode === 'renew' && curApp && curApp.renew">
+              <div><b>{{ curApp.renew.name }}</b> · {{ curApp.renew.period_days }} 天</div>
+              <div style="font-size:20px;margin:6px 0">{{ fmt.money(curApp.renew.price) }}</div>
+              <button class="btn primary" :disabled="submitting" @click="submit('renew', curApp.renew.plan_id)">
+                {{ submitting ? '提交中…' : '立即续费' }}
+              </button>
+            </div>
+            <div v-if="planMode === 'upgrade' && curApp">
+              <div class="card" style="margin-bottom:10px" v-for="p in curApp.upgrades" :key="p.id">
+                <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+                  <div>
+                    <b>{{ p.name }}</b>
+                    <div style="font-size:12px;color:var(--text-3);margin-top:4px">
+                      {{ p.max_devices }} 台设备 · {{ p.seats }} 席位 · {{ p.offline_days ? '离线 ' + p.offline_days + ' 天' : '需联网' }}
+                    </div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px">
+                    <b>补差价 {{ fmt.money(p.price) }}</b>
+                    <button class="btn primary sm" :disabled="submitting" @click="submit('upgrade', p.id)">升级</button>
+                  </div>
+                </div>
+              </div>
+              <div class="empty" v-if="!curApp.upgrades || !curApp.upgrades.length">当前已是最高档位</div>
             </div>
           </div>
-          <div class="empty" v-if="!licenses.length">还没有已购产品</div>
+          <div v-else>
+            <div class="qr-box" v-if="payResult.mode==='qrcode'">
+              <img v-if="payResult.code_url" :src="qrSrc(payResult.code_url)" />
+              <div class="hint">请使用微信扫码支付</div>
+            </div>
+            <div v-else-if="payResult.mode==='redirect'">
+              <a class="btn primary" :href="payResult.pay_url" target="_blank">前往支付宝付款</a>
+            </div>
+            <div v-else class="qr-placeholder" style="width:100%;height:auto;padding:18px">
+              当前为模拟支付模式，点击下方按钮完成支付
+            </div>
+            <div class="btn-group" style="margin-top:14px;justify-content:center">
+              <button class="btn" v-if="payResult.mode==='simulate'" @click="simulatePay">模拟支付完成</button>
+              <button class="btn" @click="checkPaid">我已支付</button>
+            </div>
+          </div>
+          <div class="hint" v-if="planError" style="color:var(--danger)">{{ planError }}</div>
         </div>
+        <div class="modal-foot"><button class="btn" @click="closePlan">关闭</button></div>
       </div>
     </div>
   </div>
   `,
   setup() {
-    const user = Vue.inject('user');
-    const licenses = ref([]);
-    const devices = ref([]);
-    const orders = ref([]);
-    const onlineCount = computed(() => devices.value.filter((d) => d.status === 'online').length);
-    const paidCount = computed(() => orders.value.filter((o) => o.status === 'paid').length);
-    const tbStatus = computed(() => user.value?.tb_status || 'none');
+    const data = ref({ user: {}, apps: [], licenses: [], devices: [], orders: [] });
+    const fmt = U.fmt;
+    // 模板只能看见 setup 暴露的标识符，脚本里取一次全局值再传出去
+    const basePath = window.U ? (window.U.basePath || '') : '';
+    const payChannels = ref([]);
+    const channel = ref('wxpay');
+    const planDialog = ref(false);
+    const planMode = ref('upgrade');
+    const curApp = ref(null);
+    const payResult = ref(null);
+    const planError = ref('');
+    const submitting = ref(false);
+    const pay = reactive({});
+
+    const onlineCount = computed(() => data.value.devices.filter((d) => d.status === 'online').length);
+    const paidCount = computed(() => data.value.orders.filter((o) => o.status === 'paid').length);
+    const tbStatus = computed(() => (data.value.user && data.value.user.tb_status) || 'none');
     const tbText = computed(() => ({ active: '已开通', pending: '待激活', error: '异常' }[tbStatus.value] || '未开通'));
 
-    async function load() {
-      licenses.value = (await U.api.get('/api/portal/licenses')).list;
-      devices.value = (await U.api.get('/api/portal/devices')).list;
-      orders.value = (await U.api.get('/api/portal/orders')).list;
+    const CHANNEL_NAMES = { wxpay: '微信支付', alipay: '支付宝', simulate: '模拟支付' };
+    async function loadPayChannels() {
+      try {
+        const res = await U.api.get('/api/portal/site');
+        payChannels.value = (res.pay_channels || []).map((k) => ({ key: k, name: CHANNEL_NAMES[k] || k }));
+        if (payChannels.value.length) channel.value = payChannels.value[0].key;
+      } catch (e) { payChannels.value = []; }
+    }
+
+    async function load() { data.value = await U.api.get('/api/portal/space'); }
+    function qrSrc(text) { return basePath + '/api/portal/qrcode?text=' + encodeURIComponent(text); }
+    function expireText(a) {
+      if (!a.license) return '—';
+      if (!a.license.end_at) return '永久有效';
+      const d = a.license.days_left;
+      const days = (d === null || d === undefined) ? '' : '（剩 ' + Math.max(0, d) + ' 天）';
+      return fmt.date(a.license.end_at) + days;
+    }
+    function openUpgrade(a) {
+      curApp.value = a; planMode.value = 'upgrade'; payResult.value = null;
+      planError.value = ''; planDialog.value = true;
+    }
+    function openRenew(a) {
+      curApp.value = a; planMode.value = 'renew'; payResult.value = null;
+      planError.value = ''; planDialog.value = true;
+    }
+    function closePlan() {
+      planDialog.value = false; curApp.value = null; payResult.value = null; planError.value = '';
+    }
+    async function submit(kind, planId) {
+      planError.value = '';
+      submitting.value = true;
+      try {
+        const res = await U.api.post('/api/portal/orders', {
+          kind, plan_id: planId,
+          ref_license_id: curApp.value.license.id,
+          app_id: curApp.value.app_id,
+        });
+        Object.assign(pay, res);
+        payResult.value = await U.api.post('/api/portal/orders/' + res.order_no + '/pay', { channel: channel.value });
+      } catch (e) { planError.value = e.message; }
+      finally { submitting.value = false; }
+    }
+    async function simulatePay() {
+      try {
+        await U.api.post('/api/pay/simulate/' + pay.order_no, {});
+        U.toast('支付成功，档位已更新', 'success');
+        closePlan();
+        await load();
+      } catch (e) { planError.value = e.message; }
+    }
+    async function checkPaid() {
+      try {
+        const res = await U.api.get('/api/portal/orders');
+        const hit = (res.list || []).find((o) => o.order_no === pay.order_no);
+        if (hit && hit.status === 'paid') {
+          U.toast('支付成功', 'success');
+          closePlan();
+          await load();
+        } else { U.toast('尚未检测到支付结果，请稍后再试', 'error'); }
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+    function download(a) {
+      if (a.download_url) { window.open(a.download_url, '_blank'); return; }
+      if (a.product && a.product.id) {
+        U.api.post('/api/portal/download/' + a.product.id, {}).then((r) => {
+          if (r.url) window.open(r.url, '_blank');
+          else U.toast('暂未提供下载地址', 'error');
+        });
+      }
+    }
+    function copy(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text)
+          .then(() => U.toast('已复制授权码', 'success'), () => window.prompt('手动复制授权码', text));
+      } else { window.prompt('手动复制授权码', text); }
     }
     async function signin() {
       try {
         const res = await U.api.post('/api/portal/signin', {});
-        U.toast(`签到成功，获得 ${res.gain} 积分`, 'success');
-        await U.api.get('/api/portal/me');
+        U.toast('签到成功，获得 ' + res.gain + ' 积分', 'success');
         location.reload();
       } catch (e) { U.toast(e.message, 'error'); }
     }
     onMounted(async () => {
       if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
-      load();
+      await Promise.all([load(), loadPayChannels()]);
     });
-    return { user, licenses, devices, orders, onlineCount, paidCount, tbStatus, tbText, signin, thumb: productIcon };
+    return {
+      data, fmt, onlineCount, paidCount, tbStatus, tbText,
+      planDialog, planMode, curApp, payResult, planError, submitting,
+      openUpgrade, openRenew, closePlan, submit, simulatePay, checkPaid,
+      expireText, qrSrc, download, copy, signin, thumb: productIcon,
+    };
   },
 };
 
@@ -718,15 +898,33 @@ window.PageAccount = {
   template: `
   <div class="grid g2">
     <div class="card">
-      <div class="card-head"><h3>账户资料</h3></div>
+      <div class="card-head">
+        <h3>账户资料</h3>
+        <span class="tag success" v-if="user?.profile_custom">已自定义</span>
+        <span class="tag" v-else>来自微信</span>
+      </div>
       <div class="card-body">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <img v-if="user?.avatar" :src="user.avatar" alt=""
+               style="width:48px;height:48px;border-radius:50%;object-fit:cover;background:var(--bg-2)" />
+          <div v-else class="avatar" style="width:48px;height:48px;font-size:20px">
+            {{ (user?.nickname || 'U').slice(0, 1) }}
+          </div>
+          <div>
+            <b>{{ user?.nickname || '-' }}</b>
+            <div style="color:var(--text-3);font-size:12.5px">默认取微信昵称与头像，可自行修改；软件端登录后同步</div>
+          </div>
+        </div>
         <div class="kv">
-          <div class="k">昵称</div><div>{{ user?.nickname || '-' }}</div>
           <div class="k">OpenID</div><div style="font-family:ui-monospace,monospace;font-size:12.5px">{{ user?.openid || '-' }}</div>
           <div class="k">手机号</div><div>{{ user?.phone || '未绑定' }}</div>
           <div class="k">积分</div><div>{{ user?.points || 0 }}</div>
           <div class="k">注册时间</div><div>{{ fmt.time(user?.created_at) }}</div>
         </div>
+        <div class="field" style="margin-top:12px"><label>昵称</label><input class="input" v-model="nickname" maxlength="24" placeholder="你的昵称" /></div>
+        <div class="field"><label>头像地址</label><input class="input" v-model="avatar" placeholder="https://... 或 /assets/avatar.png" /></div>
+        <div class="hint">改过之后微信登录不会再覆盖；头像支持 http(s) 链接或站内路径，留空表示清除。</div>
+        <button class="btn primary" :disabled="saving" @click="saveProfile">{{ saving ? '保存中…' : '保存资料' }}</button>
       </div>
     </div>
     <div class="card">
@@ -766,7 +964,21 @@ window.PageAccount = {
     const code = ref('');
     const devCode = ref('');
     const points = ref([]);
+    const nickname = ref('');
+    const avatar = ref('');
+    const saving = ref(false);
     const fmt = U.fmt;
+    async function saveProfile() {
+      saving.value = true;
+      try {
+        const res = await U.api.post('/api/portal/profile', { nickname: nickname.value, avatar: avatar.value });
+        nickname.value = res.user.nickname;
+        avatar.value = res.user.avatar || '';
+        U.toast('资料已保存，软件端下次同步即可看到', 'success');
+        location.reload();
+      } catch (e) { U.toast(e.message, 'error'); }
+      finally { saving.value = false; }
+    }
     async function sendCode() {
       if (!/^1\d{10}$/.test(phone.value)) { U.toast('手机号格式不正确', 'error'); return; }
       const res = await U.api.post('/api/portal/phone/code', { phone: phone.value });
@@ -789,9 +1001,15 @@ window.PageAccount = {
     }
     onMounted(async () => {
       if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
+      try {
+        const me = await U.api.get('/api/portal/me');
+        nickname.value = me.user.nickname || '';
+        avatar.value = me.user.avatar || '';
+      } catch (e) { /* ignore */ }
       points.value = (await U.api.get('/api/portal/points')).list;
     });
-    return { user, phone, code, devCode, points, fmt, sendCode, bind, signin };
+    return { user, phone, code, devCode, points, nickname, avatar, saving, fmt,
+      saveProfile, sendCode, bind, signin };
   },
 };
 

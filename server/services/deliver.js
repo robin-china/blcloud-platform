@@ -37,11 +37,13 @@ function deliverPlanPurchase(order) {
   const key = genLicenseKey();
   const endAt = plan.billing === 'period' ? plans.addDays(plan.period_days) : null;
   const licType = plan.billing === 'period' ? 'subscription' : 'permanent';
+  // 套餐授权必须落到具体软件产品上，否则 A 产品的码能在 B 产品里激活
+  const appId = Number(plan.app_id) || Number(order.app_id) || null;
   const info = db.prepare(`INSERT INTO licenses
-    (license_key, user_id, product_id, type, max_devices, start_at, end_at, status,
+    (license_key, user_id, app_id, product_id, type, max_devices, start_at, end_at, status,
      plan_id, plan_code, order_id, remark, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(key, order.user_id, 0, licType, Number(plan.max_devices) || 1,
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(key, order.user_id, appId, 0, licType, Number(plan.max_devices) || 1,
       ts, endAt, 'active', plan.id, plan.code, order.id, `订单自动发放：${plan.name}`, ts);
   return {
     type: 'license', license_key: key, product: plan.name,
@@ -94,10 +96,13 @@ function deliverUpgrade(order) {
   let endAt = lic.end_at;
   if (plan.billing === 'period' && !endAt) endAt = plans.addDays(plan.period_days || 365);
   if (plan.billing !== 'period') endAt = null;
+  // 升级会把历史「不限应用」的通用授权固化到本次下单的产品上，
+  // 之后这张码就不能再拿到别的产品里用 —— 这正是产品隔离要做的事。
+  const appId = Number(plan.app_id) || Number(order.app_id) || Number(lic.app_id) || null;
   db.prepare(`UPDATE licenses SET plan_id = ?, plan_code = ?, max_devices = ?, end_at = ?,
-    type = ?, status = 'active' WHERE id = ?`)
+    type = ?, status = 'active', app_id = ? WHERE id = ?`)
     .run(plan.id, plan.code, Number(plan.max_devices) || 1, endAt,
-      plan.billing === 'period' ? 'subscription' : 'permanent', lic.id);
+      plan.billing === 'period' ? 'subscription' : 'permanent', appId, lic.id);
   return {
     type: 'license_upgrade', license_key: lic.license_key, license_id: lic.id,
     product: plan.name, plan_code: plan.code,

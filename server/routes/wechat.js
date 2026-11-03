@@ -6,11 +6,17 @@ const wechat = require('../services/wechat');
 const wxdiag = require('../lib/wxdiag');
 const tb = require('../services/tb');
 const plans = require('../lib/plans');
+const profileLib = require('../lib/profile');
 
 async function ensureUser(openid, profile = {}) {
   let user = db.prepare('SELECT * FROM users WHERE openid = ?').get(openid);
   if (user) {
     db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now(), user.id);
+    // 扫码登录默认取微信昵称/头像；用户自己改过资料后（profile_custom=1）不再覆盖。
+    // 微信没返回的值也不清空已有资料（服务号未关注时 getUserInfo 常返回空）。
+    if (profileLib.syncFromWechat(user, profile)) {
+      user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+    }
     // 开关后开、或上次开通失败的历史账户：用户再次登录时自动补开，
     // 否则这些账户会永远停在「待激活」，只能靠管理员逐个手工点
     const cfg = getConfig('tb');
@@ -29,8 +35,11 @@ async function ensureUser(openid, profile = {}) {
     plans.ensureFreeLicense(user.id);
     return { user, isNew: false };
   }
+  // 新用户默认用微信昵称 / 微信头像；服务号没返回时才回退成「用户XXXX」占位
+  const wxAvatar = profileLib.safeAvatar(profile.avatar);
   const info = db.prepare('INSERT INTO users (openid, unionid, nickname, avatar, phone, points, status, created_at, last_login_at) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(openid, profile.unionid || '', profile.nickname || `用户${openid.slice(-4)}`, profile.avatar || '', null, 0, 'active', now(), now());
+    .run(openid, profile.unionid || '', profileLib.cleanText(profile.nickname, 24) || `用户${openid.slice(-4)}`,
+      wxAvatar.ok ? wxAvatar.value : '', null, 0, 'active', now(), now());
   user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   const cfg = getConfig('tb');
   const suffix = cfg.email_suffix || '@tb.cn';
@@ -110,7 +119,10 @@ module.exports = async function wechatRoutes(app) {
     const openid = String((req.body || {}).openid || `demo${Math.random().toString(36).slice(2, 10)}`);
     const s = db.prepare('SELECT * FROM wechat_sessions WHERE scene = ?').get(req.params.scene);
     if (!s) return reply.code(404).send({ error: '二维码已失效' });
-    const { user } = await ensureUser(openid, { nickname: (req.body || {}).nickname || '演示用户' });
+    const { user } = await ensureUser(openid, {
+      nickname: (req.body || {}).nickname || '演示用户',
+      avatar: (req.body || {}).avatar || '',
+    });
     db.prepare('UPDATE wechat_sessions SET status = ?, openid = ?, user_id = ? WHERE scene = ?').run('confirmed', openid, user.id, s.scene);
     return { ok: true };
   });

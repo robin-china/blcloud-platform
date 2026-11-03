@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS users (
   phone TEXT UNIQUE,
   points INTEGER DEFAULT 0,
   balance REAL DEFAULT 0,
+  -- 用户手动改过昵称/头像后置 1：之后微信登录不再覆盖用户自己设的资料
+  profile_custom INTEGER DEFAULT 0,
   status TEXT DEFAULT 'active',
   tb_username TEXT,
   tb_password TEXT,
@@ -84,6 +86,9 @@ CREATE TABLE IF NOT EXISTS licenses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   license_key TEXT UNIQUE NOT NULL,
   user_id INTEGER NOT NULL,
+  -- 套餐授权归属的软件端应用（open_apps.id）。NULL = 历史「不限应用」授权，保持兼容；
+  -- 新发的套餐授权一律带 app_id，激活时按此校验，A 软件的码不能在 B 软件上用。
+  app_id INTEGER,
   product_id INTEGER NOT NULL,
   type TEXT DEFAULT 'permanent',
   max_devices INTEGER DEFAULT 1,
@@ -130,6 +135,8 @@ CREATE TABLE IF NOT EXISTS orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   order_no TEXT UNIQUE NOT NULL,
   user_id INTEGER NOT NULL,
+  -- 套餐订单归属的软件端应用，便于发货时把授权绑定到正确产品、以及按产品统计
+  app_id INTEGER,
   amount REAL NOT NULL,
   pay_amount REAL NOT NULL,
   discount REAL DEFAULT 0,
@@ -339,12 +346,15 @@ CREATE TABLE IF NOT EXISTS handoff_tickets (
 );
 CREATE INDEX IF NOT EXISTS idx_handoff_user ON handoff_tickets(user_id);
 
--- 套餐档位：同一个软件产品的五个等级，不是五个独立商品。
+-- 套餐档位：按「软件端接入应用」分组，每个软件产品可以有自己的一套等级。
+-- app_id → open_apps.id；NULL 表示通用模板档位（只用于复制到具体产品，不直接售卖）。
+-- 同一 code 允许在不同产品下重复（每个产品都可以有 free / member），
+-- 所以唯一性用 (IFNULL(app_id,0), code) 表达式索引，而不是列级 UNIQUE。
 -- 运行时以本表为准；plans.json 只作导入/导出的版本化载体，不参与请求链路。
 CREATE TABLE IF NOT EXISTS plans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   app_id INTEGER,
-  code TEXT UNIQUE NOT NULL,
+  code TEXT NOT NULL,
   name TEXT NOT NULL,
   tier INTEGER DEFAULT 0,
   billing TEXT DEFAULT 'period',
@@ -362,7 +372,10 @@ CREATE TABLE IF NOT EXISTS plans (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_app_code ON plans(IFNULL(app_id, 0), code);
 CREATE INDEX IF NOT EXISTS idx_plans_tier ON plans(tier);
+CREATE INDEX IF NOT EXISTS idx_plans_app ON plans(app_id);
+CREATE INDEX IF NOT EXISTS idx_licenses_app ON licenses(app_id);
 
 -- 代理商佣金账本。status: pending(账期内) → settled(可提现) → withdrawn(已提现)
 -- 退款时置 reversed；已提现后才退款的另记一条负数 adjustment，从后续可提现里扣。

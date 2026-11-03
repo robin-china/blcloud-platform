@@ -13,6 +13,7 @@ const { ensureUser } = require('../routes/wechat');
 const offlineKey = require('../lib/offlinekey');
 const bindSvc = require('../lib/licensebind');
 const plans = require('../lib/plans');
+const profileLib = require('../lib/profile');
 
 const ACCESS_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -75,9 +76,11 @@ function licensePayload(lic) {
   return {
     license_key: lic.license_key,
     license_id: lic.id,
+    app_id: lic.app_id || ent.app_id || null,
     product_id: lic.product_id,
-    // 套餐授权 product_id=0（schema 该列 NOT NULL），JOIN 不到商品时用档位名兜底
-    product_name: product ? product.name : (ent.plan_name || '套餐授权'),
+    // 套餐授权 product_id=0（schema 该列 NOT NULL），JOIN 不到商品时
+    // 用档位绑定的上架商品名兜底，再回退档位名
+    product_name: product ? product.name : (ent.product_name || ent.plan_name || '套餐授权'),
     product_type: product ? product.type : '',
     type: lic.type,
     start_at: lic.start_at,
@@ -134,8 +137,9 @@ module.exports = async function openRoutes(app) {
       // 离线宽限天数必须下发，否则「后台配了宽限、客户端根本不知道」，
       // 断网策略只能各自写死。0 = 必须联网校验。
       offline_days: Number(a.offline_days || 0),
-      // 套餐目录一并下发，客户端可据此展示可购买档位；真正的权益判断仍以票据签名字段为准
-      plan_catalog: plans.list(true).map((p) => ({
+      // 只下发本应用的档位：每个软件产品有自己的一套等级，不能把别家价格混进来
+      plan_catalog: plans.listForApp(a.id, true).map((p) => ({
+        app_id: p.app_id || null, product_id: p.product_id || null,
         code: p.code, name: p.name, tier: p.tier, billing: p.billing,
         price: p.price, period_days: p.period_days, offline_days: p.offline_days,
         max_devices: p.max_devices, seats: p.seats, features: p.features,
@@ -168,10 +172,10 @@ module.exports = async function openRoutes(app) {
     const st = licenseState(lic);
     if (!st.valid) return reply.code(403).send({ valid: false, ...st });
 
-    // 套餐授权 product_id=0，不绑定具体商品，跳过商品匹配；
-    // 老的商品授权仍按 app.product_id 校验，避免 A 软件的码拿到 B 软件上用
-    if (req.app.product_id && Number(lic.product_id) > 0 && Number(lic.product_id) !== Number(req.app.product_id)) {
-      return reply.code(403).send({ valid: false, reason: '授权与当前应用不匹配', code: 'PRODUCT_MISMATCH' });
+    // 三层匹配：授权归属 app_id、档位归属 app_id、老商品授权按 product_id。
+    // 历史「不限应用」的授权（app_id=NULL + 通用模板档位）继续放行，不锁死老客户。
+    if (!plans.licenseMatchesApp(lic, req.app)) {
+      return reply.code(403).send({ valid: false, reason: '授权与当前软件产品不匹配', code: 'PRODUCT_MISMATCH' });
     }
 
     const bound = bindMachine(lic, machineId, {
@@ -253,6 +257,9 @@ module.exports = async function openRoutes(app) {
         appVersion: String(req.query.version || ''),
         ip: clientIp(req),
       });
+      // 软件端扫码进来时就知道是哪个应用，按需补发该产品专属免费档授权码，
+      // 用户不必先去网页「我的空间」领码才能激活
+      plans.ensureFreeLicense(user.id, appRow.id);
       track(user.id, appRow.app_key, 'auth.qrcode.login');
       return { status: 'confirmed', ...token, user: userPayload(user) };
     }
@@ -339,6 +346,7 @@ module.exports = async function openRoutes(app) {
       appVersion: String((req.body || {}).version || ''),
       ip: clientIp(req),
     });
+    plans.ensureFreeLicense(user.id, req.app.id);
     track(user.id, req.app.app_key, 'auth.login.phone');
     return { ...token, user: userPayload(user), is_new: false };
   });
@@ -376,7 +384,17 @@ module.exports = async function openRoutes(app) {
     touchSession(req.session, clientIp(req));
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user_id);
     track(user.id, req.app.app_key, 'user.profile');
+    // 实时读库：用户在网页端改了昵称/头像，软件端下次取资料就能同步到
     return { user: userPayload(user), session_expires_at: req.session.expires_at };
+  });
+
+  /** 软件端也能改昵称 / 头像，与网页端共用同一套校验与 profile_custom 标记 */
+  app.post('/api/open/v1/user/profile', async (req, reply) => {
+    if (!(await requireClient(req, reply))) return;
+    const r = profileLib.updateByUser(req.session.user_id, req.body || {});
+    if (!r.ok) return reply.code(400).send({ error: r.errors.join('；') });
+    track(req.session.user_id, req.app.app_key, 'user.profile.update');
+    return { ok: true, user: userPayload(db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user_id)) };
   });
 
   app.get('/api/open/v1/user/licenses', async (req, reply) => {
@@ -442,8 +460,8 @@ module.exports = async function openRoutes(app) {
 
     const st = licenseState(lic);
     if (!st.valid) return reply.code(403).send({ valid: false, ...st });
-    if (appRow.product_id && Number(lic.product_id) > 0 && Number(lic.product_id) !== Number(appRow.product_id)) {
-      return reply.code(403).send({ valid: false, reason: '授权与当前应用不匹配', code: 'PRODUCT_MISMATCH' });
+    if (!plans.licenseMatchesApp(lic, appRow)) {
+      return reply.code(403).send({ valid: false, reason: '授权与当前软件产品不匹配', code: 'PRODUCT_MISMATCH' });
     }
 
     let boundInfo = null;
@@ -457,12 +475,12 @@ module.exports = async function openRoutes(app) {
       boundInfo = { machine_id: machineId, bound_at: d.bound_at };
     }
 
-    const user = db.prepare('SELECT id, nickname FROM users WHERE id = ?').get(lic.user_id);
+    const user = db.prepare('SELECT id, nickname, avatar FROM users WHERE id = ?').get(lic.user_id);
     track(lic.user_id, appRow.app_key, 'license.verify');
     return {
       valid: true,
       license: licensePayload(lic),
-      user: user ? { id: user.id, nickname: user.nickname } : null,
+      user: user ? { id: user.id, nickname: user.nickname, avatar: user.avatar || '' } : null,
       machine: boundInfo,
       server_time: now(),
     };
@@ -561,6 +579,7 @@ module.exports = async function openRoutes(app) {
       user_id: req.session.user_id,
       machine_id: req.session.machine_id || '',
       product_id: lic.product_id,
+      app_id: ent.app_id || null,
       plan: ent.plan_code || lic.type,
       plan_code: ent.plan_code,
       plan_name: ent.plan_name || '',

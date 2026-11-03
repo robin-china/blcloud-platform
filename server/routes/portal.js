@@ -11,6 +11,7 @@ const bindSvc = require('../lib/licensebind');
 const plans = require('../lib/plans');
 const commission = require('../lib/commission');
 const reminders = require('../lib/reminders');
+const profileLib = require('../lib/profile');
 
 /**
  * 用户端自动补单的节流表：orderId -> 上次查单时间戳。
@@ -115,10 +116,8 @@ module.exports = async function portalRoutes(app) {
     db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now(), user.id);
     return {
       token: signUser(user),
-      user: {
-        id: user.id, openid: user.openid, nickname: user.nickname, avatar: user.avatar,
-        phone: user.phone || '', points: user.points || 0, balance: user.balance || 0,
-      },
+      // 用白名单输出：软件端免登进网页时同样拿不到任何内部物联账户字段
+      user: profileLib.publicUser(user),
     };
   });
 
@@ -140,9 +139,17 @@ module.exports = async function portalRoutes(app) {
 
   app.get('/api/portal/me', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
-    const user = db.prepare('SELECT id, openid, nickname, avatar, phone, points, balance, tb_status, created_at FROM users WHERE id = ?').get(req.user.sub);
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.sub);
     if (!user) return reply.code(404).send({ error: '用户不存在' });
-    return { user };
+    return { user: profileLib.publicUser(user) };
+  });
+
+  /** 用户自行修改昵称 / 头像。改过之后微信登录不再覆盖（profile_custom=1）。 */
+  app.post('/api/portal/profile', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const r = profileLib.updateByUser(req.user.sub, req.body || {});
+    if (!r.ok) return reply.code(400).send({ error: r.errors.join('；') });
+    return { ok: true, user: r.user };
   });
 
   app.post('/api/portal/phone/code', async (req, reply) => {
@@ -175,7 +182,7 @@ module.exports = async function portalRoutes(app) {
     if (target.billing !== 'period') return plans.round2(target.price);
     const diff = plans.round2(target.price - Number(cur?.price || 0));
     if (diff <= 0) return 0;
-    if (!proration || !cur || !cur.period_days || !lic.end_at) return diff;
+    if (!proration || !cur || !cur.period_days || !lic || !lic.end_at) return diff;
     const remain = Math.max(0, Date.parse(lic.end_at) - Date.now());
     const total = Number(cur.period_days) * 86400000;
     return Math.max(0.01, plans.round2(diff * Math.min(1, remain / total)));
@@ -193,14 +200,23 @@ module.exports = async function portalRoutes(app) {
     let detail = [];
     let refLicenseId = 0;
     let resolvedPlanId = 0;
+    let orderAppId = 0;
 
     if (planId) {
       const plan = plans.get(planId);
       if (!plan || plan.status !== 'on') return reply.code(400).send({ error: '套餐档位不存在或已下架' });
       if (plan.billing === 'free') return reply.code(400).send({ error: '免费档无需下单' });
       resolvedPlanId = plan.id;
+      // 档位按软件产品分组后，下单必须落在同一产品上：
+      // 否则可以拿 A 产品便宜档位的钱，把 B 产品的授权升到高档。
+      const planAppId = Number(plan.app_id) || 0;
+      const reqAppId = Number(b.app_id) || 0;
+      if (planAppId && reqAppId && planAppId !== reqAppId) {
+        return reply.code(400).send({ error: '套餐档位与所选软件产品不匹配' });
+      }
       const label = { purchase: '购买', upgrade: '升级', renew: '续费' }[kind];
       if (kind === 'purchase') {
+        orderAppId = planAppId || reqAppId;
         amount = plans.round2(plan.price);
       } else {
         refLicenseId = Number(b.ref_license_id) || 0;
@@ -208,6 +224,14 @@ module.exports = async function portalRoutes(app) {
         if (!lic) return reply.code(400).send({ error: '待升级/续费的授权不存在' });
         if (lic.status === 'revoked') return reply.code(400).send({ error: '授权已吊销，无法升级或续费' });
         const cur = plans.licensePlan(lic);
+        const licAppId = Number(lic.app_id) || Number(cur && cur.app_id) || 0;
+        if (planAppId && licAppId && planAppId !== licAppId) {
+          return reply.code(400).send({ error: '该档位不属于当前软件产品，不能用于升级或续费' });
+        }
+        if (reqAppId && licAppId && reqAppId !== licAppId) {
+          return reply.code(400).send({ error: '授权与所选软件产品不匹配' });
+        }
+        orderAppId = planAppId || licAppId || reqAppId;
         if (kind === 'upgrade') {
           if (cur && Number(plan.tier) <= Number(cur.tier)) {
             return reply.code(400).send({ error: '只能升级到更高档位' });
@@ -222,7 +246,7 @@ module.exports = async function portalRoutes(app) {
         }
       }
       detail = [{ product_id: 0, product_name: `${plan.name}（${label}）`, qty: 1,
-        price: amount, plan_id: plan.id, kind }];
+        price: amount, plan_id: plan.id, app_id: orderAppId, kind }];
     } else {
       if (kind !== 'purchase') return reply.code(400).send({ error: '升级 / 续费必须指定套餐档位' });
       const items = Array.isArray(b.items) ? b.items : [];
@@ -241,10 +265,10 @@ module.exports = async function portalRoutes(app) {
     const discount = Math.min(Math.floor((user.points || 0) / 100), Math.floor(amount * 100) / 100, usePoints);
     const orderNo = genOrderNo();
     const info = db.prepare(`INSERT INTO orders
-      (order_no, user_id, amount, pay_amount, discount, channel, status, items, remark,
+      (order_no, user_id, app_id, amount, pay_amount, discount, channel, status, items, remark,
        kind, ref_license_id, plan_id, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(orderNo, req.user.sub, amount, Math.max(amount - discount, 0), discount,
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(orderNo, req.user.sub, orderAppId || null, amount, Math.max(amount - discount, 0), discount,
         b.channel || '', 'pending', JSON.stringify(detail), b.remark || '',
         kind, refLicenseId || null, resolvedPlanId || null, now());
     if (discount > 0) {
@@ -284,15 +308,22 @@ module.exports = async function portalRoutes(app) {
     if (!(await requireUser(req, reply))) return;
     const list = db.prepare(`SELECT l.*, p.name AS product_name, p.type AS product_type, p.icon,
       pl.name AS plan_name, pl.tier AS plan_tier, pl.price AS plan_price,
+      pl.app_id AS plan_app_id, oa.name AS app_name,
+      oap.name AS bound_product_name, oap.icon AS bound_product_icon,
       (SELECT COUNT(*) FROM license_devices d WHERE d.license_id = l.id) AS bound_devices
       FROM licenses l LEFT JOIN products p ON p.id = l.product_id
       LEFT JOIN plans pl ON pl.id = l.plan_id
+      LEFT JOIN open_apps oa ON oa.id = IFNULL(l.app_id, pl.app_id)
+      LEFT JOIN products oap ON oap.id = oa.product_id
       WHERE l.user_id = ? ORDER BY l.id DESC`).all(req.user.sub);
     return {
       list: list.map((l) => ({
         ...l,
-        // 套餐授权的 product_id=0，LEFT JOIN 不到商品，用档位名兜底显示
-        product_name: l.product_name || l.plan_name || '套餐授权',
+        // 套餐授权 product_id=0，JOIN 不到商品；优先显示它绑定的上架商品名，再回退档位名
+        product_name: l.product_name || l.bound_product_name || l.plan_name || '套餐授权',
+        icon: l.icon || l.bound_product_icon || '',
+        app_name: l.app_name || '',
+        app_id: l.app_id || l.plan_app_id || null,
         days_left: l.end_at ? Math.ceil((Date.parse(l.end_at) - Date.now()) / 86400000) : null,
       })),
     };
@@ -302,7 +333,92 @@ module.exports = async function portalRoutes(app) {
 
   app.get('/api/portal/plans', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
-    return { list: plans.list(true) };
+    const appId = Number(req.query.app_id) || 0;
+    return { list: plans.listForApp(appId, true), app_id: appId };
+  });
+
+  /**
+   * 「我的空间」：按软件产品聚合展示用户正在使用的产品与套餐档位。
+   * 升档 / 续费报价一律服务端算好，前端只负责展示与提交下单。
+   * 只展示「应用启用 + 绑定的上架商品在售」的产品，没配好的不出现在用户端。
+   */
+  app.get('/api/portal/space', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const uid = req.user.sub;
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(uid);
+    if (!user) return reply.code(404).send({ error: '用户不存在' });
+
+    const appRows = db.prepare(`SELECT a.id, a.name, a.app_key, a.product_id, a.version,
+        a.download_url, a.release_note,
+        p.name AS product_name, p.subtitle AS product_subtitle, p.icon AS product_icon,
+        p.type AS product_type
+      FROM open_apps a JOIN products p ON p.id = a.product_id
+      WHERE a.status = 'active' AND p.status = 'on'
+      ORDER BY a.id ASC`).all();
+    const proration = String(getSetting('upgrade_proration', '1')) === '1';
+    const items = [];
+    for (const a of appRows) {
+      // 进空间即给该产品补发专属免费档（按 user_id + app_id 幂等），
+      // 老「不限应用」的通用码继续留给老客户端兜底。
+      plans.ensureFreeLicense(uid, a.id);
+      let lic = db.prepare(`SELECT l.*,
+          (SELECT COUNT(*) FROM license_devices d WHERE d.license_id = l.id) AS bound_devices
+        FROM licenses l WHERE l.user_id = ? AND l.app_id = ? AND l.status <> 'revoked'
+        ORDER BY l.id DESC LIMIT 1`).get(uid, a.id);
+      if (!lic) {
+        lic = db.prepare(`SELECT l.*,
+            (SELECT COUNT(*) FROM license_devices d WHERE d.license_id = l.id) AS bound_devices
+          FROM licenses l WHERE l.user_id = ? AND l.app_id IS NULL AND l.product_id = 0
+            AND l.status <> 'revoked' ORDER BY l.id DESC LIMIT 1`).get(uid);
+      }
+      const cur = lic ? plans.licensePlan(lic) : null;
+      const catalog = plans.listForApp(a.id, true);
+      const upgrades = catalog
+        .filter((p) => p.billing !== 'free' && (!cur || Number(p.tier) > Number(cur.tier)))
+        .map((p) => ({
+          id: p.id, code: p.code, name: p.name, tier: p.tier,
+          price: upgradePrice(cur, p, lic || {}, proration), original_price: p.original_price,
+          period_days: p.period_days, max_devices: p.max_devices, seats: p.seats,
+          offline_days: p.offline_days, features: p.features,
+        }));
+      const renew = (cur && cur.billing === 'period' && lic && lic.end_at)
+        ? { plan_id: cur.id, code: cur.code, name: cur.name,
+            price: plans.round2(cur.price), period_days: cur.period_days }
+        : null;
+      items.push({
+        app_id: a.id, app_name: a.name, app_key: a.app_key,
+        version: a.version || '', download_url: a.download_url || '',
+        release_note: a.release_note || '',
+        product: {
+          id: a.product_id, name: a.product_name, subtitle: a.product_subtitle || '',
+          icon: a.product_icon || '', type: a.product_type || '',
+        },
+        license: lic ? {
+          id: lic.id, license_key: lic.license_key, status: lic.status,
+          end_at: lic.end_at, max_devices: lic.max_devices,
+          bound_devices: Number(lic.bound_devices || 0),
+          app_id: lic.app_id || null,
+          days_left: lic.end_at ? Math.ceil((Date.parse(lic.end_at) - Date.now()) / 86400000) : null,
+        } : null,
+        plan: cur ? {
+          id: cur.id, code: cur.code, name: cur.name, tier: cur.tier,
+          billing: cur.billing, price: cur.price, period_days: cur.period_days,
+          features: cur.features, max_devices: cur.max_devices, seats: cur.seats,
+          offline_days: cur.offline_days, app_id: cur.app_id || null,
+        } : null,
+        upgrades, renew,
+        plans: catalog.map((p) => ({ id: p.id, code: p.code, name: p.name, tier: p.tier,
+          billing: p.billing, price: p.price, period_days: p.period_days, status: p.status })),
+      });
+    }
+    return {
+      user: profileLib.publicUser(user),
+      apps: items,
+      licenses: db.prepare(`SELECT id, license_key, product_id, plan_id, plan_code, status, end_at, app_id
+        FROM licenses WHERE user_id = ? ORDER BY id DESC`).all(uid),
+      devices: db.prepare('SELECT id, sn, name, status FROM devices WHERE user_id = ? ORDER BY id DESC').all(uid),
+      orders: db.prepare('SELECT id, order_no, status, pay_amount FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(uid),
+    };
   });
 
   /** 某张授权可升级到的档位 + 续费报价，全部服务端算好给前端展示 */
@@ -311,11 +427,14 @@ module.exports = async function portalRoutes(app) {
     const lic = db.prepare('SELECT * FROM licenses WHERE id = ? AND user_id = ?').get(Number(req.params.id), req.user.sub);
     if (!lic) return reply.code(404).send({ error: '授权不存在' });
     const cur = plans.licensePlan(lic);
-    const all = plans.list(true);
+    // 只给同一软件产品的档位：不能拿 A 产品的档位去升 B 产品的授权
+    const appId = Number(lic.app_id) || Number(cur && cur.app_id) || 0;
+    const all = plans.listForApp(appId, true);
     const upgrades = all.filter((p) => p.billing !== 'free' && (!cur || Number(p.tier) > Number(cur.tier)))
       .map((p) => ({ ...p, price: upgradePrice(cur, p, lic, String(getSetting('upgrade_proration', '1')) === '1') }));
     return {
       current: cur,
+      app_id: appId,
       renew: cur ? { plan_id: cur.id, plan_code: cur.code, name: cur.name, price: plans.round2(cur.price),
         period_days: cur.period_days } : null,
       upgrades,

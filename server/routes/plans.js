@@ -1,5 +1,6 @@
 /* 套餐档位管理（后台）
  * 运行时数据源是 plans 表；这里的 export/import 只是把配置存成可版本化的 JSON。
+ * 档位按「软件端接入应用」分组：同一 code 在不同产品下允许重复。
  */
 const db = require('../db');
 const { requireAdmin } = require('../lib/auth');
@@ -7,16 +8,24 @@ const plans = require('../lib/plans');
 const { logAdmin } = require('../lib/adminlog');
 
 module.exports = async function planRoutes(app) {
+  // 静态路径一律先于 /api/plans/:id 注册
   app.get('/api/plans', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
-    return { list: plans.list(false) };
+    const appId = req.query.app_id === undefined ? undefined : Number(req.query.app_id) || 0;
+    return { list: plans.list(false, appId), apps: plans.listApps() };
   });
 
-  // 静态路径要先于 /api/plans/:id 注册
+  /** 后台表单下拉：软件产品 + 绑定的上架商品 + 已配档位数 */
+  app.get('/api/plans/apps', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    return { list: plans.listApps() };
+  });
+
   app.get('/api/plans/export', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
-    const cfg = plans.exportConfig();
-    logAdmin(req, 'plan.export', `导出 ${cfg.plans.length} 个档位`);
+    const appId = req.query.app_id ? Number(req.query.app_id) || null : null;
+    const cfg = plans.exportConfig(appId);
+    logAdmin(req, 'plan.export', `导出 ${cfg.plans.length} 个档位${appId ? `（产品 ${appId}）` : ''}`);
     return cfg;
   });
 
@@ -36,6 +45,16 @@ module.exports = async function planRoutes(app) {
     return { ok: true, ...r, list: plans.list(false) };
   });
 
+  /** 新软件上架时把通用模板五档复制过去，避免逐条重填；已存在的 code 跳过。 */
+  app.post('/api/plans/copy-template', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const appId = Number((req.body || {}).app_id) || 0;
+    const r = plans.copyTemplateToApp(appId);
+    if (!r.ok) return reply.code(400).send({ error: (r.errors || []).join('；') });
+    logAdmin(req, 'plan.copy', `从模板复制档位到产品 ${appId}：新增 ${r.created} / 跳过 ${r.skipped}`);
+    return { ok: true, ...r, list: plans.list(false, appId) };
+  });
+
   app.get('/api/plans/:id', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     const p = plans.get(req.params.id);
@@ -47,7 +66,7 @@ module.exports = async function planRoutes(app) {
     if (!(await requireAdmin(req, reply))) return;
     const r = plans.insert(req.body || {});
     if (!r.ok) return reply.code(400).send({ error: r.errors.join('；') });
-    logAdmin(req, 'plan.create', `新增档位 ${r.plan.code}（${r.plan.name}）`);
+    logAdmin(req, 'plan.create', `新增档位 ${r.plan.code}（${r.plan.name}）${r.plan.app_id ? ` · 产品 ${r.plan.app_id}` : ' · 通用模板'}`);
     return { ok: true, id: r.id, plan: r.plan };
   });
 
