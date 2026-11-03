@@ -10,7 +10,22 @@ const db = new Database(process.env.DB_PATH || path.join(DATA_DIR, 'app.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
-db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
+/**
+ * schema.sql 里同时含 CREATE TABLE 与 CREATE INDEX。
+ * 旧库升级时，新增列（如 licenses.app_id）是由下面的 ensureColumn() 补的；
+ * 若在「建表阶段」就执行 `CREATE INDEX ... ON licenses(app_id)`，SQLite 会抛
+ * "no such column: app_id"，require('../db') 直接失败 → 进程起不来 → Nginx 502。
+ * 所以先把索引语句挑出来，等所有列补齐后再统一执行。
+ * （schema.sql 的索引均为单行语句，按行过滤即可。）
+ */
+const schemaText = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+const indexLines = [];
+const ddlLines = [];
+for (const line of schemaText.split('\n')) {
+  if (/^\s*CREATE\s+(UNIQUE\s+)?INDEX\b/i.test(line)) indexLines.push(line);
+  else ddlLines.push(line);
+}
+db.exec(ddlLines.join('\n'));
 
 /**
  * 旧库 plans 表的 code 是列级 UNIQUE，全站只能存在一套档位。
@@ -126,6 +141,9 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_license_devices_machine ON license_devic
 db.exec('CREATE INDEX IF NOT EXISTS idx_licenses_batch ON licenses(batch_no)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_users_agent ON users(agent_id)');
 ensureColumn('agent_commissions', 'kind', "kind TEXT DEFAULT 'commission'");
+// 所有列补齐后才执行 schema.sql 的索引（见文件顶部说明）。
+// 旧库升级时这一步必须晚于 ensureColumn，否则会因引用尚不存在的列而中断启动。
+db.exec(indexLines.join('\n'));
 
 // 常见弱口令：命中即强制登录后修改密码
 const WEAK_PASSWORDS = ['admin123', 'admin', '123456', '12345678', 'admin888', 'password', 'root', 'test123'];
