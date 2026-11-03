@@ -9,6 +9,7 @@ window.PageAgents = {
       <button class="btn" :class="tab==='commissions'?'primary':''" @click="tab='commissions';load()">佣金明细</button>
       <button class="btn" :class="tab==='withdrawals'?'primary':''" @click="tab='withdrawals';load()">提现单</button>
       <button class="btn" :class="tab==='reminders'?'primary':''" @click="tab='reminders';load()">到期提醒</button>
+      <button class="btn" :class="tab==='settings'?'primary':''" @click="tab='settings';load()">参数设置</button>
       <div class="spacer"></div>
       <button class="btn" v-if="tab==='withdrawals'" @click="exportCsv">导出 CSV</button>
       <button class="btn" v-if="tab==='reminders'" @click="scanReminders">立即扫描</button>
@@ -120,6 +121,33 @@ window.PageAgents = {
       </div>
     </div>
 
+    <div class="card" v-if="tab==='settings'">
+      <div class="card-head"><h3>套餐与佣金参数</h3><span class="tag">保存到站点设置，立即生效</span></div>
+      <div class="card-body">
+        <div class="field-row">
+          <div class="field"><label>到期提醒天数（逗号分隔）</label>
+            <input class="input" v-model="s.renew_remind_days" placeholder="7,3,1" />
+            <div class="hint">服务每 6 小时扫一次授权到期时间，按这些天数生成站内提醒。</div>
+          </div>
+          <div class="field"><label>佣金账期（天）</label>
+            <input class="input" type="number" v-model.number="s.agent_settle_days" />
+            <div class="hint">付款后过完账期才可提现，防止「付款→提现→退款」。</div>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>最低提现金额（元）</label>
+            <input class="input" type="number" v-model.number="s.agent_withdraw_min" /></div>
+          <div class="field"><label>升级差价按剩余天数折算</label>
+            <select class="select" v-model="s.upgrade_proration">
+              <option value="1">是（按剩余时长折算）</option>
+              <option value="0">否（收全额差价）</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn primary" @click="saveSettings">保存参数</button>
+      </div>
+    </div>
+
     <div class="mask" v-if="granting" @click.self="granting=false">
       <div class="modal">
         <div class="modal-head"><h3>{{ grant.id ? '修改佣金比例' : '授权代理商' }}</h3><button class="close-x" @click="granting=false">&times;</button></div>
@@ -176,6 +204,8 @@ window.PageAgents = {
     const downlineList = ref([]);
     const addUserId = ref(0);
     const fmt = U.fmt;
+    const s = reactive({ renew_remind_days: '7,3,1', agent_settle_days: 7,
+      agent_withdraw_min: 10, upgrade_proration: '1' });
 
     const statusText = (s) => ({ pending: '待结算', settled: '可提现', withdrawn: '已提现',
       reversed: '已冲正', paid: '已打款', rejected: '已驳回' }[s] || s);
@@ -186,11 +216,30 @@ window.PageAgents = {
       if (tab.value === 'agents') agents.value = (await U.api.get('/api/agents')).list;
       else if (tab.value === 'commissions') commissions.value = (await U.api.get('/api/agents/commissions')).list;
       else if (tab.value === 'withdrawals') withdrawals.value = (await U.api.get('/api/agents/withdrawals')).list;
+      else if (tab.value === 'settings') await loadSettings();
       else {
         const r = await U.api.get('/api/agents/reminders');
         remindList.value = r.list;
         remindDays.value = r.days || [];
       }
+    }
+
+    async function loadSettings() {
+      const res = await U.api.get('/api/settings');
+      const all = res.settings || {};
+      for (const k of Object.keys(s)) if (all[k] !== undefined) s[k] = all[k];
+    }
+
+    async function saveSettings() {
+      try {
+        await U.api.post('/api/settings', {
+          renew_remind_days: String(s.renew_remind_days),
+          agent_settle_days: String(s.agent_settle_days),
+          agent_withdraw_min: String(s.agent_withdraw_min),
+          upgrade_proration: String(s.upgrade_proration),
+        });
+        U.toast('已保存，参数立即生效', 'success');
+      } catch (e) { U.toast(e.message, 'error'); }
     }
 
     function openGrant() {
@@ -273,9 +322,9 @@ window.PageAgents = {
     onMounted(load);
     return {
       tab, agents, commissions, withdrawals, remindList, remindDays, granting, grant, grantError,
-      downline, downlineList, addUserId, fmt, statusText, statusClass,
-      load, openGrant, editRate, submitGrant, revoke, openDownline, addDownline, removeDownline,
-      review, exportCsv, scanReminders,
+      downline, downlineList, addUserId, fmt, s, statusText, statusClass,
+      load, loadSettings, saveSettings, openGrant, editRate, submitGrant, revoke,
+      openDownline, addDownline, removeDownline, review, exportCsv, scanReminders,
     };
   },
 };

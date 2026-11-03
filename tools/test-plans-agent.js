@@ -287,6 +287,17 @@ async function renderPage(pageFile, pageName) {
     check(`${name} 渲染零错误`, r.errors.length === 0, r.errors);
   }
 
+  /* ---------------- 7. 后台参数可保存且被读取 ---------------- */
+  console.log('\n[7] 参数设置');
+  const setSave = await app.inject({ method: 'POST', url: '/api/settings', headers: AH,
+    payload: { renew_remind_days: '10,5,1', agent_settle_days: '3',
+      agent_withdraw_min: '5', upgrade_proration: '0' } });
+  const saved = (await app.inject({ method: 'GET', url: '/api/settings', headers: AH })).json().settings;
+  check('参数保存后可读回', setSave.statusCode === 200
+    && saved.agent_settle_days === '3' && saved.renew_remind_days === '10,5,1', saved);
+  check('账期参数被佣金账本读取', commissionLib.settleDays() === 3, commissionLib.settleDays());
+  check('最低提现额参数生效', commissionLib.withdrawMin() === 5, commissionLib.withdrawMin());
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   await app.close();
   process.exit(fail ? 1 : 0);
