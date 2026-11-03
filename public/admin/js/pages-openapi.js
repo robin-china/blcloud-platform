@@ -98,6 +98,15 @@ window.PageOpenapi = {
             <div class="field"><label>离线宽限（天）</label><input class="input" type="number" v-model.number="form.offline_days" /></div>
           </div>
           <div class="field"><label>安装包下载地址</label><input class="input" v-model="form.download_url" placeholder="https://..." /></div>
+          <div class="field">
+            <label>功能码表 feature_schema（每行 token = 名称；登记后套餐档位表单变为勾选，未知 token 无法保存）</label>
+            <textarea class="input" rows="6" style="font-family:ui-monospace,monospace;font-size:12px" v-model="schemaText"
+              placeholder="labelgo.basic = 基础打印&#10;labelgo.library = 标签库&#10;labelgo.concat = 拼接排版"></textarea>
+            <div class="hint" style="margin-bottom:0">
+              词表要与客户端约定一致（客户端用 features.includes(token) 判功能）。只影响之后保存的档位，已售授权里的旧 token 不受影响。
+              <button class="btn sm" type="button" style="margin-left:8px" @click="fillLabelgoPreset">填入标签打印示例词表</button>
+            </div>
+          </div>
           <div class="field"><label>更新说明</label><textarea class="input" v-model="form.release_note"></textarea></div>
           <div class="field"><label>备注</label><input class="input" v-model="form.remark" /></div>
         </div>
@@ -156,6 +165,21 @@ window.PageOpenapi = {
       id: 0, name: '', product_id: null, status: 'active', offline_days: 0,
       version: '', download_url: '', release_note: '', remark: '',
     });
+    // 功能码表用「每行 token = 名称」的文本编辑；提交时服务端统一校验格式与去重
+    const schemaText = ref('');
+    // 标签打印软件（labelgo）示例词表：与客户端核对后可增删，别让两套语义对不上
+    const LABELGO_PRESET = [
+      'labelgo.basic = 基础打印',
+      'labelgo.library = 标签库',
+      'labelgo.concat = 拼接排版',
+      'labelgo.batch = 批量打印',
+      'labelgo.excel = Excel 导入',
+      'labelgo.ribbon = 碳带/纸张配比',
+      'labelgo.cloud = 云同步',
+      'labelgo.offline = 离线模式',
+      'labelgo.api = 本地接口',
+      'labelgo.distributed = 分布式席位',
+    ].join('\n');
     const secretBox = reactive({ show: false, app_key: '', app_secret: '' });
     const sessions = reactive({ show: false, appId: 0, appName: '', list: [] });
 
@@ -190,6 +214,7 @@ window.PageOpenapi = {
 
     function openCreate() {
       Object.assign(form, { id: 0, name: '', product_id: null, status: 'active', offline_days: 0, version: '', download_url: '', release_note: '', remark: '' });
+      schemaText.value = '';
       editing.value = true;
     }
     function edit(a) {
@@ -198,16 +223,24 @@ window.PageOpenapi = {
         offline_days: a.offline_days || 0, version: a.version || '', download_url: a.download_url || '',
         release_note: a.release_note || '', remark: a.remark || '',
       });
+      schemaText.value = (a.feature_schema || []).map((x) => x.label ? `${x.token} = ${x.label}` : x.token).join('\n');
       editing.value = true;
+    }
+    function fillLabelgoPreset() {
+      schemaText.value = schemaText.value
+        ? schemaText.value + '\n' + LABELGO_PRESET
+        : LABELGO_PRESET;
+      U.toast('已填入示例词表，请与客户端核对后保存', 'success');
     }
     async function save() {
       if (!form.name.trim()) return U.toast('请填写应用名称', 'error');
       try {
+        const body = { ...form, feature_schema: schemaText.value };
         if (form.id) {
-          await U.api.post('/api/open-apps/' + form.id, { ...form });
+          await U.api.post('/api/open-apps/' + form.id, body);
           U.toast('已保存', 'success');
         } else {
-          const res = await U.api.post('/api/open-apps', { ...form });
+          const res = await U.api.post('/api/open-apps', body);
           secretBox.app_key = res.app_key;
           secretBox.app_secret = res.app_secret;
           secretBox.show = true;
@@ -264,6 +297,7 @@ window.PageOpenapi = {
 
     return {
       list, products, summary, editing, form, secretBox, sessions, fmt, baseUrl,
+      schemaText, fillLabelgoPreset,
       openCreate, edit, save, toggle, resetSecret, remove, viewSessions, revoke, loadAll,
     };
   },

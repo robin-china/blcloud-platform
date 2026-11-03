@@ -361,16 +361,11 @@ module.exports = async function portalRoutes(app) {
       // 进空间即给该产品补发专属免费档（按 user_id + app_id 幂等），
       // 老「不限应用」的通用码继续留给老客户端兜底。
       plans.ensureFreeLicense(uid, a.id);
-      let lic = db.prepare(`SELECT l.*,
-          (SELECT COUNT(*) FROM license_devices d WHERE d.license_id = l.id) AS bound_devices
-        FROM licenses l WHERE l.user_id = ? AND l.app_id = ? AND l.status <> 'revoked'
-        ORDER BY l.id DESC LIMIT 1`).get(uid, a.id);
-      if (!lic) {
-        lic = db.prepare(`SELECT l.*,
-            (SELECT COUNT(*) FROM license_devices d WHERE d.license_id = l.id) AS bound_devices
-          FROM licenses l WHERE l.user_id = ? AND l.app_id IS NULL AND l.product_id = 0
-            AND l.status <> 'revoked' ORDER BY l.id DESC LIMIT 1`).get(uid);
-      }
+      // 排序取「当前生效」的授权（tier 高 → 有效期晚 → id 大），与软件端选码口径一致：
+      // 用户买了高档后再看空间，不能再显示旧免费码
+      const ranked = plans.usableLicenses(uid, a);
+      const hit = ranked.find((x) => plans.isLicenseLive(x.lic));
+      const lic = hit ? hit.lic : (ranked.length ? ranked[0].lic : null);
       const cur = lic ? plans.licensePlan(lic) : null;
       const catalog = plans.listForApp(a.id, true);
       const upgrades = catalog
@@ -380,6 +375,7 @@ module.exports = async function portalRoutes(app) {
           price: upgradePrice(cur, p, lic || {}, proration), original_price: p.original_price,
           period_days: p.period_days, max_devices: p.max_devices, seats: p.seats,
           offline_days: p.offline_days, features: p.features,
+          limits: p.limits || {},
         }));
       const renew = (cur && cur.billing === 'period' && lic && lic.end_at)
         ? { plan_id: cur.id, code: cur.code, name: cur.name,
@@ -396,14 +392,17 @@ module.exports = async function portalRoutes(app) {
         license: lic ? {
           id: lic.id, license_key: lic.license_key, status: lic.status,
           end_at: lic.end_at, max_devices: lic.max_devices,
-          bound_devices: Number(lic.bound_devices || 0),
+          bound_devices: db.prepare('SELECT COUNT(*) AS c FROM license_devices WHERE license_id = ?').get(lic.id).c,
           app_id: lic.app_id || null,
           days_left: lic.end_at ? Math.ceil((Date.parse(lic.end_at) - Date.now()) / 86400000) : null,
+          // 订阅到期被服务端降级的痕迹：页面要明说「已降级」，不能让用户猜功能去哪了
+          downgraded_from: lic.downgraded_from || '',
+          downgraded_at: lic.downgraded_at || '',
         } : null,
         plan: cur ? {
           id: cur.id, code: cur.code, name: cur.name, tier: cur.tier,
           billing: cur.billing, price: cur.price, period_days: cur.period_days,
-          features: cur.features, max_devices: cur.max_devices, seats: cur.seats,
+          features: cur.features, limits: cur.limits || {}, max_devices: cur.max_devices, seats: cur.seats,
           offline_days: cur.offline_days, app_id: cur.app_id || null,
         } : null,
         upgrades, renew,

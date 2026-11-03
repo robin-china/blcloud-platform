@@ -135,6 +135,13 @@ ensureColumn('users', 'agent_code', "agent_code TEXT DEFAULT ''");
 ensureColumn('licenses', 'app_id', 'app_id INTEGER');
 ensureColumn('orders', 'app_id', 'app_id INTEGER');
 ensureColumn('users', 'profile_custom', 'profile_custom INTEGER DEFAULT 0');
+// 数量配额（标签库 30 / Excel 100 行这类量化权益，随票据签名下发）
+ensureColumn('plans', 'limits', "limits TEXT DEFAULT '{}'");
+// 应用的功能码白名单：登记后套餐表单变勾选、未知 token 保存直接报错
+ensureColumn('open_apps', 'feature_schema', "feature_schema TEXT DEFAULT '[]'");
+// 订阅到期降级痕迹：降级到 free 档的时刻 + 原档位 code
+ensureColumn('licenses', 'downgraded_from', "downgraded_from TEXT DEFAULT ''");
+ensureColumn('licenses', 'downgraded_at', "downgraded_at TEXT DEFAULT ''");
 db.exec('CREATE INDEX IF NOT EXISTS idx_licenses_app ON licenses(app_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_plans_app ON plans(app_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_license_devices_machine ON license_devices(machine_id)');

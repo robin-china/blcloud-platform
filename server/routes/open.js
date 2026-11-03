@@ -91,6 +91,11 @@ function licensePayload(lic) {
     bound_devices: bound,
     plan: ent.plan_code,
     entitlement: ent,
+    // 权益内容哈希：心跳比对用，客户端不必整包 diff
+    entitlement_version: plans.entitlementVersion(lic),
+    // 订阅到期被服务端降到 free 档时记录；客户端据此提示「订阅到期已降级」，而不是功能静默消失
+    downgraded_from: lic.downgraded_from || '',
+    downgraded_at: lic.downgraded_at || '',
   };
 }
 
@@ -134,6 +139,11 @@ module.exports = async function openRoutes(app) {
     const a = req.app;
     track(0, a.app_key, 'app.version');
     return {
+      // 客户端手里只有 app_key，而 /user/licenses 可能返回全产品列表；
+      // 不带 id 就没法判断哪张码属于自己 —— 必须一起下发
+      id: a.id,
+      app_key: a.app_key,
+      name: a.name,
       version: a.version || '',
       download_url: a.download_url || '',
       release_note: a.release_note || '',
@@ -146,6 +156,8 @@ module.exports = async function openRoutes(app) {
         code: p.code, name: p.name, tier: p.tier, billing: p.billing,
         price: p.price, period_days: p.period_days, offline_days: p.offline_days,
         max_devices: p.max_devices, seats: p.seats, features: p.features,
+        // 数量配额：features 只是布尔量，表达不了「标签库 30 / Excel 100 行」
+        limits: p.limits || {},
       })),
       force_update: false,
       server_time: now(),
@@ -171,7 +183,9 @@ module.exports = async function openRoutes(app) {
     if (!key) return reply.code(400).send({ error: '缺少 license_key', code: 'PARAM_MISSING' });
     if (!machineId) return reply.code(400).send({ error: '缺少 machine_id', code: 'PARAM_MISSING' });
 
-    const lic = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(key);
+    let lic = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(key);
+    // 过期订阅先降级到 free 档再判状态：老用户拿过期码重新激活，得到的是「已降级」而不是死胡同
+    lic = plans.settleExpiry(lic);
     const st = licenseState(lic);
     if (!st.valid) return reply.code(403).send({ valid: false, ...st });
 
@@ -254,17 +268,46 @@ module.exports = async function openRoutes(app) {
       if (appRow.status !== 'active') return reply.code(401).send({ error: '应用已停用', code: 'APP_DISABLED' });
       const user = db.prepare('SELECT * FROM users WHERE id = ?').get(s.user_id);
       const machineId = String(req.query.machine_id || '');
+      // 软件端扫码进来时就知道是哪个应用，按需补发该产品专属免费档授权码，
+      // 用户不必先去网页「我的空间」领码才能激活
+      plans.ensureFreeLicense(user.id, appRow.id);
+      // 登录即挑出该产品下的「当前生效」授权（tier 最高且未过期），顺手把这台机器绑上去：
+      // 扫码登录的用户多数只有一张码，之前还要再走一次 activate 才算登录完成
+      const best = plans.bestLicenseForApp(user.id, appRow);
+      let licenseOut = null;
+      let licenseId = null;
+      let bindError = null;
+      if (best) {
+        if (machineId) {
+          const bound = bindMachine(best, machineId, {
+            name: String(req.query.machine_name || ''),
+            version: String(req.query.version || ''),
+            ip: clientIp(req),
+            appId: appRow.id,
+          });
+          if (bound.ok) {
+            licenseId = best.id;
+            licenseOut = licensePayload(best);
+          } else {
+            // 机器超限时仍完成登录（可去网页解绑），只是会话不带授权
+            bindError = { code: bound.code, reason: bound.reason };
+          }
+        } else {
+          licenseId = best.id;
+          licenseOut = licensePayload(best);
+        }
+      }
       const token = issueSession({
-        app: appRow, user, machineId,
+        app: appRow, user, licenseId, machineId,
         deviceName: String(req.query.machine_name || ''),
         appVersion: String(req.query.version || ''),
         ip: clientIp(req),
       });
-      // 软件端扫码进来时就知道是哪个应用，按需补发该产品专属免费档授权码，
-      // 用户不必先去网页「我的空间」领码才能激活
-      plans.ensureFreeLicense(user.id, appRow.id);
       track(user.id, appRow.app_key, 'auth.qrcode.login');
-      return { status: 'confirmed', ...token, user: userPayload(user) };
+      const out = { status: 'confirmed', ...token, user: userPayload(user) };
+      if (licenseOut) out.license = licenseOut;
+      if (bindError) out.license_bind_error = bindError;
+      return out;
     }
     return { status: s.status };
   });
@@ -295,6 +338,17 @@ module.exports = async function openRoutes(app) {
     const rawTo = String((req.body || {}).to || 'account').trim();
     const to = HANDOFF_PAGES.has(rawTo) ? rawTo : 'account';
 
+    // to=space 时可带 app=<app_key>：客户端「升级套餐」按钮直接落到用户自己的那张产品卡片，
+    // 而不是扔进「我的空间」让用户自己找。app_key 必须真实存在，防任意参数注入 URL。
+    let appParam = '';
+    if (to === 'space') {
+      const ak = String((req.body || {}).app || '').trim();
+      if (ak) {
+        const a = db.prepare('SELECT id, app_key FROM open_apps WHERE app_key = ?').get(ak);
+        if (a) appParam = '?app=' + encodeURIComponent(ak);
+      }
+    }
+
     // 每次只保留该用户最近一张有效票：旧票在被点开前就作废，
     // 免得用户在软件里点了三次「用户中心」，三个链接都能进。
     db.prepare("DELETE FROM handoff_tickets WHERE user_id = ? AND used = 0").run(user.id);
@@ -305,8 +359,9 @@ module.exports = async function openRoutes(app) {
 
     track(user.id, s.app_id, 'auth.handoff');
     return {
-      url: `${publicBase(req)}/user/?t=${code}#/${to}`,
+      url: `${publicBase(req)}/user/?t=${code}#/${to}${appParam}`,
       page: to,
+      app: appParam ? String((req.body || {}).app || '').trim() : '',
       expires_in: Math.floor(ttlMs / 1000),
       user: userPayload(user),
     };
@@ -400,13 +455,43 @@ module.exports = async function openRoutes(app) {
     return { ok: true, user: userPayload(db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user_id)) };
   });
 
+  /**
+   * 用户授权列表。
+   * 传 app_key 时只返回该软件产品下可用的授权，并标出 effective: true（判定顺序
+   * tier 高 → end_at 晚 → id 大，与扫码登录选码一致）—— 客户端据此知道用哪张码。
+   * 不传则返回全部（兼容老客户端），但同样会先做过期降级收敛。
+   */
   app.get('/api/open/v1/user/licenses', async (req, reply) => {
     if (!(await requireClient(req, reply))) return;
     touchSession(req.session, clientIp(req));
-    const list = db.prepare(`SELECT l.*, p.name AS product_name FROM licenses l
-      LEFT JOIN products p ON p.id = l.product_id WHERE l.user_id = ? ORDER BY l.id DESC`).all(req.session.user_id);
-    track(req.session.user_id, req.app.app_key, 'user.licenses');
-    return { list: list.map((l) => ({ ...licensePayload(l), valid: licenseState(l).valid })) };
+    const uid = req.session.user_id;
+    track(uid, req.app.app_key, 'user.licenses');
+    const appKey = String(req.query.app_key || '').trim();
+    if (appKey) {
+      let scopeApp = req.app;
+      if (appKey !== req.app.app_key) {
+        const other = db.prepare('SELECT * FROM open_apps WHERE app_key = ?').get(appKey);
+        if (other) scopeApp = other;
+      }
+      const ranked = plans.usableLicenses(uid, scopeApp);
+      let effectiveSet = false;
+      return {
+        app: { id: scopeApp.id, app_key: scopeApp.app_key, name: scopeApp.name },
+        list: ranked.map(({ lic }) => {
+          const valid = plans.isLicenseLive(lic);
+          const effective = valid && !effectiveSet;
+          if (effective) effectiveSet = true;
+          return { ...licensePayload(lic), valid, effective };
+        }),
+      };
+    }
+    const rows = db.prepare('SELECT * FROM licenses WHERE user_id = ? ORDER BY id DESC').all(uid);
+    return {
+      list: rows.map((l) => {
+        const lic = plans.settleExpiry(l);
+        return { ...licensePayload(lic), valid: plans.isLicenseLive(lic) };
+      }),
+    };
   });
 
   app.get('/api/open/v1/user/devices', async (req, reply) => {
@@ -461,6 +546,8 @@ module.exports = async function openRoutes(app) {
       lic = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(String(b.license_key).trim());
     }
 
+    // 过期订阅先收敛（降到 free 档）：verify 是客户端最常走的校验口，降级要在这里生效
+    lic = plans.settleExpiry(lic);
     const st = licenseState(lic);
     if (!st.valid) return reply.code(403).send({ valid: false, ...st });
     if (!plans.licenseMatchesApp(lic, appRow)) {
@@ -497,6 +584,9 @@ module.exports = async function openRoutes(app) {
     if (!lic && b.license_key) lic = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(String(b.license_key).trim());
     const payload = { valid: false, server_time: now() };
     if (!lic) return { ...payload, reason: '会话未绑定授权', code: 'LICENSE_NOT_BOUND' };
+    // 订阅到期在这里显式降级：客户端下次心跳就能拿到「已降级为 free 档 + downgraded_from」，
+    // 而不是静默丢功能、用户以为软件坏了去打客服
+    lic = plans.settleExpiry(lic);
     const st = licenseState(lic);
     if (!st.valid) return { valid: false, reason: st.reason, code: st.code, server_time: now() };
 
@@ -514,9 +604,16 @@ module.exports = async function openRoutes(app) {
     }
     db.prepare('UPDATE client_sessions SET app_version = ? WHERE id = ?').run(String(b.version || req.session.app_version || ''), req.session.id);
     track(req.session.user_id, req.app.app_key, 'license.heartbeat');
+    // 心跳带 entitlement_version：客户端上次拿到的版本号与服务端比对，
+    // 变了才需要重新解析 license payload，不用每次心跳整包 diff
+    const licPayload = licensePayload(lic);
+    const reported = String(b.entitlement_version || '');
     return {
       valid: true,
-      license: licensePayload(lic),
+      license: licPayload,
+      entitlement_version: licPayload.entitlement_version,
+      // true = 权益变了（升级/降级/改配置），false = 没变，null = 客户端没上报版本
+      entitlement_changed: reported ? reported !== licPayload.entitlement_version : null,
       expires_at: req.session.expires_at,
       server_time: now(),
     };
@@ -553,9 +650,11 @@ module.exports = async function openRoutes(app) {
   app.post('/api/open/v1/license/ticket', async (req, reply) => {
     if (!(await requireClient(req, reply))) return;
     touchSession(req.session, clientIp(req));
-    const lic = req.session.license_id
+    const licRaw = req.session.license_id
       ? db.prepare('SELECT * FROM licenses WHERE id = ?').get(req.session.license_id) : null;
-    if (!lic) return reply.code(404).send({ error: '会话未绑定授权', code: 'LICENSE_NOT_BOUND' });
+    if (!licRaw) return reply.code(404).send({ error: '会话未绑定授权', code: 'LICENSE_NOT_BOUND' });
+    // 出票据前先收敛过期订阅：降级后的权益（free 档 features/limits）才签得进票据
+    const lic = plans.settleExpiry(licRaw);
     const st = licenseState(lic);
     if (!st.valid) return reply.code(403).send({ valid: false, ...st });
 
@@ -588,10 +687,15 @@ module.exports = async function openRoutes(app) {
       plan_name: ent.plan_name || '',
       tier: ent.tier || 0,
       features: ent.features,
+      // 数量配额：断网时客户端同样要按配额限制功能，必须进签名票据
+      limits: ent.limits || {},
       seats: ent.seats,
       online_required: ent.online_required,
       max_devices: lic.max_devices,
       offline_days: offlineDays,
+      // 到期降级痕迹：离线期间客户端也能提示「订阅到期已降级」
+      downgraded_from: lic.downgraded_from || '',
+      entitlement_version: plans.entitlementVersion(lic),
       iat: Math.floor(iat / 1000),
       exp: Math.floor(exp / 1000),
     };

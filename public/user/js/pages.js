@@ -234,7 +234,7 @@ window.PageSpace = {
       </div>
       <div class="card-body tight">
         <div class="prod-grid" style="padding:16px">
-          <div class="prod-card" v-for="a in data.apps" :key="a.app_id" style="cursor:default">
+          <div class="prod-card" v-for="a in data.apps" :key="a.app_id" :style="a.app_key === focusKey ? 'outline:2px solid #2563eb;outline-offset:3px' : ''" style="cursor:default">
             <div class="thumb" v-html="thumb(a.product)"></div>
             <div class="body">
               <h4 :title="a.product.name">{{ a.product.name }}</h4>
@@ -245,6 +245,7 @@ window.PageSpace = {
                 </span>
                 <span class="tag info" v-if="a.version">v{{ a.version }}</span>
                 <span class="tag danger" v-if="a.license && a.license.days_left !== null && a.license.days_left <= 7">即将到期</span>
+                <span class="tag danger" v-if="a.license && a.license.downgraded_from" :title="'原档位 ' + a.license.downgraded_from">订阅到期已降级</span>
               </div>
               <div class="kv">
                 <div class="k">授权码</div>
@@ -369,6 +370,12 @@ window.PageSpace = {
     const planError = ref('');
     const submitting = ref(false);
     const pay = reactive({});
+    // 软件端 handoff 带 ?app=<app_key> 跳进来时，定位并高亮对应产品卡片（「升级套餐」按钮的落地页）
+    const focusKey = ref('');
+    try {
+      const q = new URLSearchParams((location.hash.split('?')[1]) || '');
+      focusKey.value = q.get('app') || '';
+    } catch (e) { focusKey.value = ''; }
 
     const onlineCount = computed(() => data.value.devices.filter((d) => d.status === 'online').length);
     const paidCount = computed(() => data.value.orders.filter((o) => o.status === 'paid').length);
@@ -466,7 +473,7 @@ window.PageSpace = {
       await Promise.all([load(), loadPayChannels()]);
     });
     return {
-      data, fmt, onlineCount, paidCount, tbStatus, tbText, avatarUrl,
+      data, fmt, onlineCount, paidCount, tbStatus, tbText, avatarUrl, focusKey,
       planDialog, planMode, curApp, payResult, planError, submitting,
       openUpgrade, openRenew, closePlan, submit, simulatePay, checkPaid,
       expireText, qrSrc, download, copy, signin, thumb: productIcon,

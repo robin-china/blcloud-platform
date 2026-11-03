@@ -12,10 +12,13 @@
  * 一律按「不限应用」兼容，不能突然把历史用户锁在门外。
  */
 const db = require('../db');
+const crypto = require('crypto');
 const { now, safeJson, genLicenseKey } = require('./util');
 
 const DAY = 86400000;
 const BILLING = new Set(['free', 'once', 'period']);
+// 功能码（能力 token）格式：labelgo.concat / basic.view 这类点分小写标识
+const TOKEN_RE = /^[a-z0-9_]+(?:\.[a-z0-9_]+)*$/;
 
 const PLAN_SELECT = `SELECT p.*, a.name AS app_name, a.app_key AS app_key,
   a.product_id AS product_id, pr.name AS product_name, pr.icon AS product_icon
@@ -32,7 +35,101 @@ function addDays(days, from = Date.now()) {
 
 function shape(row) {
   if (!row) return null;
-  return { ...row, features: safeJson(row.features, []) };
+  return { ...row, features: safeJson(row.features, []), limits: safeJson(row.limits, {}) };
+}
+
+/* ---------------- 功能码白名单 / 数量配额 ---------------- */
+
+/** 某应用登记的功能码表（在「开放接入」维护）。空数组 = 未登记，暂不强校验。 */
+function featureSchema(appId) {
+  if (!appId) return [];
+  const a = db.prepare('SELECT feature_schema FROM open_apps WHERE id = ?').get(Number(appId));
+  if (!a) return [];
+  const arr = safeJson(a.feature_schema, []);
+  const out = [];
+  for (const x of Array.isArray(arr) ? arr : []) {
+    const item = typeof x === 'string' ? { token: x, label: '' } : x;
+    if (item && TOKEN_RE.test(String(item.token || ''))) {
+      out.push({ token: String(item.token), label: String(item.label || '').slice(0, 60) });
+    }
+  }
+  return out;
+}
+
+/**
+ * 归一化功能码表输入：接受 [{token,label}]、JSON 字符串、或每行 `token = 名称` 的文本。
+ * 供开放接入表单与导入共用；token 未知格式直接报错，不给「拼错字符静默吞掉」的机会。
+ */
+function normalizeFeatureSchema(input) {
+  if (input === undefined || input === null || input === '') return { value: [] };
+  let arr = input;
+  if (typeof input === 'string') {
+    const s = input.trim();
+    if (!s) return { value: [] };
+    if (s.startsWith('[')) {
+      try { arr = JSON.parse(s); } catch { return { error: '功能码表不是合法 JSON 数组' }; }
+    } else {
+      arr = [];
+      for (const line of s.split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        const i = t.indexOf('=');
+        arr.push(i > 0 ? { token: t.slice(0, i).trim(), label: t.slice(i + 1).trim() } : { token: t, label: '' });
+      }
+    }
+  }
+  if (!Array.isArray(arr)) return { error: '功能码表必须是数组，或每行「token = 名称」' };
+  const seen = new Set();
+  const out = [];
+  for (const x of arr) {
+    const item = typeof x === 'string' ? { token: x, label: '' } : (x || {});
+    const tok = String(item.token || '').trim().toLowerCase();
+    if (!tok) continue;
+    if (!TOKEN_RE.test(tok)) {
+      return { error: `功能码「${tok}」格式不对：小写字母/数字/下划线点分段（如 labelgo.concat）` };
+    }
+    if (seen.has(tok)) return { error: `功能码「${tok}」重复登记` };
+    seen.add(tok);
+    out.push({ token: tok, label: String(item.label || '').slice(0, 60) });
+  }
+  return { value: out };
+}
+
+/**
+ * 归一化数量配额：接受对象、JSON 字符串、或每行 `key = 数值` 的文本。
+ * 值必须是 ≥0 的数字 —— 配额是给客户端做上限判断的，出现字符串就是配置事故。
+ */
+function normalizeLimits(input) {
+  if (input === undefined || input === null || input === '') return { value: {} };
+  let obj = input;
+  if (typeof input === 'string') {
+    const s = input.trim();
+    if (!s) return { value: {} };
+    if (s.startsWith('{')) {
+      try { obj = JSON.parse(s); } catch { return { error: 'limits 不是合法 JSON 对象' }; }
+    } else {
+      obj = {};
+      for (const line of s.split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        const i = t.indexOf('=');
+        if (i <= 0) return { error: `limits 行「${t}」格式不对，应为 key = 数值` };
+        obj[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+      }
+    }
+  }
+  if (typeof obj !== 'object' || Array.isArray(obj)) return { error: 'limits 必须是 key = 数值 结构' };
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const key = String(k).trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_.\-]{0,63}$/.test(key)) {
+      return { error: `limits 键「${k}」只允许字母/数字/./_/-（≤64 位）` };
+    }
+    const num = Number(v);
+    if (!Number.isFinite(num) || num < 0) return { error: `limits「${key}」的值必须是 ≥0 的数字` };
+    out[key] = num;
+  }
+  return { value: out };
 }
 
 /** 后台管理用：列全部档位。传 appId 则只列该产品（不回退模板）。 */
@@ -131,9 +228,43 @@ function validate(input, { partial = false } = {}) {
   if (b.remark !== undefined || !partial) v.remark = String(b.remark || '');
   if (b.features !== undefined || !partial) {
     let f = b.features;
-    if (typeof f === 'string') f = f.split('\n').map((s) => s.trim()).filter(Boolean);
+    if (typeof f === 'string') {
+      const s = f.trim();
+      // update() 会把库里的归一化结果（JSON 字符串）merge 回来再校验一次，
+      // 这里必须能认出 JSON 数组形式，否则会被当成「一整行 token」
+      if (s.startsWith('[')) {
+        try { f = JSON.parse(s); } catch { f = null; }
+      } else {
+        f = f.split('\n').map((x) => x.trim()).filter(Boolean);
+      }
+    }
     if (!Array.isArray(f)) errors.push('features 必须是数组或每行一条的文本');
-    else v.features = JSON.stringify(f.map(String));
+    else {
+      const toks = f.map((s) => String(s).trim()).filter(Boolean);
+      for (const t of toks) {
+        if (!TOKEN_RE.test(t)) {
+          errors.push(`功能码「${t}」格式不对：小写字母/数字/下划线点分段（如 labelgo.concat）`);
+        }
+      }
+      // 功能码白名单：登记过功能码表的应用，只接受已登记 token。
+      // 之前是自由文本，写错一个字符不报错、客户端静默少一个功能，只能发版补救。
+      if (v.app_id) {
+        const schema = featureSchema(v.app_id);
+        if (schema.length) {
+          const known = new Set(schema.map((s) => s.token));
+          const unknown = toks.filter((t) => !known.has(t));
+          if (unknown.length) {
+            errors.push(`未登记的功能码：${unknown.join('、')}（先到「开放接入」登记该应用的功能码表）`);
+          }
+        }
+      }
+      v.features = JSON.stringify(toks);
+    }
+  }
+  if (b.limits !== undefined || !partial) {
+    const r = normalizeLimits(b.limits === undefined ? {} : b.limits);
+    if (r.error) errors.push(r.error);
+    else v.limits = JSON.stringify(r.value);
   }
 
   if (v.billing === 'free' && v.price > 0) errors.push('免费档价格必须为 0');
@@ -165,9 +296,9 @@ function insert(input, by = 'admin') {
   }
   const info = db.prepare(`INSERT INTO plans
     (app_id, code, name, tier, billing, price, original_price, period_days, online_required,
-     offline_days, max_devices, seats, features, status, sort, remark, created_at, updated_at)
+     offline_days, max_devices, seats, features, limits, status, sort, remark, created_at, updated_at)
     VALUES (@app_id,@code,@name,@tier,@billing,@price,@original_price,@period_days,@online_required,
-      @offline_days,@max_devices,@seats,@features,@status,@sort,@remark,@t,@t)`)
+      @offline_days,@max_devices,@seats,@features,@limits,@status,@sort,@remark,@t,@t)`)
     .run({ ...v, t: now() });
   return { ok: true, id: info.lastInsertRowid, plan: get(info.lastInsertRowid), by };
 }
@@ -185,19 +316,19 @@ function update(id, input) {
   db.prepare(`UPDATE plans SET app_id=@app_id, code=@code, name=@name, tier=@tier, billing=@billing,
     price=@price, original_price=@original_price, period_days=@period_days,
     online_required=@online_required, offline_days=@offline_days, max_devices=@max_devices,
-    seats=@seats, features=@features, status=@status, sort=@sort, remark=@remark, updated_at=@t
+    seats=@seats, features=@features, limits=@limits, status=@status, sort=@sort, remark=@remark, updated_at=@t
     WHERE id=@id`)
     .run({ ...v, id: Number(id), t: now() });
   return { ok: true, plan: get(id) };
 }
 
-/** 后台下拉：软件端应用 + 其绑定的上架商品 + 已配档位数 */
+/** 后台下拉：软件端应用 + 其绑定的上架商品 + 已配档位数 + 功能码表（套餐表单勾选用） */
 function listApps() {
-  return db.prepare(`SELECT a.id, a.name, a.app_key, a.status, a.product_id,
+  return db.prepare(`SELECT a.id, a.name, a.app_key, a.status, a.product_id, a.feature_schema,
     p.name AS product_name, p.type AS product_type,
     (SELECT COUNT(*) FROM plans pl WHERE pl.app_id = a.id) AS plan_count
     FROM open_apps a LEFT JOIN products p ON p.id = a.product_id
-    ORDER BY a.id DESC`).all();
+    ORDER BY a.id DESC`).all().map((a) => ({ ...a, feature_schema: safeJson(a.feature_schema, []) }));
 }
 
 /**
@@ -211,10 +342,16 @@ function copyTemplateToApp(appId) {
   if (!app) return { ok: false, errors: ['软件产品不存在'] };
   let created = 0;
   let skipped = 0;
+  // 模板里是 IoT 语义的占位 token（basic.view / sync.cloud…）；
+  // 产品登记了自己的功能码表后，占位 token 会被白名单拦下 —— 复制时按词表过滤，
+  // 落到产品上的 features 默认为空集，由管理员按产品实际权益勾选。
+  const schema = featureSchema(id);
+  const known = schema.length ? new Set(schema.map((s) => s.token)) : null;
   for (const t of listTemplates(false)) {
     if (findInScope(t.code, id)) { skipped += 1; continue; }
     const { id: _id, app_id: _appId, app_name: _an, app_key: _ak, product_id: _pid,
       product_name: _pn, product_icon: _pi, created_at: _ca, updated_at: _ua, ...input } = t;
+    if (known) input.features = (t.features || []).filter((f) => known.has(f));
     const res = insert({ ...input, app_id: id });
     if (!res.ok) return { ok: false, errors: res.errors };
     created += 1;
@@ -238,7 +375,7 @@ function exportConfig(appId = undefined) {
       code: p.code, name: p.name, tier: p.tier, billing: p.billing,
       price: p.price, original_price: p.original_price, period_days: p.period_days,
       online_required: p.online_required, offline_days: p.offline_days,
-      max_devices: p.max_devices, seats: p.seats, features: p.features,
+      max_devices: p.max_devices, seats: p.seats, features: p.features, limits: p.limits,
       status: p.status, sort: p.sort, remark: p.remark || '',
     })),
   };
@@ -324,7 +461,7 @@ function licenseMatchesApp(lic, appRow) {
 function licenseEntitlement(lic) {
   const p = licensePlan(lic);
   if (!p) return {
-    plan_code: String(lic.plan_code || lic.type || ''), features: [], seats: 1, offline_days: 0,
+    plan_code: String(lic.plan_code || lic.type || ''), features: [], limits: {}, seats: 1, offline_days: 0,
     app_id: lic.app_id || null,
   };
   return {
@@ -332,6 +469,7 @@ function licenseEntitlement(lic) {
     plan_name: p.name,
     tier: p.tier,
     features: p.features,
+    limits: p.limits || {},
     seats: p.seats,
     offline_days: p.offline_days,
     online_required: p.online_required,
@@ -339,6 +477,97 @@ function licenseEntitlement(lic) {
     product_id: p.product_id || null,
     product_name: p.product_name || '',
   };
+}
+
+/**
+ * 权益版本号：对「客户端真正会消费的字段」做内容哈希。
+ * 心跳时客户端带上上次拿到的版本，服务端比对即可告知「权益变了」，不用整包 diff。
+ * 字段集变了（新增权益维度）没关系 —— 内容一变版本就变，客户端最多多刷一次。
+ */
+function entitlementVersion(lic) {
+  const ent = licenseEntitlement(lic);
+  const src = JSON.stringify({
+    plan_code: ent.plan_code, tier: Number(ent.tier) || 0,
+    features: ent.features || [], limits: ent.limits || {},
+    seats: ent.seats, offline_days: ent.offline_days,
+    online_required: ent.online_required === undefined ? null : ent.online_required,
+    max_devices: lic ? Number(lic.max_devices) || 1 : 1,
+    end_at: lic && lic.end_at ? lic.end_at : null,
+    downgraded_from: lic ? String(lic.downgraded_from || '') : '',
+  });
+  return crypto.createHash('sha1').update(src).digest('hex').slice(0, 12);
+}
+
+/**
+ * 到期降级：套餐订阅过期的瞬间，把这张授权落到该应用的 free 档（同一个码、同一批机器）。
+ *
+ * 客户端的实际行为是「过期就静默走 freeStatus()」，界面上只剩一个「免费版」，
+ * 用户只会觉得功能丢了去打客服。服务端明确降级并记 downgraded_from 后，
+ * verify / heartbeat / licenses 返回里就能说清「订阅到期，已降级为免费版」。
+ *
+ * 边界：
+ *  - 无档位的历史商品/卡密授权不动：它们的「过期」就是过期，没有可降的档。
+ *  - 机器数不缩水：已绑定的机器继续可用，避免降级瞬间把在线设备踢下线。
+ *  - 没配 free 档的应用不降（宁可见「已过期」也不能编一个不存在的档）。
+ */
+function settleExpiry(lic) {
+  if (!lic || lic.status !== 'active') return lic;
+  if (!Number(lic.user_id)) return lic; // 卡密池未绑定的码
+  if (!lic.end_at || Date.parse(lic.end_at) >= Date.now()) return lic;
+  const cur = licensePlan(lic);
+  if (!cur) return lic;
+  const refetch = () => db.prepare('SELECT * FROM licenses WHERE id = ?').get(lic.id);
+  if (cur.billing === 'free') {
+    // 免费档本不该有到期时间（历史数据/配置失误）；直接清掉，别把免费用户锁在门外
+    db.prepare('UPDATE licenses SET end_at = NULL WHERE id = ?').run(lic.id);
+    return refetch();
+  }
+  const free = freePlanFor(lic.app_id || cur.app_id);
+  if (!free) return lic;
+  db.prepare(`UPDATE licenses SET plan_id = ?, plan_code = ?, end_at = NULL, type = 'permanent',
+    downgraded_from = ?, downgraded_at = ? WHERE id = ?`)
+    .run(free.id, free.code, cur.code, now(), lic.id);
+  return refetch();
+}
+
+/** 这张授权现在是否可用（激活/登录/心跳语义）：已激活 + 未过期 */
+function isLicenseLive(lic) {
+  if (!lic || lic.status !== 'active') return false;
+  if (!Number(lic.user_id)) return false;
+  if (lic.end_at && Date.parse(lic.end_at) < Date.now()) return false;
+  return true;
+}
+
+/**
+ * 用户在某软件产品下可用的授权，按 tier 高 → end_at 晚（永久最晚）→ id 大 排序。
+ * 读到过期订阅会顺带降级（settleExpiry），保证排序前状态已收敛。
+ */
+function usableLicenses(userId, appRow) {
+  const uid = Number(userId) || 0;
+  const rows = db.prepare('SELECT * FROM licenses WHERE user_id = ? AND status <> ? ORDER BY id DESC')
+    .all(uid, 'revoked');
+  const out = [];
+  for (let lic of rows) {
+    if (appRow && !licenseMatchesApp(lic, appRow)) continue;
+    lic = settleExpiry(lic);
+    out.push({ lic, ent: licenseEntitlement(lic) });
+  }
+  out.sort((a, b) => {
+    const ta = Number(a.ent.tier) || 0;
+    const tb = Number(b.ent.tier) || 0;
+    if (ta !== tb) return tb - ta;
+    const ea = a.lic.end_at ? Date.parse(a.lic.end_at) : Infinity;
+    const eb = b.lic.end_at ? Date.parse(b.lic.end_at) : Infinity;
+    if (ea !== eb) return eb - ea;
+    return Number(b.lic.id) - Number(a.lic.id);
+  });
+  return out;
+}
+
+/** 用户在某软件产品下的「当前生效」授权：排序最高的那张可用码。 */
+function bestLicenseForApp(userId, appRow) {
+  const hit = usableLicenses(userId, appRow).find((x) => isLicenseLive(x.lic));
+  return hit ? hit.lic : null;
 }
 
 function freePlanFor(appId) {
@@ -391,4 +620,6 @@ module.exports = {
   insert, update, copyTemplateToApp, importConfig, exportConfig,
   licensePlan, licenseMatchesApp, licenseEntitlement, ensureFreeLicense, freePlanFor,
   addDays, round2,
+  featureSchema, normalizeFeatureSchema, normalizeLimits,
+  entitlementVersion, settleExpiry, isLicenseLive, usableLicenses, bestLicenseForApp,
 };

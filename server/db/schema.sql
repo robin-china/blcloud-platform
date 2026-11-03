@@ -96,6 +96,9 @@ CREATE TABLE IF NOT EXISTS licenses (
   end_at TEXT,
   status TEXT DEFAULT 'active',
   order_id INTEGER,
+  -- 订阅到期降级：置为该应用 free 档的时间与原档位 code，客户端据此提示「已降级」而不是「功能莫名消失」
+  downgraded_from TEXT DEFAULT '',
+  downgraded_at TEXT DEFAULT '',
   remark TEXT DEFAULT '',
   created_at TEXT NOT NULL
 );
@@ -283,6 +286,9 @@ CREATE TABLE IF NOT EXISTS open_apps (
   product_id INTEGER,
   status TEXT DEFAULT 'active',
   offline_days INTEGER DEFAULT 0,
+  -- 功能码白名单 [{token,label}]：登记后，套餐表单的功能权限从自由文本变成勾选，
+  -- 保存时未知 token 直接报错 —— 拼错一个字符不再是「静默少一个功能」。
+  feature_schema TEXT DEFAULT '[]',
   version TEXT DEFAULT '',
   download_url TEXT DEFAULT '',
   release_note TEXT DEFAULT '',
@@ -366,6 +372,9 @@ CREATE TABLE IF NOT EXISTS plans (
   max_devices INTEGER DEFAULT 1,
   seats INTEGER DEFAULT 1,
   features TEXT DEFAULT '[]',
+  -- 数量配额（JSON 对象）：features 只能表达「有/没有」，「标签库 30 个 / Excel 100 行」这类
+  -- 量化权益放这里，随离线票据一起签名下发
+  limits TEXT DEFAULT '{}',
   status TEXT DEFAULT 'on',
   sort INTEGER DEFAULT 0,
   remark TEXT DEFAULT '',

@@ -35,7 +35,10 @@ const userApp = createApp({
 
     function syncHash() {
       const raw = (location.hash || '#/shop').replace('#/', '');
-      const [r, p] = raw.split('/');
+      // 允许 #/space?app=xxx 这类带查询的路由：路由名只取 ? 之前的部分，
+      // 查询参数由各页面自己解析（如「我的空间」用 app 定位产品卡片）
+      const [pathPart] = raw.split('?');
+      const [r, p] = pathPart.split('/');
       state.route = r || 'shop';
       state.param = p || '';
     }

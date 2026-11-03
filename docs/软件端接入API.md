@@ -141,7 +141,7 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 | POST | `/auth/logout` | 用户令牌 | 退出，令牌作废 |
 | GET | `/user/profile` | 用户令牌 | 用户资料（昵称、头像、积分、TB 状态），实时读库 |
 | POST | `/user/profile` | 用户令牌 | **修改昵称 / 头像**，与网页端共用校验 |
-| GET | `/user/licenses` | 用户令牌 | 我的全部授权及绑定机器数 |
+| GET | `/user/licenses` | 用户令牌 | 我的全部授权及绑定机器数；`?app_key=` 过滤本产品并标出 `effective` |
 | GET | `/user/devices` | 用户令牌 | **我的硬件 + TB 连接凭据** |
 | POST | `/license/verify` | 令牌 或 应用签名 | 校验授权是否有效 |
 | POST | `/license/heartbeat` | 用户令牌 | 心跳，刷新在线状态与版本 |
@@ -160,6 +160,9 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 
 ```json
 {
+  "id": 3,
+  "app_key": "ak_xxxxxxxxxxxx",
+  "name": "标签打印 PC 客户端",
   "version": "1.2.0",
   "download_url": "https://cdn.example.com/app-1.2.0.exe",
   "release_note": "修复了断网后无法保存的问题",
@@ -167,12 +170,15 @@ def sign(app_key, app_secret, method, path, body_obj=None):
   "plan_catalog": [
     { "app_id": 3, "product_id": 7, "code": "free", "name": "在线免费版", "tier": 0,
       "billing": "free", "price": 0, "period_days": 0, "offline_days": 0,
-      "max_devices": 1, "seats": 1, "features": ["basic.view"] }
+      "max_devices": 1, "seats": 1, "features": ["labelgo.basic"],
+      "limits": { "labelgo.library": 30 } }
   ],
   "force_update": false,
   "server_time": "2026-11-02T06:00:00.000Z"
 }
 ```
+
+`id` / `app_key`：**客户端只有 app_key，而 `/user/licenses` 可能返回全产品列表**；用响应里的 `id` 与每张授权的 `license.app_id`（或过滤参数配合 `effective` 标记）对上，才能判断哪张码属于本产品。
 
 `offline_days` 是后台「开放接口 → 编辑应用 → 离线宽限（天）」配的值，**客户端要按它实现断网策略**：
 
@@ -215,8 +221,10 @@ def sign(app_key, app_secret, method, path, body_obj=None):
     "max_devices": 2, "bound_devices": 1,
     "plan": "member",
     "entitlement": { "plan_code": "member", "plan_name": "在线会员版", "tier": 10,
-      "features": ["basic.view", "device.read"], "seats": 1, "offline_days": 3,
-      "online_required": 1, "app_id": 3 }
+      "features": ["labelgo.basic", "labelgo.library"], "limits": { "labelgo.library": 30 },
+      "seats": 1, "offline_days": 3, "online_required": 1, "app_id": 3 },
+    "entitlement_version": "a1b2c3d4e5f6",
+    "downgraded_from": "", "downgraded_at": ""
   },
   "server_time": "2026-10-21T06:00:00.000Z"
 }
@@ -228,6 +236,11 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 - 绑定机器数达到 `max_devices` 时返回 `409 MACHINE_LIMIT`
 - 授权被吊销 / 过期 / 产品不匹配时返回 403，见错误码表
 - **套餐授权按软件产品隔离**：`license.app_id` 和档位的 `app_id` 必须等于当前应用，否则返回 `403 PRODUCT_MISMATCH` —— A 软件的码不能在 B 软件里激活。`app_id` 为空的历史通用码继续放行，不锁死老客户
+- **功能判定走能力码 token，不要解析档位名或比较 tier**：`entitlement.features.includes('labelgo.concat')`。`plan_name`/`tier` 只用于展示与排序。后台加档、改名、调价，客户端不用发版
+- `entitlement.limits` 是数量配额（`{ "labelgo.library": 30 }`）：features 只能表达「有/没有」，「标签库 30 个 / Excel 100 行」这类量化上限看这里
+- `entitlement_version` 是权益内容哈希（12 位）：心跳带上它即可增量感知权益变化，不用整包 diff
+- `downgraded_from` 非空 = 这张授权的订阅已到期、被服务端降到免费档（原档位 code 见该字段）。**客户端要明说「订阅到期已降级为免费版」**，不要静默切到免费版让用户以为功能丢了
+- **订阅到期会在服务端明确降级**：过期瞬间（verify / heartbeat / 列表读取时）授权落到该应用 free 档，原授权码与已绑机器全部保留，续费后原地升回
 - `user.nickname` / `user.avatar` 默认来自微信资料，用户在网页端「账户中心」改过之后这里实时返回最新值（软件端可用 `POST /user/profile` 改，与网页端共用校验）
 - `user.avatar` 是**可直接渲染的图片地址**：微信头像是 URL，内置卡通头像已展开成 `data:image/svg+xml;base64,...`。客户端拿去直接 `<img src>` 即可，**离线也能显示**，不要自己再处理 `avatar_preset`——它只是回传的预设编号，供网页端选择器高亮用
 - **卡密还没被绑定**（渠道印的卡、用户还没领）返回 `403 LICENSE_UNASSIGNED`，此时应引导用户先登录绑定，而不是重新激活
@@ -259,11 +272,46 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 
 若该机器码未绑定此授权，返回 `403 MACHINE_NOT_BOUND`。
 
+> 订阅过期的授权在 verify 前会被服务端降到该应用的 free 档：返回 `valid: true` + `license.downgraded_from`（原档位 code）。客户端据此提示「订阅到期已降级为免费版」，别把它当成静默的权限缩小。无档位的历史授权过期仍返回 `LICENSE_EXPIRED`。
+
+### 5.2.1 我的授权列表
+
+`GET /user/licenses?app_key={AK}`（用户令牌）：只返回**该软件产品下可用**的授权，按 tier 高 → 有效期晚 → id 大排序，并标出哪张当前生效：
+
+```json
+{
+  "app": { "id": 3, "app_key": "ak_xxx", "name": "标签打印 PC 客户端" },
+  "list": [
+    { "license_key": "LIC-…", "plan": "member", "effective": true, "valid": true,
+      "entitlement": { "...": "…" }, "entitlement_version": "…", "downgraded_from": "" },
+    { "license_key": "LIC-…", "plan": "free", "effective": false, "valid": true }
+  ]
+}
+```
+
+**客户端应使用 `effective: true` 的那张**。不带 `app_key` 则返回全产品列表（兼容老客户端，此时没有 `effective` 字段）。
+
 ### 5.3 心跳
 
-`POST /license/heartbeat`，body `{ "version": "1.2.0" }`
+`POST /license/heartbeat`，body `{ "version": "1.2.0", "entitlement_version": "a1b2c3d4e5f6" }`
 
 建议每 5~10 分钟一次。服务端会更新最后活跃时间、客户端版本，并返回授权最新状态——**这是后台吊销/过期能否及时生效的关键**。
+
+响应额外带权益版本比对结果：
+
+```json
+{
+  "valid": true,
+  "license": { "...": "完整 license payload（含 entitlement / downgraded_from）" },
+  "entitlement_version": "b2c3d4e5f6a7",
+  "entitlement_changed": true,
+  "expires_at": "…", "server_time": "…"
+}
+```
+
+- 带 `entitlement_version`（上次拿到的值）时返回 `entitlement_changed: true|false`；不带时为 `null`（老客户端不受影响）
+- `true` = 升级 / 降级 / 后台改了配置，**必须重新解析 `license.entitlement` 并刷新功能开关**；`downgraded_from` 非空时向用户明示「订阅到期已降级」
+- 没实现版本比对的客户端：每次心跳都整体解析 `license.entitlement` 也行，字段集是稳定的
 
 三种失败要分开处理：
 
@@ -353,11 +401,14 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
     "plan_code": "member",
     "plan_name": "在线会员版",
     "tier": 10,
-    "features": ["basic.view", "device.read", "data.export"],
+    "features": ["labelgo.basic", "labelgo.library", "labelgo.excel"],
+    "limits": { "labelgo.library": 30, "labelgo.excel_rows": 100 },
     "seats": 1,
     "online_required": 1,
     "max_devices": 2,
     "offline_days": 3,
+    "downgraded_from": "",
+    "entitlement_version": "a1b2c3d4e5f6",
     "iat": 1793600000,
     "exp": 1794204800
   },
@@ -367,7 +418,7 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
 }
 ```
 
-**套餐权益字段**：`plan_code` / `plan_name` / `tier` / `features` / `seats` / `online_required` / `app_id` 都随签名一起下发，`app_id` 标明档位归属哪个软件产品。客户端断网时问不了服务端，**功能开关只能以验签通过的 `features` 为准**，不要用本地缓存的旧档位，也不要相信接口单独返回的目录。套餐授权的 `product_id=0`（不绑定具体商品），激活时改由 `licenses.app_id` / 档位 `app_id` 做产品匹配；`app_id` 为空的历史通用码按「不限应用」放行。历史商品授权与卡密池码没有档位，这些字段为 `""` / `0` / `[]` / `null`，`offline_days` 回退到开放应用里的「离线宽限」。
+**套餐权益字段**：`plan_code` / `plan_name` / `tier` / `features` / `limits` / `seats` / `online_required` / `app_id` / `entitlement_version` / `downgraded_from` 都随签名一起下发，`app_id` 标明档位归属哪个软件产品。客户端断网时问不了服务端，**功能开关只能以验签通过的 `features` 为准、数量上限以 `limits` 为准**，不要用本地缓存的旧档位，也不要相信接口单独返回的目录。`entitlement_version` 断网后没有用处，但它保证「同一张票内权益自洽」。套餐授权的 `product_id=0`（不绑定具体商品），激活时改由 `licenses.app_id` / 档位 `app_id` 做产品匹配；`app_id` 为空的历史通用码按「不限应用」放行。历史商品授权与卡密池码没有档位，这些字段为 `""` / `0` / `[]` / `null`，`offline_days` 回退到开放应用里的「离线宽限」。
 
 `/app/version` 额外返回 `plan_catalog`（**只包含本应用自己的档位**），仅供展示可购买档位；权益判定仍以票据签名字段为准。
 
@@ -405,8 +456,13 @@ const ok = crypto.verify(null, Buffer.from(body, 'utf8'),
    - `mode: "wechat"` 时把 `qrcode_url` 渲染成二维码给用户扫
    - `mode: "simulate"` 表示服务号未配置，仅本地联调可用
 2. 客户端每 2 秒轮询 `GET /auth/qrcode/{scene}?app_key={AK}&machine_id={MAC}`（可加 `version`、`machine_name`）
-3. 用户扫码确认后返回 `{ status: "confirmed", access_token, refresh_token, user }`
+3. 用户扫码确认后返回 `{ status: "confirmed", access_token, refresh_token, user, license }`
 4. `status` 还可能为 `pending` / `expired`
+
+**确认即选码 + 绑机**：服务端会挑出该用户在本产品下**当前生效**的授权（tier 最高且未过期的那张），返回完整 `license` payload，并顺手把 `machine_id` 绑上去——免费用户扫码后**不需要再走激活**，直接进入已授权状态。会话也绑定了这张授权，心跳 / 离线票据开箱即用。
+
+- 机器超出 `max_devices` 时登录仍成功，但返回 `license_bind_error: { code: "MACHINE_LIMIT", reason: "…" }` 且会话不带授权——引导用户去网页端解绑或走卡密激活流程
+- 没有任何可用授权时会先自动补发一张本产品免费档授权码
 
 ### 5.7.1 免登跳转用户中心（`/auth/handoff`）
 
@@ -415,10 +471,12 @@ const ok = crypto.verify(null, Buffer.from(body, 'utf8'),
 `POST /auth/handoff`，需要 `Authorization: Bearer <access_token>`
 
 ```json
-{ "to": "account" }
+{ "to": "space", "app": "ak_xxxxxxxxxxxx" }
 ```
 
 `to` 走白名单：`account`（默认）/ `licenses` / `devices` / `orders` / `space` / `earnings`（我的收益），填别的会被收敛成 `account`（防开放重定向）。
+
+`to: "space"` 时可带 `app: "<自己的 app_key>"`：用户点「升级套餐」直接落到**自己的那张产品卡片**（网页端高亮定位），不用在「我的空间」里自己找。
 
 响应：
 

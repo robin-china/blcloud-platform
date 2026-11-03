@@ -1,8 +1,10 @@
 /* 管理端：开放接入应用（软件端凭证）管理 */
 const db = require('../db');
-const { now, today } = require('../lib/util');
+const { now, today, safeJson } = require('../lib/util');
 const { requireAdmin } = require('../lib/auth');
 const { genAppKey, genAppSecret } = require('../lib/openauth');
+const plans = require('../lib/plans');
+const { logAdmin } = require('../lib/adminlog');
 
 function shape(a) {
   const stats = db.prepare(`SELECT COUNT(*) AS sessions, SUM(CASE WHEN status='active' AND expires_at > ? THEN 1 ELSE 0 END) AS online
@@ -12,11 +14,24 @@ function shape(a) {
   return {
     ...a,
     app_secret_masked: a.app_secret ? `${a.app_secret.slice(0, 6)}****${a.app_secret.slice(-4)}` : '',
+    feature_schema: safeJson(a.feature_schema, []),
     product_name: product ? product.name : '',
     session_count: stats.sessions || 0,
     online_count: stats.online || 0,
     api_calls: calls || 0,
   };
+}
+
+/** 解析并校验功能码表；错误返回 null + reply 已发送 */
+function parseFeatureSchema(req, reply) {
+  const b = req.body || {};
+  if (b.feature_schema === undefined) return { keep: true };
+  const r = plans.normalizeFeatureSchema(b.feature_schema);
+  if (r.error) {
+    reply.code(400).send({ error: r.error });
+    return null;
+  }
+  return { value: r.value };
 }
 
 module.exports = async function openAppRoutes(app) {
@@ -31,14 +46,18 @@ module.exports = async function openAppRoutes(app) {
     const b = req.body || {};
     const name = String(b.name || '').trim();
     if (!name) return reply.code(400).send({ error: '应用名称必填' });
+    const fs = parseFeatureSchema(req, reply);
+    if (!fs) return;
     const appKey = genAppKey();
     const appSecret = genAppSecret();
-    const info = db.prepare(`INSERT INTO open_apps (app_key, app_secret, name, product_id, status, offline_days, version, download_url, release_note, remark, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    const info = db.prepare(`INSERT INTO open_apps (app_key, app_secret, name, product_id, status, offline_days, feature_schema, version, download_url, release_note, remark, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(appKey, appSecret, name, Number(b.product_id) || null, b.status || 'active',
-        Number(b.offline_days) || 0, String(b.version || ''), String(b.download_url || ''),
+        Number(b.offline_days) || 0, JSON.stringify(fs.keep ? [] : fs.value),
+        String(b.version || ''), String(b.download_url || ''),
         String(b.release_note || ''), String(b.remark || ''), now());
     const row = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(info.lastInsertRowid);
+    logAdmin(req, 'openapp.create', `新建应用 ${name}（app_key=${appKey}，功能码 ${(fs.keep ? [] : fs.value).length} 个）`);
     return { ...shape(row), app_key: row.app_key, app_secret: row.app_secret };
   });
 
@@ -47,18 +66,27 @@ module.exports = async function openAppRoutes(app) {
     const b = req.body || {};
     const row = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(Number(req.params.id));
     if (!row) return reply.code(404).send({ error: '应用不存在' });
-    db.prepare(`UPDATE open_apps SET name = ?, product_id = ?, status = ?, offline_days = ?, version = ?, download_url = ?, release_note = ?, remark = ? WHERE id = ?`)
+    const fs = parseFeatureSchema(req, reply);
+    if (!fs) return;
+    // 改功能码表只影响之后保存的档位：已售授权里的旧 token 不回改（客户端还认它），
+    // 但从档位表单里删掉后就不能再配进新档位
+    const schemaJson = fs.keep ? row.feature_schema : JSON.stringify(fs.value);
+    db.prepare(`UPDATE open_apps SET name = ?, product_id = ?, status = ?, offline_days = ?, feature_schema = ?, version = ?, download_url = ?, release_note = ?, remark = ? WHERE id = ?`)
       .run(
         String(b.name || row.name),
         b.product_id === undefined ? row.product_id : (Number(b.product_id) || null),
         String(b.status || row.status),
         Number(b.offline_days ?? row.offline_days) || 0,
+        schemaJson,
         String(b.version ?? row.version),
         String(b.download_url ?? row.download_url),
         String(b.release_note ?? row.release_note),
         String(b.remark ?? row.remark),
         row.id
       );
+    if (!fs.keep && JSON.stringify(safeJson(schemaJson, [])) !== JSON.stringify(safeJson(row.feature_schema, []))) {
+      logAdmin(req, 'openapp.feature_schema', `应用 ${row.name} 功能码表更新为 ${fs.value.length} 个 token`);
+    }
     return { ok: true };
   });
 

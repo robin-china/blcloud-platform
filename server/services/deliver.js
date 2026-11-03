@@ -96,9 +96,37 @@ function deliverUpgrade(order) {
   let endAt = lic.end_at;
   if (plan.billing === 'period' && !endAt) endAt = plans.addDays(plan.period_days || 365);
   if (plan.billing !== 'period') endAt = null;
-  // 升级会把历史「不限应用」的通用授权固化到本次下单的产品上，
-  // 之后这张码就不能再拿到别的产品里用 —— 这正是产品隔离要做的事。
-  const appId = Number(plan.app_id) || Number(order.app_id) || Number(lic.app_id) || null;
+  const planAppId = Number(plan.app_id) || 0;
+
+  // 注册时发的「不限应用」通用码（app_id 为空）：直接升级会把这张码固化到本次下单的产品，
+  // 用户在别的软件里用它就会「突然失效」，看起来像 bug。
+  // 改为发放一张该产品专属的新授权（机器绑定复制过去、免重新激活），通用码保持原样继续通用。
+  if (planAppId && !Number(lic.app_id)) {
+    const ts = now();
+    const key = genLicenseKey();
+    const info = db.prepare(`INSERT INTO licenses
+      (license_key, user_id, app_id, product_id, type, max_devices, start_at, end_at, status,
+       plan_id, plan_code, order_id, remark, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(key, lic.user_id, planAppId, 0, plan.billing === 'period' ? 'subscription' : 'permanent',
+        Number(plan.max_devices) || 1, ts, endAt, 'active', plan.id, plan.code, order.id,
+        `通用授权升级转产品授权（原码 ${lic.license_key}）`, ts);
+    // 复制机器绑定：升级后老设备不用重新激活（会话仍指旧码也不受影响）
+    db.prepare(`INSERT INTO license_devices
+      (license_id, device_sn, device_name, machine_id, app_id, last_ip, last_version, last_seen_at, bound_at)
+      SELECT ?, device_sn, device_name, machine_id, ?, last_ip, last_version, last_seen_at, bound_at
+      FROM license_devices WHERE license_id = ?`)
+      .run(info.lastInsertRowid, planAppId, lic.id);
+    return {
+      type: 'license_upgrade', license_key: key, license_id: Number(info.lastInsertRowid),
+      product: plan.name, plan_code: plan.code,
+      from_plan: cur ? cur.code : '', from_license: lic.license_key,
+      max_devices: plan.max_devices, end_at: endAt, new_license: true,
+      note: '已转为该产品专属授权码，原通用码保持可用',
+    };
+  }
+
+  const appId = planAppId || Number(order.app_id) || Number(lic.app_id) || null;
   db.prepare(`UPDATE licenses SET plan_id = ?, plan_code = ?, max_devices = ?, end_at = ?,
     type = ?, status = 'active', app_id = ? WHERE id = ?`)
     .run(plan.id, plan.code, Number(plan.max_devices) || 1, endAt,

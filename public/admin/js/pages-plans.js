@@ -1,5 +1,5 @@
 (function () {
-const { ref, reactive, onMounted, computed } = Vue;
+const { ref, reactive, onMounted, computed, watch } = Vue;
 
 window.PagePlans = {
   template: `
@@ -51,7 +51,7 @@ window.PagePlans = {
                 <td>{{ p.online_required ? '必须' : '可离线' }}</td>
                 <td>{{ p.offline_days }}</td>
                 <td>{{ p.max_devices }} / {{ p.seats }}</td>
-                <td style="font-size:12px;color:var(--text-3)">{{ (p.features || []).length }} 项</td>
+                <td style="font-size:12px;color:var(--text-3)">{{ (p.features || []).length }} 项<span v-if="limitCount(p)"> · {{ limitCount(p) }} 配额</span></td>
                 <td><span class="tag" :class="p.status==='on'?'success':''">{{ p.status==='on'?'已上架':'已下架' }}</span></td>
                 <td>
                   <div class="table-actions">
@@ -120,8 +120,25 @@ window.PagePlans = {
             <div class="field"><label>排序（越大越前）</label><input class="input" type="number" v-model.number="form.sort" /></div>
           </div>
           <div class="field">
-            <label>功能权限码（每行一条，会随离线票据签名下发给客户端）</label>
-            <textarea class="input" rows="4" v-model="featureText" placeholder="basic.view&#10;device.read&#10;offline.mode"></textarea>
+            <label>功能权限码（随离线票据签名下发；客户端判定功能请认 token，不要解析档位名）</label>
+            <div v-if="schemaTokens.length" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 16px;padding:8px;border:1px solid var(--line);border-radius:8px">
+              <label v-for="t in schemaTokens" :key="t.token" style="display:flex;align-items:center;gap:6px;font-weight:normal;min-width:0">
+                <input type="checkbox" :value="t.token" v-model="featureSel" />
+                <span style="font-family:ui-monospace,monospace;font-size:12px">{{ t.token }}</span>
+                <span v-if="t.label" style="color:var(--text-3);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.label }}</span>
+              </label>
+            </div>
+            <textarea v-else class="input" rows="4" v-model="featureText" placeholder="basic.view&#10;device.read&#10;offline.mode"></textarea>
+            <div class="hint" style="margin-bottom:0" v-if="schemaTokens.length">
+              功能码取自「开放接入 → 功能码表」，未勾选的客户端将关闭对应功能。要加新 token 先去登记，拼错的码保存时会被直接拒绝。
+            </div>
+            <div class="hint" style="margin-bottom:0" v-else>
+              该产品还没登记功能码表：到「开放接入」编辑应用登记后，这里会变成勾选并强制校验，避免拼错一个字符静默少一个功能。
+            </div>
+          </div>
+          <div class="field">
+            <label>数量配额 limits（每行 key = 数值；如 标签库 30 个、Excel 100 行这类量化权益）</label>
+            <textarea class="input" rows="3" v-model="limitsText" placeholder="labelgo.library = 30&#10;labelgo.excel_rows = 100"></textarea>
           </div>
           <div class="field"><label>备注</label><input class="input" v-model="form.remark" /></div>
           <div class="hint" v-if="error" style="color:var(--danger)">{{ error }}</div>
@@ -168,8 +185,23 @@ window.PagePlans = {
     const ioText = ref('');
     const ioError = ref('');
     const featureText = ref('');
+    const featureSel = ref([]);
+    const limitsText = ref('');
     const form = reactive({});
     const fmt = U.fmt;
+
+    // 选中产品的功能码表：登记过就把自由文本换成勾选，保存时未知 token 直接被服务端拒绝
+    const schemaTokens = computed(() => {
+      const a = apps.value.find((x) => Number(x.id) === Number(form.app_id));
+      return (a && a.feature_schema) || [];
+    });
+    // 切产品时清掉不属于新功能码表的勾选，免得带着别家的 token 提交
+    watch(() => form.app_id, () => {
+      if (schemaTokens.value.length) {
+        const ok = new Set(schemaTokens.value.map((t) => t.token));
+        featureSel.value = featureSel.value.filter((t) => ok.has(t));
+      }
+    });
 
     const selectedAppId = computed(() => {
       const v = filterApp.value;
@@ -197,9 +229,11 @@ window.PagePlans = {
         name: '', code: '', app_id: selectedAppId.value || null,
         tier: 0, billing: 'period', price: 0, original_price: 0,
         period_days: 365, online_required: 1, offline_days: 0, max_devices: 1,
-        seats: 1, sort: 0, features: [], status: 'on', remark: '',
+        seats: 1, sort: 0, features: [], limits: {}, status: 'on', remark: '',
       });
       featureText.value = '';
+      featureSel.value = [];
+      limitsText.value = '';
       error.value = '';
     }
 
@@ -208,13 +242,21 @@ window.PagePlans = {
       reset();
       Object.assign(form, p);
       form.app_id = p.app_id || null;
+      featureSel.value = (p.features || []).slice();
       featureText.value = (p.features || []).join('\n');
+      const lim = p.limits || {};
+      limitsText.value = Object.entries(lim).map(([k, v]) => `${k} = ${v}`).join('\n');
       editing.value = true;
     }
 
+    const limitCount = (p) => (p.limits && Object.keys(p.limits).length) || 0;
+
     async function save() {
       error.value = '';
-      form.features = featureText.value.split('\n').map((s) => s.trim()).filter(Boolean);
+      // 有功能码表的产品用勾选结果；模板/未登记的仍走文本（服务端校验格式）
+      form.features = schemaTokens.value.length ? featureSel.value.slice()
+        : featureText.value.split('\n').map((s) => s.trim()).filter(Boolean);
+      form.limits = limitsText.value;
       form.app_id = form.app_id ? Number(form.app_id) || null : null;
       try {
         if (form.id) await U.api.post(`/api/plans/${form.id}`, form);
@@ -297,8 +339,8 @@ window.PagePlans = {
     onMounted(load);
     return {
       allList, apps, filterApp, list, selectedAppId, selectedApp,
-      editing, form, featureText, error, ioMode, ioText, ioError, fmt,
-      billingText, load, openCreate, openEdit, save, toggle, remove, copyTemplate,
+      editing, form, featureText, featureSel, limitsText, schemaTokens, error, ioMode, ioText, ioError, fmt,
+      billingText, limitCount, load, openCreate, openEdit, save, toggle, remove, copyTemplate,
       openExport, openImport, doImport, copyText,
     };
   },
