@@ -232,5 +232,20 @@
     }
   }
 
-  window.U = { api, toast, fmt, lineChart, barChart, donut, applySiteSettings, icons: ICONS, svgIcon, basePath: BASE };
+  /* 内置卡通头像：库里存的是 preset:01 这类短标识，前端展开成 data URI 再给 <img>。
+   * 服务端对外接口也会展开，这里主要兜底扫码登录等直接返回原始值的路径。 */
+  function avatar(v) {
+    const s = String(v == null ? '' : v);
+    if (!/^preset:/.test(s)) return s;
+    const p = window.AvatarPresets && window.AvatarPresets.byValue(s);
+    return p ? p.dataUri : '';
+  }
+  function avatarPresets() {
+    return (window.AvatarPresets && window.AvatarPresets.PRESETS) || [];
+  }
+
+  window.U = {
+    api, toast, fmt, lineChart, barChart, donut, applySiteSettings,
+    icons: ICONS, svgIcon, avatar, avatarPresets, basePath: BASE,
+  };
 })();

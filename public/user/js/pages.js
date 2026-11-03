@@ -1,9 +1,17 @@
 (function () {
 const { ref, reactive, onMounted, computed } = Vue;
 
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+// 商城 / 我的空间 / 后台上架共用同一套缩略图结构：图片完整显示（contain，不裁切），
+// v-html 拼 src 必须转义，否则后台填的图标地址可以注入属性。
 function productIcon(p) {
-  if (p.icon) return `<img src="${p.icon}" />`;
-  return `<span style="font-size:32px;color:var(--brand)">${p.type === 'hardware' ? '◎' : p.type === 'service' ? '⚙' : '▤'}</span>`;
+  if (!p) return '<span class="ph">▤</span>';
+  if (p.icon) return `<img src="${escHtml(p.icon)}" alt="" loading="lazy" />`;
+  const glyph = p.type === 'hardware' ? '◎' : p.type === 'service' ? '⚙' : '▤';
+  return `<span class="ph">${glyph}</span>`;
 }
 
 window.PageShop = {
@@ -23,10 +31,10 @@ window.PageShop = {
       <div class="prod-card" v-for="p in list" :key="p.id" @click="$root.go('product', p.id)" style="cursor:pointer">
         <div class="thumb" v-html="thumb(p)"></div>
         <div class="body">
-          <h4>{{ p.name }}</h4>
-          <div class="desc">{{ p.subtitle }}</div>
+          <h4 :title="p.name">{{ p.name }}</h4>
+          <div class="desc" :title="p.subtitle">{{ p.subtitle }}</div>
           <div class="price">¥{{ p.price }}<small v-if="p.original_price">¥{{ p.original_price }}</small></div>
-          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+          <div class="tags" style="margin-top:8px">
             <span class="tag">{{ p.type==='hardware'?'硬件':p.type==='software'?'软件':'服务' }}</span>
             <span class="tag info" v-if="p.type==='software'">{{ fmt.int(p.total_downloads) }} 次下载</span>
             <span class="tag success" v-if="p.type==='hardware'">{{ fmt.int(p.active_users) }} 台在用</span>
@@ -54,15 +62,13 @@ window.PageProduct = {
   template: `
   <div>
     <div class="card" v-if="product">
-      <div class="card-body" style="display:grid;grid-template-columns:220px 1fr;gap:24px">
-        <div>
-          <div style="width:220px;height:180px;border-radius:12px;background:var(--surface-2);display:grid;place-items:center;overflow:hidden">
-            <img v-if="product.icon" :src="product.icon" style="width:100%;height:100%;object-fit:cover" />
-            <span v-else style="font-size:48px;color:var(--brand)">{{ product.type==='hardware'?'◎':'▤' }}</span>
-          </div>
+      <div class="card-body product-detail">
+        <div class="cover">
+          <img v-if="product.icon" :src="product.icon" alt="" />
+          <span v-else class="ph">{{ product.type==='hardware'?'◎':product.type==='service'?'⚙':'▤' }}</span>
         </div>
-        <div>
-          <h2 style="font-size:20px">{{ product.name }}</h2>
+        <div class="info">
+          <h2 style="font-size:20px;overflow-wrap:anywhere">{{ product.name }}</h2>
           <div style="color:var(--text-2);margin-top:4px">{{ product.subtitle }}</div>
           <div style="margin:14px 0">
             <span style="color:var(--danger);font-size:28px;font-weight:600">¥{{ product.price }}</span>
@@ -204,13 +210,12 @@ window.PageProduct = {
 window.PageSpace = {
   template: `
   <div>
-    <div class="hero" style="background:linear-gradient(120deg,#0f766e 0%,#2563eb 100%);display:flex;align-items:center;gap:14px">
-      <img v-if="data.user && data.user.avatar" :src="data.user.avatar" alt=""
-           style="width:56px;height:56px;border-radius:50%;object-fit:cover;background:#fff" />
+    <div class="hero hero-user" style="background:linear-gradient(120deg,#0f766e 0%,#2563eb 100%)">
+      <img v-if="avatarUrl" :src="avatarUrl" alt="" class="avatar-preview" />
       <div v-else class="avatar" style="width:56px;height:56px;font-size:22px">
         {{ (data.user && data.user.nickname ? data.user.nickname : 'U').slice(0, 1) }}
       </div>
-      <div>
+      <div class="hero-text">
         <h2 style="margin:0">你好，{{ data.user && data.user.nickname ? data.user.nickname : '用户' }}</h2>
         <p style="margin:4px 0 0">{{ data.user && data.user.phone ? '已绑定手机 ' + data.user.phone : '未绑定手机号，建议前往账户中心绑定' }}</p>
       </div>
@@ -232,36 +237,36 @@ window.PageSpace = {
           <div class="prod-card" v-for="a in data.apps" :key="a.app_id" style="cursor:default">
             <div class="thumb" v-html="thumb(a.product)"></div>
             <div class="body">
-              <h4>{{ a.product.name }}</h4>
-              <div class="desc">{{ a.product.subtitle || a.app_name }}</div>
-              <div style="margin:8px 0;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+              <h4 :title="a.product.name">{{ a.product.name }}</h4>
+              <div class="desc" :title="a.product.subtitle || a.app_name">{{ a.product.subtitle || a.app_name }}</div>
+              <div class="tags" style="margin:8px 0">
                 <span class="tag" :class="a.plan && a.plan.billing !== 'free' ? 'success' : ''">
                   {{ a.plan ? a.plan.name : '未开通' }}
                 </span>
                 <span class="tag info" v-if="a.version">v{{ a.version }}</span>
                 <span class="tag danger" v-if="a.license && a.license.days_left !== null && a.license.days_left <= 7">即将到期</span>
               </div>
-              <div class="kv" style="font-size:12.5px">
+              <div class="kv">
                 <div class="k">授权码</div>
-                <div style="font-family:ui-monospace,monospace">{{ a.license ? a.license.license_key : '—' }}</div>
-                <div class="k">有效期</div><div>{{ expireText(a) }}</div>
+                <div class="mono" :title="a.license ? a.license.license_key : ''">{{ a.license ? a.license.license_key : '—' }}</div>
+                <div class="k">有效期</div><div :title="expireText(a)">{{ expireText(a) }}</div>
                 <div class="k">设备</div>
                 <div>{{ a.license ? a.license.bound_devices + ' / ' + a.license.max_devices : '—' }}</div>
                 <div class="k">离线</div>
                 <div>{{ a.plan && a.plan.offline_days ? a.plan.offline_days + ' 天宽限' : '需联网' }}</div>
               </div>
-              <div class="btn-group" style="margin-top:10px;flex-wrap:wrap">
+              <div class="btn-group actions">
                 <button class="btn sm primary" v-if="a.license && a.upgrades && a.upgrades.length" @click="openUpgrade(a)">升级档位</button>
                 <button class="btn sm" v-if="a.license && a.renew" @click="openRenew(a)">续费</button>
                 <button class="btn sm" @click="download(a)">下载</button>
                 <button class="btn sm" v-if="a.license" @click="copy(a.license.license_key)">复制授权码</button>
               </div>
-              <div v-if="a.plan && a.upgrades && !a.upgrades.length" style="margin-top:8px;color:var(--text-3);font-size:12px">
+              <div v-if="a.plan && a.upgrades && !a.upgrades.length" class="note">
                 当前已是该产品最高档位
               </div>
             </div>
           </div>
-          <div class="empty" v-if="!data.apps.length" style="grid-column:1/-1">还没有上架的软件产品，可先去「官方产品」看看</div>
+          <div class="empty" v-if="!data.apps.length">还没有上架的软件产品，可先去「官方产品」看看</div>
         </div>
       </div>
     </div>
@@ -369,6 +374,8 @@ window.PageSpace = {
     const paidCount = computed(() => data.value.orders.filter((o) => o.status === 'paid').length);
     const tbStatus = computed(() => (data.value.user && data.value.user.tb_status) || 'none');
     const tbText = computed(() => ({ active: '已开通', pending: '待激活', error: '异常' }[tbStatus.value] || '未开通'));
+    // 模板里不能直接引用全局 U，统一在 setup 里把预设标识展开成可渲染的 src
+    const avatarUrl = computed(() => U.avatar(data.value.user && data.value.user.avatar));
 
     const CHANNEL_NAMES = { wxpay: '微信支付', alipay: '支付宝', simulate: '模拟支付' };
     async function loadPayChannels() {
@@ -459,7 +466,7 @@ window.PageSpace = {
       await Promise.all([load(), loadPayChannels()]);
     });
     return {
-      data, fmt, onlineCount, paidCount, tbStatus, tbText,
+      data, fmt, onlineCount, paidCount, tbStatus, tbText, avatarUrl,
       planDialog, planMode, curApp, payResult, planError, submitting,
       openUpgrade, openRenew, closePlan, submit, simulatePay, checkPaid,
       expireText, qrSrc, download, copy, signin, thumb: productIcon,
@@ -905,14 +912,13 @@ window.PageAccount = {
       </div>
       <div class="card-body">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-          <img v-if="user?.avatar" :src="user.avatar" alt=""
-               style="width:48px;height:48px;border-radius:50%;object-fit:cover;background:var(--bg-2)" />
-          <div v-else class="avatar" style="width:48px;height:48px;font-size:20px">
-            {{ (user?.nickname || 'U').slice(0, 1) }}
+          <img v-if="avatarUrl" :src="avatarUrl" alt="" class="avatar-preview" />
+          <div v-else class="avatar" style="width:56px;height:56px;font-size:22px">
+            {{ (nickname || 'U').slice(0, 1) }}
           </div>
-          <div>
-            <b>{{ user?.nickname || '-' }}</b>
-            <div style="color:var(--text-3);font-size:12.5px">默认取微信昵称与头像，可自行修改；软件端登录后同步</div>
+          <div style="min-width:0">
+            <b>{{ nickname || '-' }}</b>
+            <div style="color:var(--text-3);font-size:12.5px">微信没给头像时自动分配一张卡通头像；改过后微信登录不会再覆盖，软件端登录后同步</div>
           </div>
         </div>
         <div class="kv">
@@ -922,8 +928,26 @@ window.PageAccount = {
           <div class="k">注册时间</div><div>{{ fmt.time(user?.created_at) }}</div>
         </div>
         <div class="field" style="margin-top:12px"><label>昵称</label><input class="input" v-model="nickname" maxlength="24" placeholder="你的昵称" /></div>
-        <div class="field"><label>头像地址</label><input class="input" v-model="avatar" placeholder="https://... 或 /assets/avatar.png" /></div>
-        <div class="hint">改过之后微信登录不会再覆盖；头像支持 http(s) 链接或站内路径，留空表示清除。</div>
+        <div class="field">
+          <label>头像</label>
+          <div class="hint" style="margin:0 0 6px">点一张就能换，不用填地址</div>
+          <div class="avatar-picker">
+            <button type="button" v-for="p in presets" :key="p.value"
+              :class="avatar===p.value ? 'active' : ''" :title="p.name" @click="pickPreset(p)">
+              <img :src="p.dataUri" :alt="p.name" />
+            </button>
+          </div>
+          <details class="avatar-custom">
+            <summary>高级：改用图片链接</summary>
+            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+              <input class="input" style="flex:1;min-width:180px" v-model="customUrl" @input="applyCustom"
+                     placeholder="https://... 或 /assets/avatar.png" />
+              <button class="btn sm" type="button" @click="applyCustom">使用此链接</button>
+              <button class="btn sm" type="button" @click="clearCustom">清除</button>
+            </div>
+            <div class="hint">链接仅作高级选项；留空点「清除」则回到字母占位。</div>
+          </details>
+        </div>
         <button class="btn primary" :disabled="saving" @click="saveProfile">{{ saving ? '保存中…' : '保存资料' }}</button>
       </div>
     </div>
@@ -965,15 +989,23 @@ window.PageAccount = {
     const devCode = ref('');
     const points = ref([]);
     const nickname = ref('');
+    // avatar 是「提交给后端的值」：preset:XX / 自定义链接 / 空，不是展开后的 data URI
     const avatar = ref('');
+    const presets = ref(U.avatarPresets());
+    const customUrl = ref('');
     const saving = ref(false);
     const fmt = U.fmt;
+    // 模板作用域：把 preset:XX 展开成 data URI，空值则显示昵称首字占位
+    const avatarUrl = computed(() => U.avatar(avatar.value));
+    function pickPreset(p) { avatar.value = p.value; customUrl.value = ''; }
+    function applyCustom() { avatar.value = customUrl.value.trim(); }
+    function clearCustom() { customUrl.value = ''; avatar.value = ''; }
     async function saveProfile() {
       saving.value = true;
       try {
         const res = await U.api.post('/api/portal/profile', { nickname: nickname.value, avatar: avatar.value });
         nickname.value = res.user.nickname;
-        avatar.value = res.user.avatar || '';
+        avatar.value = res.user.avatar_preset || customUrl.value.trim();
         U.toast('资料已保存，软件端下次同步即可看到', 'success');
         location.reload();
       } catch (e) { U.toast(e.message, 'error'); }
@@ -1004,12 +1036,17 @@ window.PageAccount = {
       try {
         const me = await U.api.get('/api/portal/me');
         nickname.value = me.user.nickname || '';
-        avatar.value = me.user.avatar || '';
+        // 内置头像回显选中态；自定义链接 / 微信头像则填进高级选项
+        avatar.value = me.user.avatar_preset || '';
+        if (!avatar.value && me.user.avatar && /^(https?:\/\/|\/)/.test(me.user.avatar)) {
+          customUrl.value = me.user.avatar;
+          avatar.value = me.user.avatar;
+        }
       } catch (e) { /* ignore */ }
       points.value = (await U.api.get('/api/portal/points')).list;
     });
-    return { user, phone, code, devCode, points, nickname, avatar, saving, fmt,
-      saveProfile, sendCode, bind, signin };
+    return { user, phone, code, devCode, points, nickname, avatar, avatarUrl, presets, customUrl, saving, fmt,
+      saveProfile, pickPreset, applyCustom, clearCustom, sendCode, bind, signin };
   },
 };
 

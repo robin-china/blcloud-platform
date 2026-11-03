@@ -5,11 +5,17 @@
  * 改过之后置 profile_custom=1，微信下次登录不再把用户自己设的名字覆盖回去。
  * 注意：对外 user 对象绝不能带 tb_username / tb_password（内部打通凭据），
  * 这里用 publicUser 白名单输出，别直接把 SELECT * 的结果丢给客户端。
+ *
+ * 头像：库里存 `preset:01` 短标识（内置卡通头像）或自定义链接；
+ * publicUser 把标识展开成 data URI 再对外，软件端离线也能显示。
+ * 微信没给头像时按 openid 稳定分配一张内置头像。
  */
 const db = require('../db');
+const avatars = require('./avatars');
 
 const MAX_NICKNAME = 24;
-const MAX_AVATAR = 500;
+// 内置头像只存 10 字符的 preset 标识；放宽上限是为了让「自定义图片 data URL」也能用
+const MAX_AVATAR = 4000;
 
 function cleanText(s, max) {
   let t = String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, '').trim();
@@ -21,11 +27,17 @@ function cleanText(s, max) {
 function safeAvatar(a) {
   const v = String(a == null ? '' : a).trim();
   if (!v) return { ok: true, value: '' };
-  if (v.length > MAX_AVATAR) return { ok: false, error: '头像地址过长（最多 500 字符）' };
+  if (v.length > MAX_AVATAR) return { ok: false, error: `头像地址过长（最多 ${MAX_AVATAR} 字符）` };
   if (/javascript:|vbscript:|["'<>`]/i.test(v)) return { ok: false, error: '头像地址包含非法字符' };
+  // 内置卡通头像：库里只存短标识，必须命中预设表，防止任意 preset:XX 写进来
+  if (/^preset:/i.test(v)) {
+    return avatars.isPreset(v)
+      ? { ok: true, value: v }
+      : { ok: false, error: '内置头像不存在，请从列表中选择' };
+  }
   const ok = /^https?:\/\//i.test(v) || /^\/(?!\/)/.test(v)
-    || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(v);
-  if (!ok) return { ok: false, error: '头像只支持 http(s) 链接、站内路径或图片 data URL' };
+    || /^data:image\/(png|jpe?g|gif|webp|svg\+xml);base64,/i.test(v);
+  if (!ok) return { ok: false, error: '头像只支持内置头像、http(s) 链接、站内路径或图片 data URL' };
   return { ok: true, value: v };
 }
 
@@ -55,7 +67,10 @@ function publicUser(u) {
     id: u.id,
     openid: u.openid,
     nickname: u.nickname,
-    avatar: u.avatar,
+    // 预设头像展开成 data URI，软件端 / 网页端拿到即可直接渲染，无需再取图
+    avatar: avatars.toDisplay(u.avatar),
+    // 原值回传给账户中心，用来高亮当前选中的内置头像（自定义链接时为空）
+    avatar_preset: avatars.isPreset(u.avatar) ? u.avatar : '',
     phone: u.phone || '',
     points: u.points || 0,
     balance: u.balance || 0,
@@ -93,12 +108,22 @@ function syncFromWechat(user, profile = {}) {
   const args = [];
   const nn = cleanText(profile.nickname, MAX_NICKNAME);
   const av = safeAvatar(profile.avatar);
+  const wxAvatar = av.ok && av.value && av.value !== user.avatar ? av.value : '';
   if (nn && nn !== user.nickname) { sets.push('nickname = ?'); args.push(nn); }
-  if (av.ok && av.value && av.value !== user.avatar) { sets.push('avatar = ?'); args.push(av.value); }
+  if (wxAvatar) { sets.push('avatar = ?'); args.push(wxAvatar); }
+  // 微信没返回头像（服务号未关注时很常见）且用户目前也没有头像：
+  // 分配一张内置卡通头像，别让前台一直挂字母占位。按 openid 稳定，重登不会乱跳。
+  if (!wxAvatar && !String(user.avatar || '').trim()) {
+    sets.push('avatar = ?');
+    args.push(avatars.defaultValue(user.openid || user.id));
+  }
   if (!sets.length) return false;
   args.push(Number(user.id));
   db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...args);
   return true;
 }
 
-module.exports = { normalize, publicUser, updateByUser, syncFromWechat, cleanText, safeAvatar };
+module.exports = {
+  normalize, publicUser, updateByUser, syncFromWechat, cleanText, safeAvatar,
+  defaultAvatar: avatars.defaultValue,
+};

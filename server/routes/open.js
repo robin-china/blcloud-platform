@@ -14,6 +14,7 @@ const offlineKey = require('../lib/offlinekey');
 const bindSvc = require('../lib/licensebind');
 const plans = require('../lib/plans');
 const profileLib = require('../lib/profile');
+const avatars = require('../lib/avatars');
 
 const ACCESS_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -98,7 +99,9 @@ function userPayload(u) {
     id: u.id,
     openid: u.openid,
     nickname: u.nickname,
-    avatar: u.avatar,
+    // 内置卡通头像展开成 data URI，软件端拿到即可渲染，不需要再回源取图
+    avatar: avatars.toDisplay(u.avatar),
+    avatar_preset: avatars.isPreset(u.avatar) ? u.avatar : '',
     phone: u.phone || '',
     points: u.points || 0,
     balance: u.balance || 0,
@@ -480,7 +483,7 @@ module.exports = async function openRoutes(app) {
     return {
       valid: true,
       license: licensePayload(lic),
-      user: user ? { id: user.id, nickname: user.nickname, avatar: user.avatar || '' } : null,
+      user: user ? { id: user.id, nickname: user.nickname, avatar: avatars.toDisplay(user.avatar) } : null,
       machine: boundInfo,
       server_time: now(),
     };

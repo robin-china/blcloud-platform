@@ -66,6 +66,9 @@ const userApp = createApp({
       go('shop');
     }
 
+    // 顶栏头像：模板不直接引用全局 U，在 setup 里把 preset:XX 展开成可渲染 src
+    const userAvatar = computed(() => U.avatar(state.user && state.user.avatar));
+
     /**
      * 软件端点「用户中心」跳过来时，地址上带 `?t=<一次性票据>`。
      *
@@ -111,7 +114,7 @@ const userApp = createApp({
       await loadMe();
     });
 
-    return { state, go, logout, onLogged, loadMe };
+    return { state, go, logout, onLogged, loadMe, userAvatar };
   },
 });
 

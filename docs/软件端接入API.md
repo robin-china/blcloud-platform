@@ -205,7 +205,9 @@ def sign(app_key, app_secret, method, path, body_obj=None):
   "valid": true,
   "access_token": "ct_xxx", "refresh_token": "ct_yyy",
   "expires_in": 7200, "refresh_expires_in": 2592000,
-  "user": { "id": 12, "nickname": "李雷", "avatar": "https://wx.qlogo.cn/...", "phone": "138****8888", "points": 320 },
+  "user": { "id": 12, "nickname": "李雷",
+    "avatar": "data:image/svg+xml;base64,PHN2Zy8+...", "avatar_preset": "preset:01",
+    "phone": "138****8888", "points": 320 },
   "license": {
     "license_key": "LIC-XXXXXXXX-XXXXXXXX-XXXXXXXX",
     "app_id": 3, "product_id": 3, "product_name": "花盆卫士 Pro",
@@ -227,6 +229,7 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 - 授权被吊销 / 过期 / 产品不匹配时返回 403，见错误码表
 - **套餐授权按软件产品隔离**：`license.app_id` 和档位的 `app_id` 必须等于当前应用，否则返回 `403 PRODUCT_MISMATCH` —— A 软件的码不能在 B 软件里激活。`app_id` 为空的历史通用码继续放行，不锁死老客户
 - `user.nickname` / `user.avatar` 默认来自微信资料，用户在网页端「账户中心」改过之后这里实时返回最新值（软件端可用 `POST /user/profile` 改，与网页端共用校验）
+- `user.avatar` 是**可直接渲染的图片地址**：微信头像是 URL，内置卡通头像已展开成 `data:image/svg+xml;base64,...`。客户端拿去直接 `<img src>` 即可，**离线也能显示**，不要自己再处理 `avatar_preset`——它只是回传的预设编号，供网页端选择器高亮用
 - **卡密还没被绑定**（渠道印的卡、用户还没领）返回 `403 LICENSE_UNASSIGNED`，此时应引导用户先登录绑定，而不是重新激活
 
 > 卡密池的码在**绑定那一刻**才起算有效期。一张印了半年的卡不会被白白扣掉半年，所以「先绑后激活」是正常流程。
@@ -248,7 +251,7 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 {
   "valid": true,
   "license": { "license_key": "...", "end_at": "...", "max_devices": 2, "bound_devices": 1 },
-  "user": { "id": 12, "nickname": "李雷" },
+  "user": { "id": 12, "nickname": "李雷", "avatar": "data:image/svg+xml;base64,..." },
   "machine": { "machine_id": "A1B2C3D4", "bound_at": "2026-10-01T..." },
   "server_time": "..."
 }

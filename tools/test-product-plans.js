@@ -63,6 +63,8 @@ const MOCK_U = {
   svgIcon: () => '',
   toast: () => {},
   applySiteSettings: () => {},
+  avatar: (v) => String(v || ''),
+  avatarPresets: () => [],
   api: {
     scope: 'user',
     getToken: () => 'mock',

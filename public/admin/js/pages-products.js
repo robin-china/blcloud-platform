@@ -38,9 +38,9 @@ window.PageProducts = {
               <tr v-for="p in list" :key="p.id">
                 <td>
                   <div style="display:flex;align-items:center;gap:10px">
-                    <div style="width:36px;height:36px;border-radius:8px;background:var(--surface-2);display:grid;place-items:center;overflow:hidden">
-                      <img v-if="p.icon" :src="p.icon" style="width:100%;height:100%;object-fit:cover" />
-                      <span v-else style="color:var(--brand)">{{ icon('box') }}</span>
+                    <div class="thumb-sm">
+                      <img v-if="p.icon" :src="p.icon" alt="" />
+                      <span v-else style="color:var(--brand)" v-html="icon('box')"></span>
                     </div>
                     <div>
                       <div style="font-weight:500">{{ p.name }}</div>
@@ -112,8 +112,8 @@ window.PageProducts = {
           </div>
           <div class="field"><label>产品图标</label>
             <div style="display:flex;gap:10px;align-items:center">
-              <div style="width:56px;height:56px;border-radius:10px;border:1px solid var(--border);display:grid;place-items:center;overflow:hidden">
-                <img v-if="form.icon" :src="form.icon" style="width:100%;height:100%;object-fit:cover" />
+              <div class="thumb-sm" style="width:56px;height:56px;border-radius:10px;border:1px solid var(--border)">
+                <img v-if="form.icon" :src="form.icon" alt="" />
                 <span v-else style="color:var(--text-3);font-size:12px">无</span>
               </div>
               <input type="file" accept="image/*" @change="uploadIcon" />
@@ -236,13 +236,14 @@ window.PageStorefront = {
     <div class="prod-grid">
       <div class="prod-card" v-for="p in list" :key="p.id">
         <div class="thumb">
-          <img v-if="p.icon" :src="p.icon" /><span v-else>{{ icon('box') }}</span>
+          <img v-if="p.icon" :src="p.icon" alt="" loading="lazy" />
+          <span v-else class="ph">{{ p.type==='hardware' ? '◎' : p.type==='service' ? '⚙' : '▤' }}</span>
         </div>
         <div class="body">
-          <h4>{{ p.name }}</h4>
-          <div class="desc">{{ p.subtitle }}</div>
+          <h4 :title="p.name">{{ p.name }}</h4>
+          <div class="desc" :title="p.subtitle">{{ p.subtitle }}</div>
           <div class="price">{{ fmt.money(p.price) }}<small v-if="p.original_price">¥{{ p.original_price }}</small></div>
-          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+          <div class="tags" style="margin-top:8px">
             <span class="tag">{{ typeName(p.type) }}</span>
             <span class="tag success" v-if="p.status==='on'">已上架</span>
             <span class="tag warning" v-else>已下架</span>
@@ -259,6 +260,7 @@ window.PageStorefront = {
         </div>
       </div>
       <div class="empty" v-if="!list.length">还没有上架的产品，请先到「产品管理」创建并上架</div>
+
     </div>
   </div>
   `,

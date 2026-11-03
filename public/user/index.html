@@ -27,7 +27,7 @@
       </nav>
       <div class="spacer"></div>
       <div v-if="state.user" class="user-chip">
-        <img v-if="state.user.avatar" :src="state.user.avatar" alt="" class="avatar" style="object-fit:cover" />
+        <img v-if="userAvatar" :src="userAvatar" alt="" class="avatar" style="object-fit:cover" />
         <div v-else class="avatar">{{ (state.user.nickname || 'U').slice(0, 1) }}</div>
         <span>{{ state.user.nickname }}</span>
         <button class="btn sm" @click="logout">退出</button>
@@ -56,6 +56,8 @@
 </div>
 
 <script src="../vendor/vue.global.prod.js"></script>
+<!-- 内置卡通头像：必须早于 api.js（U.avatar 会读它）与页面脚本 -->
+<script src="../assets/avatars.js"></script>
 <script src="../assets/api.js"></script>
 <script src="js/app.js"></script>
 <script src="js/pages.js"></script>

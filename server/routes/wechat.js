@@ -35,11 +35,15 @@ async function ensureUser(openid, profile = {}) {
     plans.ensureFreeLicense(user.id);
     return { user, isNew: false };
   }
-  // 新用户默认用微信昵称 / 微信头像；服务号没返回时才回退成「用户XXXX」占位
+  // 新用户默认用微信昵称 / 微信头像；服务号没返回昵称时回退「用户XXXX」，
+  // 没返回头像则按 openid 稳定分配一张内置卡通头像（账户中心可随时换）。
   const wxAvatar = profileLib.safeAvatar(profile.avatar);
+  const initialAvatar = wxAvatar.ok && wxAvatar.value
+    ? wxAvatar.value
+    : profileLib.defaultAvatar(openid);
   const info = db.prepare('INSERT INTO users (openid, unionid, nickname, avatar, phone, points, status, created_at, last_login_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run(openid, profile.unionid || '', profileLib.cleanText(profile.nickname, 24) || `用户${openid.slice(-4)}`,
-      wxAvatar.ok ? wxAvatar.value : '', null, 0, 'active', now(), now());
+      initialAvatar, null, 0, 'active', now(), now());
   user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   const cfg = getConfig('tb');
   const suffix = cfg.email_suffix || '@tb.cn';
@@ -103,8 +107,9 @@ module.exports = async function wechatRoutes(app) {
       return { status: 'expired' };
     }
     if (s.status === 'confirmed' && s.user_id) {
-      const user = db.prepare('SELECT id, openid, nickname, avatar, phone, points, tb_status FROM users WHERE id = ?').get(s.user_id);
-      return { status: 'confirmed', token: signUser(user), user };
+      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(s.user_id);
+      // 走白名单：既展开内置头像，也保证扫码登录响应不带任何内部物联账户字段
+      return { status: 'confirmed', token: signUser(user), user: profileLib.publicUser(user) };
     }
     return { status: s.status };
   });

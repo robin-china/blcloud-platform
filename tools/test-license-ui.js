@@ -83,6 +83,8 @@ const MACHINE = {
       basePath: '',
       toast() {},
       fmt: { date: () => '2026-11-02', time: () => '2026-11-02 10:00' },
+      avatar: (v) => String(v || ''),
+      avatarPresets: () => [],
       api: {
         get: async (u) => {
           calls.push(['GET', String(u)]);
@@ -183,6 +185,8 @@ const MACHINE = {
       basePath: '',
       toast() {},
       fmt: { date: () => '2026-11-02', time: () => '2026-11-02 10:00' },
+      avatar: (v) => String(v || ''),
+      avatarPresets: () => [],
       api: {
         get: async (u) => {
           calls.push(['GET', String(u)]);
