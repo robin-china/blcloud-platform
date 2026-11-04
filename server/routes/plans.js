@@ -12,7 +12,12 @@ module.exports = async function planRoutes(app) {
   app.get('/api/plans', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     const appId = req.query.app_id === undefined ? undefined : Number(req.query.app_id) || 0;
-    return { list: plans.list(false, appId), apps: plans.listApps() };
+    // 发码表单按产品选档位：产品 → 绑定它的接入应用 → 该应用的档位
+    let list;
+    if (req.query.app_id !== undefined) list = plans.list(false, appId);
+    else if (req.query.product_id) list = plans.listForProduct(Number(req.query.product_id) || 0);
+    else list = plans.list(false);
+    return { list, apps: plans.listApps() };
   });
 
   /** 后台表单下拉：软件产品 + 绑定的上架商品 + 已配档位数 */

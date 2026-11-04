@@ -111,7 +111,7 @@ window.PageUsers = {
               <thead><tr><th>产品</th><th>授权码</th><th>类型</th><th>有效期</th><th>状态</th></tr></thead>
               <tbody>
                 <tr v-for="l in detail.licenses" :key="l.id">
-                  <td>{{ l.product_name }}</td>
+                  <td>{{ l.product_name }}<div v-if="l.plan_name" style="font-size:12px;color:var(--text-3)">{{ l.plan_name }}</div></td>
                   <td style="font-family:ui-monospace,monospace;font-size:12px">{{ l.license_key }}</td>
                   <td>{{ l.type==='permanent'?'永久':'订阅' }}</td>
                   <td>{{ l.end_at ? fmt.date(l.end_at) : '永久' }}</td>
@@ -298,7 +298,7 @@ window.PageLicenses = {
                   <template v-if="l.user_id">{{ l.nickname || '-' }}<div style="color:var(--text-3);font-size:12px">{{ l.phone || '' }}</div></template>
                   <span v-else class="tag warning">未绑定</span>
                 </td>
-                <td>{{ l.product_name }}</td>
+                <td>{{ l.product_name }}<div v-if="l.plan_name" style="font-size:12px;color:var(--text-3)">{{ l.plan_name }}</div></td>
                 <td>{{ typeText(l.type) }}<div v-if="l.status==='unassigned' && l.duration_days" style="font-size:12px;color:var(--text-3)">{{ l.duration_days }} 天</div></td>
                 <td><button class="btn sm" @click="openDevices(l)" :disabled="!l.user_id">{{ l.bound_devices }} / {{ l.max_devices }}</button></td>
                 <td>{{ l.end_at ? fmt.date(l.end_at) : (l.status==='unassigned' ? '绑定后起算' : '永久') }}</td>
@@ -348,17 +348,31 @@ window.PageLicenses = {
             </select>
           </div>
           <div class="field"><label>选择产品</label>
-            <select class="select" v-model="form.product_id">
+            <select class="select" v-model="form.product_id" @change="form.plan_id=''; loadPlans()">
               <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }}（{{ p.type==='hardware'?'硬件':p.type==='software'?'软件':'服务' }}）</option>
             </select>
           </div>
-          <div class="field-row">
+          <div class="field" v-if="planOptions.length">
+            <label>套餐档位（可选，选定后权益自动取档位配置）</label>
+            <select class="select" v-model="form.plan_id">
+              <option value="">不指定（传统授权：手填类型 / 天数 / 设备数）</option>
+              <option v-for="p in planOptions" :key="p.id" :value="p.id">
+                {{ p.name }}（{{ p.billing==='period' ? p.period_days + ' 天/期' : p.billing==='once' ? '永久' : '免费' }} · {{ p.max_devices }} 设备）
+              </option>
+            </select>
+          </div>
+          <div class="hint" v-if="selectedPlan">
+            已选档位 <b>{{ selectedPlan.name }}</b>：类型 <b>{{ selectedPlan.billing==='period' ? '订阅 ' + selectedPlan.period_days + ' 天' : '永久' }}</b>、
+            设备上限 <b>{{ selectedPlan.max_devices }}</b>、功能码 {{ (selectedPlan.features || []).length }} 项
+            —— 下方手填的类型 / 设备数 / 天数将被忽略，与支付发货的权益完全一致。
+          </div>
+          <div class="field-row" v-if="!selectedPlan">
             <div class="field"><label>授权类型</label>
               <select class="select" v-model="form.type"><option value="permanent">永久</option><option value="subscription">订阅</option><option value="trial">试用</option></select>
             </div>
             <div class="field"><label>设备数上限</label><input class="input" type="number" v-model.number="form.max_devices" /></div>
           </div>
-          <div class="field" v-if="form.type!=='permanent'">
+          <div class="field" v-if="!selectedPlan && form.type!=='permanent'">
             <label>{{ form.mode==='pool' ? '有效天数（绑定后起算）' : '有效天数' }}</label>
             <input class="input" type="number" v-model.number="form.days" />
           </div>
@@ -493,12 +507,24 @@ window.PageLicenses = {
     const batchText = computed(() => (batchResult.value ? batchResult.value.license_keys.join('\n') : ''));
     const form = reactive({
       mode: 'assigned', user_id: '', product_id: '', type: 'permanent',
-      max_devices: 1, days: 365, remark: '', count: 1, channel: '',
+      max_devices: 1, days: 365, remark: '', count: 1, channel: '', plan_id: '',
     });
+    const planOptions = ref([]);
+    const selectedPlan = computed(() => planOptions.value.find((p) => String(p.id) === String(form.plan_id)) || null);
     const fmt = U.fmt;
     const pages = computed(() => Math.max(1, Math.ceil(total.value / 20)));
     const typeText = (t) => ({ permanent: '永久', subscription: '订阅', trial: '试用' }[t] || t);
     const statusText = (s) => ({ active: '有效', unassigned: '未绑定', revoked: '已作废' }[s] || s);
+
+    /** 产品联动档位：该产品绑定的接入应用自己的档位（免费档不在此发放） */
+    async function loadPlans() {
+      planOptions.value = [];
+      if (!form.product_id) return;
+      try {
+        const res = await U.api.get(`/api/plans?product_id=${Number(form.product_id)}`);
+        planOptions.value = (res.list || []).filter((p) => p.billing !== 'free' && p.app_id);
+      } catch (e) { /* 没配档位就只走传统授权，不打断发码 */ }
+    }
 
     async function load() {
       const res = await U.api.get(`/api/licenses?page=${page.value}&pageSize=20&q=${encodeURIComponent(q.value)}&status=${status.value}`);
@@ -520,15 +546,16 @@ window.PageLicenses = {
       Object.assign(form, {
         mode: 'assigned', user_id: users.value[0] ? users.value[0].id : '',
         product_id: products.value[0] ? products.value[0].id : '',
-        type: 'permanent', max_devices: 1, days: 365, remark: '', count: 1, channel: '',
+        type: 'permanent', max_devices: 1, days: 365, remark: '', count: 1, channel: '', plan_id: '',
       });
+      await loadPlans();
       editing.value = true;
     }
 
     async function save() {
       if (!form.product_id) return U.toast('请选择产品', 'error');
       if (form.mode === 'assigned' && !form.user_id) return U.toast('请选择用户，或改为卡密池', 'error');
-      const payload = { ...form };
+      const payload = { ...form, plan_id: form.plan_id || undefined };
       if (form.mode === 'pool') payload.user_id = 0;
       try {
         if (Number(form.count) > 1) {
@@ -659,6 +686,7 @@ window.PageLicenses = {
 
     onMounted(load);
     return { list, users, products, total, stats, page, pages, q, status, editing, form, fmt, load, openCreate, save,
+      planOptions, selectedPlan, loadPlans,
       extend, revoke, resume, remove, devLic, devices, batchResult, batchText, openDevices, unbindDevice, copyBatch,
       batches, openBatches, copyBatchKeys, revokeBatch, exportCsv, bindLic, bindUserId, openBind, doBind,
       typeText, statusText };

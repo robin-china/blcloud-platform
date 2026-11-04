@@ -160,6 +160,13 @@ function listForApp(appId, onlyActive = true) {
   return listTemplates(onlyActive);
 }
 
+/** 发码表单用：某上架商品绑定的接入应用自己的档位（不回退通用模板，避免发错产品） */
+function listForProduct(productId, onlyActive = true) {
+  const app = db.prepare('SELECT id FROM open_apps WHERE product_id = ? ORDER BY id DESC LIMIT 1')
+    .get(Number(productId) || 0);
+  return app ? list(onlyActive, app.id) : [];
+}
+
 function listTemplates(onlyActive = false) {
   return db.prepare(`${PLAN_SELECT} WHERE p.app_id IS NULL
     ${onlyActive ? "AND p.status = 'on'" : ''}
@@ -616,7 +623,7 @@ function ensureFreeLicense(userId, appId = null) {
 }
 
 module.exports = {
-  list, listForApp, listTemplates, listApps, get, byCode, shape, validate,
+  list, listForApp, listForProduct, listTemplates, listApps, get, byCode, shape, validate,
   insert, update, copyTemplateToApp, importConfig, exportConfig,
   licensePlan, licenseMatchesApp, licenseEntitlement, ensureFreeLicense, freePlanFor,
   addDays, round2,

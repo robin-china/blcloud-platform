@@ -35,8 +35,9 @@ module.exports = async function userRoutes(app) {
     const id = Number(req.params.id);
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     if (!user) return reply.code(404).send({ error: '用户不存在' });
-    const licenses = db.prepare(`SELECT l.*, p.name AS product_name, p.type AS product_type
-      FROM licenses l LEFT JOIN products p ON p.id = l.product_id WHERE l.user_id = ? ORDER BY l.id DESC`).all(id);
+    const licenses = db.prepare(`SELECT l.*, p.name AS product_name, p.type AS product_type, pl.name AS plan_name
+      FROM licenses l LEFT JOIN products p ON p.id = l.product_id
+      LEFT JOIN plans pl ON pl.id = l.plan_id WHERE l.user_id = ? ORDER BY l.id DESC`).all(id);
     const devices = db.prepare(`SELECT d.*, p.name AS product_name FROM devices d LEFT JOIN products p ON p.id = d.product_id WHERE d.user_id = ? ORDER BY d.id DESC`).all(id);
     const orders = db.prepare('SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(id);
     const points = db.prepare('SELECT * FROM points_logs WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(id);

@@ -4,10 +4,36 @@ const { now, genLicenseKey } = require('../lib/util');
 const { requireAdmin } = require('../lib/auth');
 const { logAdmin } = require('../lib/adminlog');
 const bindSvc = require('../lib/licensebind');
+const plans = require('../lib/plans');
 
 function addDays(days) {
   const d = new Date(Date.now() + Number(days) * 86400000);
   return d.toISOString();
+}
+
+/**
+ * 按档位发码：档位一旦选定，类型/天数/设备数/app_id 全部取档位配置，
+ * 手填项被忽略 —— 保证后台手工发的码和支付发货的码权益一致。
+ * 返回 null 表示没选档位（传统授权走手填字段）。
+ */
+function resolvePlan(b, productId, reply) {
+  if (b.plan_id === undefined || b.plan_id === null || b.plan_id === '') return null;
+  const plan = plans.get(Number(b.plan_id) || 0);
+  if (!plan || plan.status !== 'on') { reply.code(400).send({ error: '所选档位不存在或已停用' }); return false; }
+  if (!plan.app_id) { reply.code(400).send({ error: '该档位是通用模板，未绑定软件产品，不能直接发码' }); return false; }
+  const app = db.prepare('SELECT id, product_id, name FROM open_apps WHERE id = ?').get(plan.app_id);
+  if (!app) { reply.code(400).send({ error: '档位对应的软件产品不存在' }); return false; }
+  if (app.product_id && Number(app.product_id) !== Number(productId)) {
+    reply.code(400).send({ error: `档位「${plan.name}」属于其他产品，请先切换产品` });
+    return false;
+  }
+  return {
+    plan,
+    app_id: plan.app_id,
+    type: plan.billing === 'period' ? 'subscription' : 'permanent',
+    days: plan.billing === 'period' ? Number(plan.period_days) || 365 : 0,
+    max_devices: Number(plan.max_devices) || 1,
+  };
 }
 
 function genBatchNo() {
@@ -44,8 +70,10 @@ function listWhere(query) {
 }
 
 const SELECT_LIST = `SELECT l.*, u.nickname, u.phone, p.name AS product_name, p.type AS product_type,
+  pl.name AS plan_name,
   (SELECT COUNT(*) FROM license_devices d WHERE d.license_id = l.id) AS bound_devices
-  FROM licenses l LEFT JOIN users u ON u.id = l.user_id LEFT JOIN products p ON p.id = l.product_id`;
+  FROM licenses l LEFT JOIN users u ON u.id = l.user_id LEFT JOIN products p ON p.id = l.product_id
+  LEFT JOIN plans pl ON pl.id = l.plan_id`;
 
 function csvCell(v) {
   const s = v == null ? '' : String(v);
@@ -87,6 +115,11 @@ module.exports = async function licenseRoutes(app) {
     }
     const type = b.type || 'permanent';
     const days = Number(b.days) || 365;
+    const planRes = resolvePlan(b, productId, reply);
+    if (planRes === false) return;
+    const effType = planRes ? planRes.type : type;
+    const effDays = planRes ? planRes.days : days;
+    const effDevices = planRes ? planRes.max_devices : (Number(b.max_devices) || 1);
     const key = b.license_key || genLicenseKey();
     if (db.prepare('SELECT 1 FROM licenses WHERE license_key = ?').get(key)) {
       return reply.code(400).send({ error: '该授权码已存在，请换一个' });
@@ -95,14 +128,15 @@ module.exports = async function licenseRoutes(app) {
     const ts = now();
     const info = db.prepare(`INSERT INTO licenses
       (license_key, user_id, product_id, type, max_devices, start_at, end_at, status, order_id, remark,
-       batch_no, channel, bound_at, bound_by, duration_days, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(key, pool ? 0 : userId, productId, type, Number(b.max_devices) || 1, ts,
-        pool ? null : (type === 'permanent' ? null : addDays(days)),
+       batch_no, channel, bound_at, bound_by, duration_days, created_at, plan_id, plan_code, app_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(key, pool ? 0 : userId, productId, effType, effDevices, ts,
+        pool ? null : (effType === 'permanent' ? null : addDays(effDays)),
         pool ? 'unassigned' : 'active', Number(b.order_id) || null, b.remark || '',
-        '', b.channel || '', pool ? '' : ts, pool ? '' : 'admin', type === 'permanent' ? 0 : days, ts);
+        '', b.channel || '', pool ? '' : ts, pool ? '' : 'admin', effType === 'permanent' ? 0 : effDays, ts,
+        planRes ? planRes.plan.id : null, planRes ? planRes.plan.code : null, planRes ? planRes.app_id : null);
     logAdmin(req, pool ? '生成卡密' : '发放授权',
-      `${product.name} → ${pool ? '卡密池（未分配）' : `用户#${userId}`}，码 ${key}`);
+      `${product.name}${planRes ? ` / 档位 ${planRes.plan.name}` : ''} → ${pool ? '卡密池（未分配）' : `用户#${userId}`}，码 ${key}`);
     return { id: info.lastInsertRowid, license_key: key, status: pool ? 'unassigned' : 'active' };
   });
 
@@ -129,32 +163,38 @@ module.exports = async function licenseRoutes(app) {
     const type = b.type || 'permanent';
     const days = Number(b.days) || 365;
     const maxDevices = Math.max(Number(b.max_devices) || 1, 1);
+    const planRes = resolvePlan(b, productId, reply);
+    if (planRes === false) return;
+    const effType = planRes ? planRes.type : type;
+    const effDays = planRes ? planRes.days : days;
+    const effDevices = planRes ? planRes.max_devices : maxDevices;
     const remark = String(b.remark || (userId ? '批量发放' : '卡密池'));
     const channel = String(b.channel || '');
     const batchNo = genBatchNo();
     const pool = !userId;
     const ts = now();
-    const endAt = pool ? null : (type === 'permanent' ? null : addDays(days));
+    const endAt = pool ? null : (effType === 'permanent' ? null : addDays(effDays));
 
     const insert = db.prepare(`INSERT INTO licenses
       (license_key, user_id, product_id, type, max_devices, start_at, end_at, status, order_id, remark,
-       batch_no, channel, bound_at, bound_by, duration_days, created_at)
-      VALUES (?,?,?,?,?,?,?,?,NULL,?,?,?,?,?,?,?)`);
+       batch_no, channel, bound_at, bound_by, duration_days, created_at, plan_id, plan_code, app_id)
+      VALUES (?,?,?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?)`);
     const exists = db.prepare('SELECT 1 FROM licenses WHERE license_key = ?');
     const keys = [];
     const run = db.transaction(() => {
       for (let i = 0; i < count; i += 1) {
         let key = genLicenseKey();
         for (let t = 0; t < 5 && exists.get(key); t += 1) key = genLicenseKey();
-        insert.run(key, userId, productId, type, maxDevices, ts, endAt, pool ? 'unassigned' : 'active',
+        insert.run(key, userId, productId, effType, effDevices, ts, endAt, pool ? 'unassigned' : 'active',
           remark, batchNo, channel, pool ? '' : ts, pool ? '' : 'admin',
-          type === 'permanent' ? 0 : days, ts);
+          effType === 'permanent' ? 0 : effDays, ts,
+          planRes ? planRes.plan.id : null, planRes ? planRes.plan.code : null, planRes ? planRes.app_id : null);
         keys.push(key);
       }
     });
     run();
     logAdmin(req, '批量发放授权',
-      `${product.name} → ${pool ? '卡密池' : `用户#${userId}`}，批次 ${batchNo}，共 ${keys.length} 个（${keys[0]} … ${keys[keys.length - 1]}）`);
+      `${product.name}${planRes ? ` / 档位 ${planRes.plan.name}` : ''} → ${pool ? '卡密池' : `用户#${userId}`}，批次 ${batchNo}，共 ${keys.length} 个（${keys[0]} … ${keys[keys.length - 1]}）`);
     return {
       ok: true, count: keys.length, license_keys: keys, product: product.name,
       batch_no: batchNo, channel, mode: pool ? 'pool' : 'assigned',
@@ -217,7 +257,7 @@ module.exports = async function licenseRoutes(app) {
     if (!(await requireAdmin(req, reply))) return;
     const { wsql, args } = listWhere(req.query);
     const rows = db.prepare(`${SELECT_LIST} ${wsql} ORDER BY l.id DESC LIMIT 50000`).all(...args);
-    const head = ['授权码', '批次', '渠道', '产品', '类型', '账号', '手机号', '设备上限', '已绑设备',
+    const head = ['授权码', '批次', '渠道', '产品', '档位', '类型', '账号', '手机号', '设备上限', '已绑设备',
       '开始时间', '到期时间', '状态', '绑定时间', '绑定方式', '备注'];
     const statusText = (l) => (l.status === 'unassigned' ? '未绑定' : l.status === 'revoked' ? '已作废'
       : l.status === 'active' ? '有效' : l.status);
@@ -225,7 +265,7 @@ module.exports = async function licenseRoutes(app) {
     const lines = [head.map(csvCell).join(',')];
     for (const l of rows) {
       lines.push([
-        l.license_key, l.batch_no, l.channel, l.product_name, typeText(l.type),
+        l.license_key, l.batch_no, l.channel, l.product_name, l.plan_name || '', typeText(l.type),
         l.nickname || '', l.phone || '', l.max_devices, l.bound_devices,
         l.start_at ? String(l.start_at).slice(0, 19).replace('T', ' ') : '',
         l.end_at ? String(l.end_at).slice(0, 19).replace('T', ' ') : '永久',

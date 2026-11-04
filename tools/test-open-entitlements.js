@@ -236,6 +236,46 @@ function signReq(secret, appKey, method, fullPath, bodyObj) {
   check('已降级用户的空间带 downgraded_from', sp1 && sp1.license && sp1.license.downgraded_from === 'member' && sp1.plan.code === 'free',
     sp1 && sp1.license && sp1.license.downgraded_from);
 
+  /* ---------------- 7. 手工发码按档位 ---------------- */
+  console.log('\n[7] 手工发码按档位');
+  const plist4 = (await app.inject({ method: 'GET', url: `/api/plans?product_id=${productId}`, headers: AH })).json().list;
+  check('按产品查档位（发码表单联动）', plist4.some((p) => p.id === member.id), plist4.length);
+
+  const scene4 = (await app.inject({ method: 'POST', url: '/api/wechat/qrcode', payload: {} })).json().scene;
+  await app.inject({ method: 'POST', url: `/api/wechat/simulate/${scene4}`, payload: { openid: 'ent-user-4', nickname: '手工发码用户' } });
+  const u4 = db.prepare('SELECT * FROM users WHERE openid = ?').get('ent-user-4');
+
+  const manual = (await app.inject({ method: 'POST', url: '/api/licenses', headers: AH,
+    payload: { user_id: u4.id, product_id: productId, plan_id: member.id, type: 'permanent', days: 99, max_devices: 9 } })).json();
+  const manualRow = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(manual.license_key);
+  check('手工发码带档位：plan/plan_code/app_id 落库', manualRow && manualRow.plan_id === member.id
+    && manualRow.plan_code === 'member' && manualRow.app_id === appRow.id, manualRow && [manualRow.plan_id, manualRow.app_id]);
+  check('类型/天数/设备数取档位配置，手填被忽略', manualRow.type === 'subscription'
+    && manualRow.duration_days === member.period_days && manualRow.max_devices === Number(member.max_devices),
+    [manualRow.type, manualRow.duration_days, manualRow.max_devices]);
+
+  const poolCard = (await app.inject({ method: 'POST', url: '/api/licenses', headers: AH,
+    payload: { product_id: productId, plan_id: member.id, mode: 'pool' } })).json();
+  const poolRow = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(poolCard.license_key);
+  check('卡密池按档位印卡：未分配 + 绑定后起算时长', poolRow.status === 'unassigned' && poolRow.end_at === null
+    && poolRow.duration_days === member.period_days && poolRow.plan_id === member.id, poolRow && [poolRow.status, poolRow.duration_days]);
+
+  // 把池卡绑给用户：绑定那一刻按档位周期起算
+  const bindRes = (await app.inject({ method: 'POST', url: `/api/licenses/${poolRow.id}/bind`, headers: AH,
+    payload: { user_id: u4.id } })).json();
+  const boundRow = db.prepare('SELECT * FROM licenses WHERE id = ?').get(poolRow.id);
+  check('池卡绑定后 end_at = 绑定时刻 + 档位周期', bindRes.ok && boundRow.end_at !== null
+    && Math.abs(new Date(boundRow.end_at) - (Date.now() + Number(member.period_days) * 86400000)) < 60000, boundRow.end_at);
+
+  const otherProduct = db.prepare(`INSERT INTO products (type, name, subtitle, price, status, sort, created_at, updated_at)
+    VALUES ('software', '别的软件', '', 0, 'on', 0, ?, ?)`).run(ts, ts).lastInsertRowid;
+  const wrongProduct = await app.inject({ method: 'POST', url: '/api/licenses', headers: AH,
+    payload: { user_id: u4.id, product_id: otherProduct, plan_id: member.id } });
+  check('档位属于其他产品时发码被拒', wrongProduct.statusCode === 400, wrongProduct.json());
+
+  const licList = (await app.inject({ method: 'GET', url: '/api/licenses?q=' + manual.license_key, headers: AH })).json();
+  check('授权列表回显档位名', licList.list.length === 1 && licList.list[0].plan_name === member.name, licList.list[0] && licList.list[0].plan_name);
+
   console.log(`\n结果：${pass} 通过，${fail} 失败`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
