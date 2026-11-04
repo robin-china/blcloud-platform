@@ -30,6 +30,12 @@ function probe(dbFile, env) {
         const r = await app.inject({ method: 'GET', url: p });
         out[p] = r.statusCode;
       }
+      // 目录型 URL 无斜杠必须 301 补斜杠且保留查询参数（否则相对路径资源全 404，线上踩过）
+      const BP = process.env.BASE_PATH ? '/' + process.env.BASE_PATH : '';
+      const r1 = await app.inject({ method: 'GET', url: BP + '/admin?next=/x' });
+      out.__adminNoSlash = r1.statusCode + ' ' + (r1.headers.location || '');
+      const r2 = await app.inject({ method: 'GET', url: BP + '/user?agent=AG4CA8D3AA' });
+      out.__userNoSlash = r2.statusCode + ' ' + (r2.headers.location || '');
       const l = await app.inject({ method: 'POST', url: ${JSON.stringify(env.LOGIN_URL)}, payload: { username: 'admin', password: 'admin123' } });
       out.__login = l.statusCode;
       const { baseUrl } = require(${JSON.stringify(path.join(ROOT, 'server', 'services', 'pay.js'))});
@@ -100,6 +106,16 @@ check('根路径下 /platform/... 应 404', root['/platform/api/health'] === 404
 check('回调地址不带多余前缀', root.__baseUrl === 'https://www.bliot.cn', root.__baseUrl);
 check('根路径下推广链接为 /user/?agent=',
   root.__promote === 'https://www.bliot.cn/user/?agent=AG4CA8D3AA', root.__promote);
+
+console.log('\n[2.5] 无斜杠目录 URL 必须 301 补斜杠（相对路径资源全 404 的根因）');
+check('/platform/admin → 301 保留查询参数',
+  sub.__adminNoSlash === '301 /platform/admin/?next=/x', sub.__adminNoSlash);
+check('/platform/user?agent= → 301 保留查询参数',
+  sub.__userNoSlash === '301 /platform/user/?agent=AG4CA8D3AA', sub.__userNoSlash);
+check('根路径 /admin → 301 /admin/?next=/x（本来就对）',
+  root.__adminNoSlash === '301 /admin/?next=/x', root.__adminNoSlash);
+check('根路径 /user?agent= → 301 /user/?agent=',
+  root.__userNoSlash === '301 /user/?agent=AG4CA8D3AA', root.__userNoSlash);
 
 console.log('\n[3] 前端基础路径推断（与后端保持一致）');
 const m = (p) => { const x = p.match(/^(.*?)\/(admin|user)(\/|$)/); return x ? x[1] : ''; };

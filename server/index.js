@@ -37,6 +37,22 @@ function build() {
     if (req.protocol === 'https') reply.header('Strict-Transport-Security', 'max-age=15552000');
   });
 
+  // 目录型页面（admin/user，public 下有 index.html 的目录）必须以斜杠结尾访问：
+  // 新版 @fastify/static 对无斜杠 URL 直接 200 返回 HTML 不再重定向，而页面里的
+  // css/js 全是相对路径，浏览器会按无斜杠 URL 解析 → 全部 404 → 样式丢失、脚本不执行
+  // （2026-11-04 线上「后台所有开关显示异常且点不动」就是这个）。统一 301 补斜杠，保留查询参数。
+  const dirSlashRe = new RegExp(`^${BASE}/([a-z][a-z0-9_-]*)$`);
+  app.addHook('onRequest', async (req, reply) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return;
+    const urlNoQ = req.url.split('?')[0];
+    const m = dirSlashRe.exec(urlNoQ);
+    if (!m) return;
+    const dir = path.join(PUBLIC_DIR, m[1]);
+    if (!fs.existsSync(path.join(dir, 'index.html'))) return;
+    const q = req.url.includes('?') ? '?' + req.url.split('?').slice(1).join('?') : '';
+    return reply.redirect(`${urlNoQ}/${q}`, 301);
+  });
+
   app.register(fastifyStatic, { root: UPLOAD_DIR, prefix: `${BASE}/uploads/`, decorateReply: false });
 
   // 客户端更新包：禁止列目录（index/list 全关）、包按文件名里的版本号长缓存、清单不缓存。
