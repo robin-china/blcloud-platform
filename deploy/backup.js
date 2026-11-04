@@ -1,74 +1,30 @@
-/* 数据库热备份（WAL 安全）+ 密钥/上传文件打包
- * 用法：node deploy/backup.js [输出目录]
- * 建议：crontab 每天 03:10 执行
+#!/usr/bin/env node
+/* 命令行热备份（crontab 用）
+ *
+ * 与后台「系统维护 → 备份与恢复 → 立即备份」走同一套实现（server/lib/backup.js），
+ * 产出同样的 .zip 账套包：app.db（VACUUM 快照）+ .appsecret + manifest.json（+ 可选 uploads）。
+ * 好处：cron 生成的包能直接在后台列表里看到、一键恢复，不用维护两套格式和目录。
+ *
+ * 用法：
+ *   node deploy/backup.js                      # 写入 data/backups，含上传文件
+ *   BACKUP_UPLOADS=0 node deploy/backup.js     # 不含上传文件（包更小）
+ *   BACKUP_KEEP=14 node deploy/backup.js       # 只保留最近 14 份（默认 30）
  */
-const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
-const Database = require('better-sqlite3');
 
-const ROOT = path.join(__dirname, '..');
-const DATA = path.join(ROOT, 'data');
-const OUT = process.argv[2] || path.join(ROOT, 'data', 'backups');
-const KEEP_DAYS = Number(process.env.BACKUP_KEEP_DAYS || 14);
+const backup = require('../server/lib/backup');
 
-function ts() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+const keep = Number(process.env.BACKUP_KEEP || 30);
+const uploads = process.env.BACKUP_UPLOADS !== '0';
+
+try {
+  const pkg = backup.createPackage({ uploads, note: 'cron 自动备份' });
+  backup.prune(keep);
+  console.log(`[${new Date().toISOString()}] ${pkg.name}  ${Math.round(pkg.size / 1024)} KB  ${pkg.manifest.db.rows} 行`
+    + (uploads ? `  uploads:${pkg.manifest.uploads.files}` : ''));
+  if (pkg.manifest.uploads.skipped) console.log('  提示：上传文件超过 200MB，已跳过（数据库已完整备份）');
+  console.log(`  目录：${backup.BACKUP_DIR}  保留最近 ${keep} 份`);
+} catch (e) {
+  console.error(`[${new Date().toISOString()}] 备份失败: ${e.message}`);
+  process.exit(1);
 }
-
-fs.mkdirSync(OUT, { recursive: true });
-const stamp = ts();
-const tmp = path.join(OUT, `.db-${stamp}.tmp`);
-
-// 1) 用 SQLite 官方 backup API，WAL 模式下也能拿到一致快照
-const src = new Database(path.join(DATA, 'app.db'), { readonly: true });
-src.backup(tmp)
-  .then(() => {
-    src.close();
-
-    // 2) 同目录下打包密钥 + 上传文件
-    const stage = path.join(OUT, `.stage-${stamp}`);
-    fs.mkdirSync(stage, { recursive: true });
-    fs.copyFileSync(tmp, path.join(stage, 'app.db'));
-    for (const f of ['.appsecret', 'admin-init-password.txt']) {
-      const p = path.join(DATA, f);
-      if (fs.existsSync(p)) fs.copyFileSync(p, path.join(stage, f));
-    }
-    if (fs.existsSync(path.join(DATA, 'uploads'))) {
-      fs.cpSync(path.join(DATA, 'uploads'), path.join(stage, 'uploads'), { recursive: true });
-    }
-
-    const tar = path.join(OUT, `blcloud-${stamp}.tar.gz`);
-    const dir = path.join(OUT, `blcloud-${stamp}`);
-    let finalPath = dir;
-    // 优先打 tar.gz；不可用（如部分 Windows 环境）时降级为目录快照
-    try {
-      execSync(`tar -czf "${tar}" -C "${stage}" .`, { stdio: 'pipe' });
-      if (fs.existsSync(tar) && fs.statSync(tar).size > 0) {
-        fs.rmSync(stage, { recursive: true, force: true });
-        finalPath = tar;
-      }
-    } catch { /* 走降级 */ }
-    if (finalPath === dir) {
-      fs.rmSync(tar, { force: true });
-      fs.rmSync(dir, { recursive: true, force: true });
-      fs.renameSync(stage, dir);
-    }
-    fs.rmSync(tmp, { force: true });
-
-    // 3) 清理过期备份
-    const cutoff = Date.now() - KEEP_DAYS * 86400_000;
-    for (const f of fs.readdirSync(OUT)) {
-      if (!f.startsWith('blcloud-')) continue;
-      if (fs.statSync(path.join(OUT, f)).mtimeMs < cutoff) fs.rmSync(path.join(OUT, f), { recursive: true, force: true });
-    }
-    const size = fs.statSync(finalPath).size / 1024;
-    console.log(`[backup] ok -> ${finalPath}  (${size.toFixed(0)} KB)`);
-  })
-  .catch((e) => {
-    console.error('[backup] 失败:', e.message);
-    fs.rmSync(tmp, { force: true });
-    process.exit(1);
-  });

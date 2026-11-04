@@ -59,6 +59,7 @@
         <page-settings v-if="state.route === 'settings'"></page-settings>
         <page-integration v-if="state.route === 'integration'"></page-integration>
         <page-openapi v-if="state.route === 'openapi'"></page-openapi>
+        <page-backup v-if="state.route === 'backup'"></page-backup>
         <page-admins v-if="state.route === 'admins'"></page-admins>
       </main>
     </div>
@@ -77,9 +78,10 @@
 <script src="js/pages-users.js"></script>
   <script src="js/pages-system.js"></script>
   <script src="js/pages-openapi.js"></script>
+  <script src="js/pages-backup.js"></script>
   <script src="js/pages-blcloud.js"></script>
 <script>
-  const PAGES = ['Login', 'Dashboard', 'Products', 'Plans', 'Storefront', 'Licenses', 'Orders', 'Revenue', 'ApiUsage', 'Users', 'Agents', 'AdminBlcloud', 'Settings', 'Integration', 'Openapi', 'Admins'];
+  const PAGES = ['Login', 'Dashboard', 'Products', 'Plans', 'Storefront', 'Licenses', 'Orders', 'Revenue', 'ApiUsage', 'Users', 'Agents', 'AdminBlcloud', 'Settings', 'Integration', 'Openapi', 'Backup', 'Admins'];
   const kebab = (s) => s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
   for (const name of PAGES) {
     const comp = window['Page' + name];

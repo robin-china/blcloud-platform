@@ -208,8 +208,13 @@ function seed() {
     }
   }
 
+  // 演示数据只种一次：清空商品或统计后重启，不能又被 seed() 悄悄塞回来。
+  // 用 settings 里的标记（清理不会删 settings）而不是「表为空」来判断。
+  const seeded = (k) => db.prepare('SELECT value FROM settings WHERE key = ?').get(k);
+  const markSeeded = (k) => db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?,?,?)').run(k, '1', now());
+
   const productCount = db.prepare('SELECT COUNT(*) AS c FROM products').get().c;
-  if (productCount === 0) {
+  if (productCount === 0 && !seeded('seed_products_done')) {
     const samples = [
       {
         type: 'software', name: '智联桌面客户端', subtitle: '跨平台设备管理中台',
@@ -243,6 +248,7 @@ function seed() {
        @total_downloads,@total_installs,@active_users,@total_sales,@stock,'on',0,@t,@t)`);
     for (const p of samples) stmt.run({ stock: 0, ...p, t: now() });
   }
+  markSeeded('seed_products_done');
 
   // 五档「通用模板」套餐：app_id = NULL，只作为复制到具体软件产品的底稿，不直接售卖。
   // 多产品上架后在「产品运营 → 套餐档位」选中产品、点「从模板复制」生成该产品专属档位；
@@ -279,8 +285,10 @@ function seed() {
     }));
   }
 
+  // 仪表盘的「近 14 天走势」演示曲线：只在新库首次启动时种一次。
+  // 清理过统计数据后重启不能复活，否则用户会以为没删干净。
   const dayCount = db.prepare('SELECT COUNT(*) AS c FROM stats_daily').get().c;
-  if (dayCount === 0) {
+  if (dayCount === 0 && !seeded('seed_stats_done')) {
     const stmt = db.prepare(`INSERT OR IGNORE INTO stats_daily
       (date, downloads, installs, active_users, new_users, revenue, api_calls) VALUES (?,?,?,?,?,?,?)`);
     const base = [120, 145, 132, 168, 190, 176, 205, 231, 214, 248, 262, 239, 271, 288];
@@ -299,6 +307,7 @@ function seed() {
       );
     }
   }
+  markSeeded('seed_stats_done');
 }
 
 seed();

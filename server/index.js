@@ -18,7 +18,9 @@ function build() {
     trustProxy: process.env.TRUST_PROXY === '1',
   });
 
-  app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
+  // 备份包要能上传整包（含上传文件时可能几十 MB），图片上传共用这条限制。
+  // 恢复接口只接受管理员令牌，不存在匿名打满内存的入口。
+  app.register(multipart, { limits: { fileSize: 64 * 1024 * 1024 } });
 
   // 防混合内容：页面上若混入 http:// 的子资源，浏览器会显示「此页面不安全（HTTPS 连接断开）」，
   // 且用户点过一次「加载不安全内容」后 Chrome 会长期记住、一直挂红。
@@ -46,7 +48,7 @@ function build() {
   // 所有业务路由统一挂到 BASE 前缀下
   const opts = BASE ? { prefix: BASE } : {};
   for (const name of ['admin', 'products', 'plans', 'users', 'licenses', 'orders', 'stats',
-    'pay', 'wechat', 'portal', 'open', 'openapps', 'agents', 'blcloud', 'blcloud-admin']) {
+    'pay', 'wechat', 'portal', 'open', 'openapps', 'agents', 'blcloud', 'blcloud-admin', 'backup']) {
     app.register(require(`./routes/${name}`), opts);
   }
 
@@ -72,6 +74,18 @@ async function start() {
   // 在 build 里起定时器会泄漏句柄，导致测试进程挂住不退出。
   const reminders = require('./lib/reminders');
   try { reminders.scan(); } catch (e) { app.log.warn(`到期提醒扫描失败: ${e.message}`); }
+  // 每天自动留一份账套备份：被攻击/误删时，最坏情况也能退回昨天。
+  // 放在 start() 里而不是 build()，测试反复 build() 不该产生备份文件。
+  const backup = require('./lib/backup');
+  const snapshot = () => {
+    try {
+      const pkg = backup.autoSnapshot();
+      if (pkg) app.log.info(`每日账套备份完成: ${pkg.name}`);
+    } catch (e) { app.log.warn(`自动备份失败: ${e.message}`); }
+  };
+  snapshot();
+  const backupTimer = setInterval(snapshot, 6 * 60 * 60 * 1000);
+  backupTimer.unref();
   const timer = setInterval(() => {
     try { reminders.scan(); } catch (e) { app.log.warn(`到期提醒扫描失败: ${e.message}`); }
   }, 6 * 60 * 60 * 1000);

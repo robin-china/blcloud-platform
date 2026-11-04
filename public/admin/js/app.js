@@ -35,6 +35,7 @@
         { key: 'settings', name: '站点设置', icon: 'settings' },
         { key: 'integration', name: '接入配置', icon: 'plug' },
         { key: 'openapi', name: '开放接口', icon: 'key' },
+        { key: 'backup', name: '备份与恢复', icon: 'download' },
         { key: 'admins', name: '管理员', icon: 'admin' },
       ],
     },
