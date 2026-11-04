@@ -254,6 +254,9 @@ CREATE TABLE IF NOT EXISTS wechat_sessions (
   status TEXT DEFAULT 'pending',
   openid TEXT DEFAULT '',
   user_id INTEGER,
+  -- 代理商渠道归属：登录页带 ?agent=CODE 时由前端随 qrcode 请求传入，
+  -- 新用户扫码登录成功即归到该代理商名下
+  agent_id INTEGER DEFAULT 0,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL
 );

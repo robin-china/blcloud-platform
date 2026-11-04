@@ -21,7 +21,8 @@
         <a href="#/licenses" :class="state.route==='licenses'?'active':''">我的授权</a>
         <a href="#/devices" :class="state.route==='devices'?'active':''">我的硬件</a>
         <a href="#/orders" :class="state.route==='orders'?'active':''">我的订单</a>
-        <a href="#/earnings" :class="state.route==='earnings'?'active':''">我的收益</a>
+        <!-- 我的收益只对代理商身份开放；直接输入地址也能访问页面，页面内会提示如何成为代理商 -->
+        <a v-if="state.user && state.user.agent_status==='active'" href="#/earnings" :class="state.route==='earnings'?'active':''">我的收益</a>
         <a href="#/blcloud" :class="state.route==='blcloud'?'active':''">blcloud</a>
         <a href="#/account" :class="state.route==='account'?'active':''">账户中心</a>
       </nav>

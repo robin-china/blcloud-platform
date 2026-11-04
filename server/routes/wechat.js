@@ -68,6 +68,18 @@ async function ensureUser(openid, profile = {}) {
   return { user, isNew: true };
 }
 
+/**
+ * 登录页 URL 带 ?agent=CODE 时，前端把渠道码随 qrcode 请求传上来。
+ * 存进 scene 后，扫码登录成功的新用户自动归到该代理商名下；
+ * 邀请码无效就静默忽略 —— 登录主链路绝不能因为推广参数挂掉。
+ */
+function resolveAgentId(agentCode) {
+  const code = String(agentCode || '').trim().toUpperCase();
+  if (!code) return 0;
+  const agent = db.prepare("SELECT id FROM users WHERE UPPER(agent_code) = ? AND agent_status = 'active'").get(code);
+  return agent ? agent.id : 0;
+}
+
 module.exports = async function wechatRoutes(app) {
   // 微信服务器回调发的是 XML。Fastify 默认只解析 JSON，不注册 XML 解析器的话
   // 请求会在 body parser 阶段就被 415 拒掉——handler 一行都执行不到，
@@ -80,22 +92,23 @@ module.exports = async function wechatRoutes(app) {
     const cfg = getConfig('wechat');
     const scene = genScene();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const agentId = resolveAgentId((req.body || {}).agent_code);
     if (!cfg.enabled || !cfg.appid || !cfg.appsecret) {
-      db.prepare('INSERT INTO wechat_sessions (scene, ticket, qrcode_url, status, openid, user_id, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(scene, '', '', 'pending', '', null, now(), expiresAt);
+      db.prepare('INSERT INTO wechat_sessions (scene, ticket, qrcode_url, status, openid, user_id, agent_id, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run(scene, '', '', 'pending', '', null, agentId, now(), expiresAt);
       return { scene, mode: 'simulate', qrcode_url: '', expires_at: expiresAt };
     }
     try {
       const qr = await wechat.createQrScene(scene, 300);
-      db.prepare('INSERT INTO wechat_sessions (scene, ticket, qrcode_url, status, openid, user_id, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(scene, qr.ticket, qr.qrcodeUrl, 'pending', '', null, now(), expiresAt);
+      db.prepare('INSERT INTO wechat_sessions (scene, ticket, qrcode_url, status, openid, user_id, agent_id, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run(scene, qr.ticket, qr.qrcodeUrl, 'pending', '', null, agentId, now(), expiresAt);
       return { scene, mode: 'wechat', qrcode_url: qr.qrcodeUrl, url: qr.url, expires_at: expiresAt };
     } catch (e) {
       // 已配置服务号却调用失败，绝不能降级成 simulate：
       // simulate 接口在检测到 appid/appsecret 后会直接 403，用户点「演示登录」依然无反应，
       // 页面就会呈现既无二维码、也无报错、也不动的假死状态。这里必须把原因暴露出去。
-      db.prepare('INSERT INTO wechat_sessions (scene, ticket, qrcode_url, status, openid, user_id, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(scene, '', '', 'error', '', null, now(), expiresAt);
+      db.prepare('INSERT INTO wechat_sessions (scene, ticket, qrcode_url, status, openid, user_id, agent_id, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run(scene, '', '', 'error', '', null, agentId, now(), expiresAt);
       return { scene, mode: 'error', qrcode_url: '', error: e.message, expires_at: expiresAt };
     }
   });
@@ -124,10 +137,14 @@ module.exports = async function wechatRoutes(app) {
     const openid = String((req.body || {}).openid || `demo${Math.random().toString(36).slice(2, 10)}`);
     const s = db.prepare('SELECT * FROM wechat_sessions WHERE scene = ?').get(req.params.scene);
     if (!s) return reply.code(404).send({ error: '二维码已失效' });
-    const { user } = await ensureUser(openid, {
+    const { user, isNew } = await ensureUser(openid, {
       nickname: (req.body || {}).nickname || '演示用户',
       avatar: (req.body || {}).avatar || '',
     });
+    // 扫码登录新用户按渠道归属代理商（老用户不动，已有归属也不抢）
+    if (isNew && s.agent_id && !user.agent_id) {
+      db.prepare('UPDATE users SET agent_id = ? WHERE id = ?').run(s.agent_id, user.id);
+    }
     db.prepare('UPDATE wechat_sessions SET status = ?, openid = ?, user_id = ? WHERE scene = ?').run('confirmed', openid, user.id, s.scene);
     return { ok: true };
   });
@@ -202,7 +219,12 @@ module.exports = async function wechatRoutes(app) {
         const s = db.prepare('SELECT * FROM wechat_sessions WHERE scene = ?').get(scene);
         if (s) {
           const profile = await wechat.getUserInfo(openid).catch(() => ({}));
-          const { user } = await ensureUser(openid, { nickname: profile.nickname, avatar: profile.headimgurl, unionid: profile.unionid });
+          const { user, isNew } = await ensureUser(openid, { nickname: profile.nickname, avatar: profile.headimgurl, unionid: profile.unionid });
+          // 扫码登录新用户按渠道归属代理商（老用户不动，已有归属也不抢）
+          if (isNew && s.agent_id && !user.agent_id) {
+            db.prepare('UPDATE users SET agent_id = ? WHERE id = ?').run(s.agent_id, user.id);
+            wxdiag.push('ok', 'login', `新用户已归属代理商 #${s.agent_id}`);
+          }
           db.prepare('UPDATE wechat_sessions SET status = ?, openid = ?, user_id = ? WHERE scene = ?').run('confirmed', openid, user.id, scene);
           console.log(`[wechat] 扫码登录成功 scene=${scene} user=${user.id}`);
           wxdiag.push('ok', 'login', `扫码登录成功：用户 ${user.nickname || openid}（id=${user.id}）`);

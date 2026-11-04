@@ -1110,7 +1110,8 @@ window.PageUserLogin = {
       statusText.value = '正在获取二维码...';
       let res;
       try {
-        res = await U.api.post('/api/wechat/qrcode', {});
+        // 推广落地时记录的渠道码：服务端存在扫码场景里，新用户登录即归属对应代理商
+        res = await U.api.post('/api/wechat/qrcode', { agent_code: localStorage.getItem('agent_ref') || '' });
       } catch (e) {
         // 以前这里没有 catch，接口一报错就变成未处理的 Promise rejection，
         // 页面永远停在「等待扫码」——表现就是扫码登录页毫无反应

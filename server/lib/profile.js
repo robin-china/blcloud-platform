@@ -75,6 +75,8 @@ function publicUser(u) {
     points: u.points || 0,
     balance: u.balance || 0,
     tb_status: u.tb_status || 'none',
+    // 用户端顶栏据此显隐「我的收益」等代理商功能；非代理商一律不下发
+    agent_status: u.agent_status || '',
     profile_custom: Number(u.profile_custom || 0),
     created_at: u.created_at,
   };

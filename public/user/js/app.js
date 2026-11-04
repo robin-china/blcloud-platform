@@ -51,8 +51,15 @@ const userApp = createApp({
       } catch (e) { /* ignore */ }
     }
 
+    // 「我的收益」只对代理商开放：菜单与顶栏共用同一份过滤结果
+    function refreshMenu() {
+      state.menu = USER_MENU.filter((m) => m.key !== 'earnings'
+        || !!(state.user && state.user.agent_status === 'active'));
+    }
+    refreshMenu();
+
     async function loadMe() {
-      if (!state.token) { state.user = null; return; }
+      if (!state.token) { state.user = null; refreshMenu(); return; }
       try {
         const res = await U.api.get('/api/portal/me');
         state.user = res.user;
@@ -60,12 +67,14 @@ const userApp = createApp({
         state.token = '';
         state.user = null;
       }
+      refreshMenu();
     }
 
     function logout() {
       U.api.setToken('user', '');
       state.token = '';
       state.user = null;
+      refreshMenu();
       go('shop');
     }
 
@@ -98,6 +107,22 @@ const userApp = createApp({
       }
     }
 
+    /**
+     * 代理商推广链接 `?agent=CODE`：把渠道码记到 localStorage，
+     * 之后本浏览器内任何一次扫码登录都会带上它，新账号自动归到该代理商名下。
+     * 参数要立刻从地址栏抹掉（同 handoff 票据），否则用户一刷新归属码就丢了、分享链接也会泄露。
+     */
+    function captureAgentRef() {
+      const q = new URLSearchParams(location.search);
+      const code = (q.get('agent') || '').trim().toUpperCase();
+      if (code && /^AG[A-Z0-9]{4,16}$/.test(code)) {
+        localStorage.setItem('agent_ref', code);
+        q.delete('agent');
+        const rest = q.toString();
+        history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+      }
+    }
+
     async function onLogged() {
       state.token = localStorage.getItem('user_token') || '';
       await loadMe();
@@ -111,6 +136,7 @@ const userApp = createApp({
     onMounted(async () => {
       syncHash();
       window.addEventListener('hashchange', syncHash);
+      captureAgentRef();
       // 先换票再拉资料：否则第一屏会是「未登录」，换完才跳回来闪一下
       await claimHandoff();
       await loadSite();

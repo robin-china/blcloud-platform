@@ -121,6 +121,7 @@ ensureColumn('licenses', 'duration_days', 'duration_days INTEGER DEFAULT 0');
 // 套餐档位：plan_id 供后台查配置，plan_code 是快照（后台改套餐名/改价不能改写已售授权）。
 // 离线票据里带的就是 plan_code + features，客户端不依赖服务端自增 ID。
 ensureColumn('licenses', 'plan_id', 'plan_id INTEGER');
+ensureColumn('wechat_sessions', 'agent_id', 'agent_id INTEGER DEFAULT 0');
 ensureColumn('licenses', 'plan_code', "plan_code TEXT DEFAULT ''");
 // 订单区分「新购 / 升级 / 续费」：升级与续费都不发新码，只改原授权。
 ensureColumn('orders', 'kind', "kind TEXT DEFAULT 'purchase'");

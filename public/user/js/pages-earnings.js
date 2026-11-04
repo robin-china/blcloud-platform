@@ -4,13 +4,28 @@ const { ref, onMounted, computed } = Vue;
 window.PageEarnings = {
   template: `
   <div>
-    <div class="grid g4" style="margin-bottom:16px">
+    <div class="grid g4" style="margin-bottom:16px" v-if="data.is_agent">
       <div class="stat"><div class="label">待结算</div><div class="value">{{ fmt.money(data.summary.pending) }}</div>
         <div class="delta">账期 {{ data.settle_days }} 天</div></div>
       <div class="stat"><div class="label">可提现</div><div class="value">{{ fmt.money(data.summary.available) }}</div>
         <div class="delta" v-if="data.summary.debt">待抵扣 ¥{{ data.summary.debt.toFixed(2) }}</div></div>
       <div class="stat"><div class="label">已提现</div><div class="value">{{ fmt.money(data.summary.withdrawn) }}</div></div>
       <div class="stat"><div class="label">累计佣金</div><div class="value">{{ fmt.money(data.summary.total) }}</div></div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px" v-if="!data.is_agent">
+      <div class="card-head"><h3>代理商归属</h3><span class="tag">收益功能仅对代理商开放</span></div>
+      <div class="card-body">
+        <div class="hint" style="margin-top:0" v-if="agentInfo.upline">
+          当前上级代理商：<b>{{ agentInfo.upline.nickname }}</b>（邀请码 {{ agentInfo.upline.code }}）
+        </div>
+        <div class="field-row" v-else>
+          <div class="field"><label>输入邀请码绑定归属（绑定后不可自助变更）</label>
+            <input class="input" v-model="inviteCode" placeholder="AGXXXXXXXX" /></div>
+          <div class="field"><label>&nbsp;</label><button class="btn primary" @click="bindAgent">绑定</button></div>
+        </div>
+        <div class="hint">当前账号还不是代理商。代理商身份由管理员在后台手动授予，授权后这里会显示佣金统计、推广二维码与提现入口。</div>
+      </div>
     </div>
 
     <div class="card" style="margin-bottom:16px" v-if="data.is_agent">
@@ -48,14 +63,31 @@ window.PageEarnings = {
     </div>
 
     <div class="card" style="margin-bottom:16px" v-if="data.is_agent">
-      <div class="card-head"><h3>我的邀请码</h3></div>
+      <div class="card-head"><h3>推广物料</h3><span class="tag">新用户经此码登录自动归到你名下</span></div>
       <div class="card-body">
-        <div style="font-family:ui-monospace,monospace;font-size:18px">{{ agentInfo.agent_code || '-' }}</div>
-        <div class="hint">佣金比例 {{ (agentInfo.agent_rate*100).toFixed(0) }}%。把这个码发给用户，他们在「我的收益」里绑定归属。</div>
+        <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
+          <div style="flex:0 0 auto">
+            <img v-if="agentInfo.promote_url" :src="qrSrc(agentInfo.promote_url)"
+              style="width:140px;height:140px;border:1px solid var(--border,#e5e7eb);border-radius:8px;display:block" alt="推广二维码" />
+            <div v-else class="qr-placeholder" style="width:140px;height:140px;display:grid;place-items:center;font-size:12px;color:var(--text-3)">邀请码未生成</div>
+          </div>
+          <div style="flex:1 1 260px;min-width:0">
+            <div class="field"><label>推广链接（含渠道标识 {{ agentInfo.agent_code }}）</label>
+              <input class="input" readonly :value="agentInfo.promote_url" @focus="$event.target.select()" /></div>
+            <div class="btn-group" style="margin-top:8px">
+              <button class="btn primary" @click="copyPromote">复制链接</button>
+              <a class="btn" v-if="agentInfo.promote_url" :href="qrDownloadUrl" download="推广二维码.png">下载二维码到本地</a>
+            </div>
+            <div class="hint" style="margin-top:8px">
+              用户扫码或点链接打开用户中心后，在该浏览器里<b>首次扫码登录的新账号</b>自动归属到你名下；
+              已注册的老用户不受影响。归属关系也可在后台由管理员手工划拨。
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="card" style="margin-bottom:16px">
+    <div class="card" style="margin-bottom:16px" v-if="data.is_agent">
       <div class="card-head"><h3>提现记录</h3></div>
       <div class="card-body tight">
         <table class="table">
@@ -75,7 +107,7 @@ window.PageEarnings = {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" v-if="data.is_agent">
       <div class="card-head"><h3>佣金明细</h3><span class="tag">按订单实收结算</span></div>
       <div class="card-body tight">
         <table class="table">
@@ -134,8 +166,24 @@ window.PageEarnings = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
 
+    // 换行/路径必须在 setup 里拼：模板不能直接引用全局 U
+    const basePath = U.basePath || '';
+    function qrSrc(text) { return basePath + '/api/portal/qrcode?text=' + encodeURIComponent(text); }
+    const qrDownloadUrl = computed(() => (agentInfo.value.promote_url
+      ? basePath + '/api/portal/qrcode?text=' + encodeURIComponent(agentInfo.value.promote_url) : ''));
+    async function copyPromote() {
+      const text = agentInfo.value.promote_url || '';
+      if (!text) return U.toast('邀请码未生成，请联系管理员', 'error');
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(() => U.toast('推广链接已复制', 'success'), () => window.prompt('手动复制', text));
+      } else {
+        window.prompt('手动复制', text);
+      }
+    }
+
     onMounted(load);
-    return { data, agentInfo, payAccount, inviteCode, busy, fmt, statusText, apply, bindAgent };
+    return { data, agentInfo, payAccount, inviteCode, busy, fmt, statusText, apply, bindAgent,
+      qrSrc, qrDownloadUrl, copyPromote };
   },
 };
 })();

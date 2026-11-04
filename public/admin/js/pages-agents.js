@@ -152,8 +152,15 @@ window.PageAgents = {
       <div class="modal">
         <div class="modal-head"><h3>{{ grant.id ? '修改佣金比例' : '授权代理商' }}</h3><button class="close-x" @click="granting=false">&times;</button></div>
         <div class="modal-body">
-          <div class="field" v-if="!grant.id"><label>用户 ID</label>
-            <input class="input" type="number" v-model.number="grant.user_id" placeholder="在「用户管理」里查到的用户 ID" />
+          <div class="field" v-if="!grant.id"><label>选择用户（从已有用户里挑，可搜索）</label>
+            <div class="field-row">
+              <div class="field"><input class="input" v-model="userSearch" @input="onUserSearch" placeholder="昵称 / 手机号 / openid 搜索" /></div>
+              <div class="field">
+                <select class="select" v-model.number="grant.user_id">
+                  <option v-for="u in filteredUsers" :key="u.id" :value="u.id">#{{ u.id }} · {{ u.nickname || '未命名' }}{{ u.phone ? ' · ' + u.phone : '' }}</option>
+                </select>
+              </div>
+            </div>
             <div class="hint">代理商身份由管理员手动授予，不需要用户自己申请。</div>
           </div>
           <div class="field"><label>佣金比例（0~1，例如 0.1 表示 10%）</label>
@@ -170,7 +177,11 @@ window.PageAgents = {
         <div class="modal-head"><h3>名下用户 · {{ downline.nickname || downline.id }}</h3><button class="close-x" @click="downline=null">&times;</button></div>
         <div class="modal-body">
           <div class="field-row">
-            <div class="field"><label>添加名下用户（用户 ID）</label><input class="input" type="number" v-model.number="addUserId" /></div>
+            <div class="field"><label>添加名下用户（从已有用户里选）</label>
+              <select class="select" v-model.number="addUserId">
+                <option v-for="u in filteredUsers" :key="u.id" :value="u.id">#{{ u.id }} · {{ u.nickname || '未命名' }}{{ u.phone ? ' · ' + u.phone : '' }}</option>
+              </select>
+            </div>
             <div class="field"><label>&nbsp;</label><button class="btn primary" @click="addDownline">添加归属</button></div>
           </div>
           <table class="table">
@@ -203,6 +214,25 @@ window.PageAgents = {
     const downline = ref(null);
     const downlineList = ref([]);
     const addUserId = ref(0);
+    // 从已有用户里选：默认列最近 100 个，输入关键字走服务端搜索（用户量大也能找到）；
+    // 已是代理商的人不再出现在「授权新代理商」下拉里（他们走「修改佣金比例」）
+    const userSearch = ref('');
+    const userOptions = ref([]);
+    const filteredUsers = computed(() => userOptions.value);
+    let searchTimer = null;
+    async function loadUserOptions(q) {
+      try {
+        const res = await U.api.get('/api/users?pageSize=100' + (q ? '&q=' + encodeURIComponent(q) : ''));
+        userOptions.value = (res.list || []).filter((u) => u.agent_status !== 'active');
+      } catch (e) { userOptions.value = []; }
+      const ids = userOptions.value.map((u) => u.id);
+      if (!ids.includes(grant.user_id)) grant.user_id = ids.length ? ids[0] : 0;
+      if (!ids.includes(addUserId.value)) addUserId.value = ids.length ? ids[0] : 0;
+    }
+    function onUserSearch() {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => loadUserOptions(userSearch.value.trim()), 300);
+    }
     const fmt = U.fmt;
     const s = reactive({ renew_remind_days: '7,3,1', agent_settle_days: 7,
       agent_withdraw_min: 10, upgrade_proration: '1' });
@@ -242,9 +272,14 @@ window.PageAgents = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
 
-    function openGrant() {
+    async function openGrant() {
       Object.assign(grant, { id: 0, user_id: 0, rate: 0.1, code: '' });
+      userSearch.value = '';
       grantError.value = '';
+      try {
+        await loadUserOptions();
+        if (!grant.user_id && filteredUsers.value.length) grant.user_id = filteredUsers.value[0].id;
+      } catch (e) { /* 下拉拉不到时仍可手动保存（旧接口按 ID 走） */ }
       granting.value = true;
     }
     function editRate(a) {
@@ -270,7 +305,12 @@ window.PageAgents = {
 
     async function openDownline(a) {
       downline.value = a;
+      userSearch.value = '';
       addUserId.value = 0;
+      try {
+        await loadUserOptions();
+        if (filteredUsers.value.length) addUserId.value = filteredUsers.value[0].id;
+      } catch (e) { /* ignore */ }
       downlineList.value = (await U.api.get(`/api/agents/${a.id}/downline`)).list;
     }
     async function addDownline() {
@@ -322,6 +362,7 @@ window.PageAgents = {
     onMounted(load);
     return {
       tab, agents, commissions, withdrawals, remindList, remindDays, granting, grant, grantError,
+      userSearch, filteredUsers, onUserSearch,
       downline, downlineList, addUserId, fmt, s, statusText, statusClass,
       load, loadSettings, saveSettings, openGrant, editRate, submitGrant, revoke,
       openDownline, addDownline, removeDownline, review, exportCsv, scanReminders,
