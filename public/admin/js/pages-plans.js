@@ -275,7 +275,7 @@ window.PagePlans = {
     }
 
     async function remove(p) {
-      if (!confirm(`确定删除档位「${p.name}」？已有授权引用的档位不能删除。`)) return;
+      if (!(await U.confirm(`确定删除档位「${p.name}」？已有授权引用的档位不能删除。`))) return;
       try {
         await U.api.del(`/api/plans/${p.id}`);
         U.toast('已删除', 'success');
@@ -285,7 +285,7 @@ window.PagePlans = {
 
     async function copyTemplate() {
       if (!selectedAppId.value) return;
-      if (!confirm(`把通用模板档位复制到「${selectedApp.value ? selectedApp.value.name : ''}」？已存在的 code 会跳过，不会覆盖已调好的价格。`)) return;
+      if (!(await U.confirm(`把通用模板档位复制到「${selectedApp.value ? selectedApp.value.name : ''}」？已存在的 code 会跳过，不会覆盖已调好的价格。`))) return;
       try {
         const res = await U.api.post('/api/plans/copy-template', { app_id: selectedAppId.value });
         U.toast(`已复制 ${res.created} 档，跳过 ${res.skipped} 档`, 'success');

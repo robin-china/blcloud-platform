@@ -298,9 +298,12 @@ window.PageAgents = {
       } catch (e) { grantError.value = e.message; }
     }
     async function revoke(a) {
-      if (!confirm(`暂停「${a.nickname || a.id}」的代理商身份？已有佣金记录不受影响。`)) return;
-      await U.api.post(`/api/agents/${a.id}/revoke`, {});
-      load();
+      if (!(await U.confirm(`暂停「${a.nickname || a.id}」的代理商身份？已有佣金记录不受影响。`))) return;
+      try {
+        await U.api.post(`/api/agents/${a.id}/revoke`, {});
+        U.toast('已暂停', 'success');
+        load();
+      } catch (e) { U.toast(U.failMsg(e, '操作失败'), 'error'); }
     }
 
     async function openDownline(a) {
@@ -324,10 +327,12 @@ window.PageAgents = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
     async function removeDownline(u) {
-      if (!confirm(`移除用户 ${u.id} 的代理商归属？`)) return;
-      await U.api.del(`/api/agents/downline/${u.id}`);
-      await openDownline(downline.value);
-      load();
+      if (!(await U.confirm(`移除用户 ${u.id} 的代理商归属？`))) return;
+      try {
+        await U.api.del(`/api/agents/downline/${u.id}`);
+        await openDownline(downline.value);
+        load();
+      } catch (e) { U.toast(U.failMsg(e, '移除失败'), 'error'); }
     }
 
     async function review(w, approve) {

@@ -241,10 +241,12 @@ window.PageUsers = {
     }
 
     async function removeDevice(d) {
-      if (!confirm(`移除硬件 ${d.sn}？`)) return;
-      await U.api.del(`/api/devices/${d.id}`);
-      await reloadDetail();
-      load();
+      if (!(await U.confirm(`移除硬件 ${d.sn}？`))) return;
+      try {
+        await U.api.del(`/api/devices/${d.id}`);
+        await reloadDetail();
+        load();
+      } catch (e) { U.toast(U.failMsg(e, '移除失败'), 'error'); }
     }
 
     function tbText(s) {
@@ -610,11 +612,13 @@ window.PageLicenses = {
     }
 
     async function revokeBatch(b) {
-      if (!confirm(`作废批次 ${b.batch_no} 里 ${b.unassigned} 个还没被领取的码？作废后无法再绑定。`)) return;
-      const res = await U.api.post(`/api/licenses/batches/${encodeURIComponent(b.batch_no)}/revoke`, {});
-      U.toast(`已作废 ${res.revoked} 个`, 'success');
-      openBatches();
-      load();
+      if (!(await U.confirm(`作废批次 ${b.batch_no} 里 ${b.unassigned} 个还没被领取的码？作废后无法再绑定。`))) return;
+      try {
+        const res = await U.api.post(`/api/licenses/batches/${encodeURIComponent(b.batch_no)}/revoke`, {});
+        U.toast(`已作废 ${res.revoked} 个`, 'success');
+        openBatches();
+        load();
+      } catch (e) { U.toast(U.failMsg(e, '作废失败'), 'error'); }
     }
 
     /* 导出走原生 fetch：U.api 只解析 JSON，拿不到 CSV 流 */
@@ -645,7 +649,7 @@ window.PageLicenses = {
     }
 
     async function unbindDevice(d) {
-      if (!confirm(`解绑机器 ${d.device_sn}？该机器的客户端会话会立即失效。`)) return;
+      if (!(await U.confirm(`解绑机器 ${d.device_sn}？该机器的客户端会话会立即失效。`))) return;
       try {
         await U.api.del(`/api/license-devices/${d.id}`);
         U.toast('已解绑', 'success');
@@ -668,9 +672,12 @@ window.PageLicenses = {
     }
 
     async function revoke(l) {
-      if (!confirm('确定吊销该授权？该授权下所有机器会立即掉线。')) return;
-      await U.api.post(`/api/licenses/${l.id}/revoke`, {});
-      load();
+      if (!(await U.confirm('确定吊销该授权？该授权下所有机器会立即掉线。'))) return;
+      try {
+        await U.api.post(`/api/licenses/${l.id}/revoke`, {});
+        U.toast('已吊销', 'success');
+        load();
+      } catch (e) { U.toast(U.failMsg(e, '吊销失败'), 'error'); }
     }
 
     async function resume(l) {
@@ -679,9 +686,12 @@ window.PageLicenses = {
     }
 
     async function remove(l) {
-      if (!confirm('确定删除该授权？')) return;
-      await U.api.del(`/api/licenses/${l.id}`);
-      load();
+      if (!(await U.confirm('确定删除该授权？'))) return;
+      try {
+        await U.api.del(`/api/licenses/${l.id}`);
+        U.toast('已删除', 'success');
+        load();
+      } catch (e) { U.toast(U.failMsg(e, '删除失败'), 'error'); }
     }
 
     onMounted(load);

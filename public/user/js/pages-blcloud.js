@@ -227,7 +227,7 @@ curl "{{ origin }}/api/blcloud/v1/devices/{设备ID}/telemetry?keys=temperature,
     }
 
     async function reset(k) {
-      if (!confirm('重置后旧密钥立即失效，且该密钥用量清零。确认继续？')) return;
+      if (!(await U.confirm('重置后旧密钥立即失效，且该密钥用量清零。确认继续？'))) return;
       try {
         const res = await U.api.post(`/api/portal/blcloud/keys/${k.id}/reset`, {});
         newSecret.value = res.secret;
@@ -238,7 +238,7 @@ curl "{{ origin }}/api/blcloud/v1/devices/{设备ID}/telemetry?keys=temperature,
     }
 
     async function remove(k) {
-      if (!confirm('删除后使用该密钥的服务将立即失效，确认删除？')) return;
+      if (!(await U.confirm('删除后使用该密钥的服务将立即失效，确认删除？'))) return;
       try {
         await U.api.del(`/api/portal/blcloud/keys/${k.id}`);
         U.toast('已删除', 'success');

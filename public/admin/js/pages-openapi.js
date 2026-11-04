@@ -259,7 +259,7 @@ window.PageOpenapi = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
     async function resetSecret(a) {
-      if (!confirm('重置后该应用下所有已登录客户端会被强制下线，继续？')) return;
+      if (!(await U.confirm('重置后该应用下所有已登录客户端会被强制下线，继续？'))) return;
       try {
         const res = await U.api.post('/api/open-apps/' + a.id + '/reset-secret', {});
         secretBox.app_key = a.app_key;
@@ -269,7 +269,7 @@ window.PageOpenapi = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
     async function remove(a) {
-      if (!confirm('删除应用后，其客户端令牌将全部失效，继续？')) return;
+      if (!(await U.confirm('删除应用后，其客户端令牌将全部失效，继续？'))) return;
       try {
         await U.api.del('/api/open-apps/' + a.id);
         U.toast('已删除', 'success');

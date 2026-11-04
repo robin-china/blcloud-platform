@@ -196,7 +196,7 @@ window.PageBackup = {
     }
 
     async function removeBackup(name) {
-      if (!confirm('删除备份 ' + name + '？删除后无法找回。')) return;
+      if (!(await U.confirm('删除备份 ' + name + '？删除后无法找回。'))) return;
       try {
         await U.api.del('/api/backup/' + encodeURIComponent(name));
         U.toast('已删除', 'success');
@@ -256,7 +256,7 @@ window.PageBackup = {
     async function purge() {
       if (purgeConfirm.value !== '清除') return;
       const names = groups.value.filter((g) => picked.value.includes(g.key)).map((g) => g.name).join('、');
-      if (!confirm('将清理：' + names + '\n共 ' + pickedRows.value + ' 行。\n执行前会自动备份一份，确认继续？')) return;
+      if (!(await U.confirm('将清理：' + names + '\n共 ' + pickedRows.value + ' 行。\n执行前会自动备份一份，确认继续？'))) return;
       busy.value = true;
       try {
         const r = await U.api.post('/api/maintenance/purge', {

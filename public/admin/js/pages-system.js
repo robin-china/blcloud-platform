@@ -507,9 +507,12 @@ window.PageAdmins = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
     async function remove(a) {
-      if (!confirm(`删除管理员 ${a.username}？`)) return;
-      await U.api.del(`/api/admin/${a.id}`);
-      load();
+      if (!(await U.confirm(`删除管理员 ${a.username}？`))) return;
+      try {
+        await U.api.del(`/api/admin/${a.id}`);
+        U.toast('已删除', 'success');
+        load();
+      } catch (e) { U.toast(U.failMsg(e, '删除失败'), 'error'); }
     }
     onMounted(load);
     return { list, logs, editing, form, fmt, openCreate, save, remove };

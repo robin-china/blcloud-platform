@@ -1,6 +1,7 @@
 const db = require('../db');
 const { now, safeJson } = require('../lib/util');
 const { requireAdmin } = require('../lib/auth');
+const { logAdmin } = require('../lib/adminlog');
 
 const FIELDS = `type, name, subtitle, description, category, price, original_price, icon, images,
   features, version, download_url, file_size, stock, is_official, status, sort`;
@@ -79,11 +80,60 @@ module.exports = async function productRoutes(app) {
     return { ok: true };
   });
 
+  /**
+   * 删除商品。
+   *
+   * 以前是无条件 DELETE，但只要有已售授权 / 软件应用绑定，直接删就会留下指向不存在商品的
+   * 授权与开放应用（用户端「我的授权」里商品名空白、软件端激活对不上）。管理员那边看到的是
+   * 「点了删除没反应」，其实是前端把 409 静默吞了。
+   *
+   * 现在分两段：默认只做检查并说明原因；带 `?force=1` 才真正强删，且会同时作废该商品下的
+   * 未作废授权、解绑开放应用与档位引用。前端在收到 409 后弹二次确认再带 force 重试。
+   */
   app.delete('/api/products/:id', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
-    db.prepare('DELETE FROM products WHERE id = ?').run(Number(req.params.id));
-    db.prepare('DELETE FROM product_versions WHERE product_id = ?').run(Number(req.params.id));
-    return { ok: true };
+    const id = Number(req.params.id);
+    const product = db.prepare('SELECT id, name FROM products WHERE id = ?').get(id);
+    if (!product) return { ok: true, already: true }; // 幂等：重复点删除不报错
+    const force = String(req.query.force || '') === '1';
+
+    const licCount = db.prepare("SELECT COUNT(*) AS c FROM licenses WHERE product_id = ? AND status <> 'revoked'").get(id).c;
+    const openApp = db.prepare('SELECT id, name FROM open_apps WHERE product_id = ? LIMIT 1').get(id);
+    // 档位不直接挂商品：plans.app_id → open_apps.product_id → products.id
+    const planCount = db.prepare(`SELECT COUNT(*) AS c FROM plans pl
+      JOIN open_apps a ON a.id = pl.app_id WHERE a.product_id = ?`).get(id).c;
+
+    if (!force && (licCount || openApp)) {
+      const reasons = [];
+      if (licCount) reasons.push(`${licCount} 张未作废授权`);
+      if (openApp) reasons.push(`软件应用「${openApp.name}」正在绑定`);
+      return reply.code(409).send({
+        error: `「${product.name}」还有 ${reasons.join('、')}，不能直接删除。`,
+        code: 'PRODUCT_IN_USE',
+        blockers: {
+          licenses: licCount,
+          open_app: openApp ? { id: openApp.id, name: openApp.name } : null,
+          plans: planCount,
+        },
+        hint: '可以「下架」停售（不影响已售授权与历史订单）；确认要删就强制删除，会一并作废这些授权并解除绑定。',
+      });
+    }
+
+    const run = db.transaction(() => {
+      const revoked = licCount
+        ? db.prepare("UPDATE licenses SET status = 'revoked', remark = ? WHERE product_id = ? AND status <> 'revoked'")
+          .run(`商品「${product.name}」已删除，授权随之作废`, id).changes
+        : 0;
+      // 档位与开放应用是配置：解除引用即可，不跟着删（档位还可能被历史授权引用）
+      const detachedApps = db.prepare('UPDATE open_apps SET product_id = NULL WHERE product_id = ?').run(id).changes;
+      db.prepare('DELETE FROM product_versions WHERE product_id = ?').run(id);
+      db.prepare('DELETE FROM products WHERE id = ?').run(id);
+      return { revoked, detachedPlans: 0, detachedApps, plans: planCount };
+    });
+    const res = run();
+    logAdmin(req, '删除商品', `${product.name}（#${id}）${force ? '强制' : ''}删除` +
+      `${res.revoked ? `，作废授权 ${res.revoked} 张` : ''}${res.detachedApps ? `，解绑应用 ${res.detachedApps} 个` : ''}`);
+    return { ok: true, ...res };
   });
 
   app.get('/api/products/:id/versions', async (req, reply) => {

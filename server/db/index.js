@@ -25,6 +25,13 @@ for (const line of schemaText.split('\n')) {
   if (/^\s*CREATE\s+(UNIQUE\s+)?INDEX\b/i.test(line)) indexLines.push(line);
   else ddlLines.push(line);
 }
+/**
+ * 是不是「全新数据库」——在建表之前判断，之后 products 表一定存在。
+ * 演示商品 / 演示统计这类种子数据只在全新库种一次：
+ * 之前用「表为空」判断，导致用户删光商品后一重启又全回来（以为是删不掉）。
+ * 现在再加一道「必须是从未建过表的新文件」，双保险。
+ */
+const isFreshDb = !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'products'").get();
 db.exec(ddlLines.join('\n'));
 
 /**
@@ -214,7 +221,7 @@ function seed() {
   const markSeeded = (k) => db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?,?,?)').run(k, '1', now());
 
   const productCount = db.prepare('SELECT COUNT(*) AS c FROM products').get().c;
-  if (productCount === 0 && !seeded('seed_products_done')) {
+  if (isFreshDb && productCount === 0 && !seeded('seed_products_done')) {
     const samples = [
       {
         type: 'software', name: '智联桌面客户端', subtitle: '跨平台设备管理中台',
@@ -288,7 +295,7 @@ function seed() {
   // 仪表盘的「近 14 天走势」演示曲线：只在新库首次启动时种一次。
   // 清理过统计数据后重启不能复活，否则用户会以为没删干净。
   const dayCount = db.prepare('SELECT COUNT(*) AS c FROM stats_daily').get().c;
-  if (dayCount === 0 && !seeded('seed_stats_done')) {
+  if (isFreshDb && dayCount === 0 && !seeded('seed_stats_done')) {
     const stmt = db.prepare(`INSERT OR IGNORE INTO stats_daily
       (date, downloads, installs, active_users, new_users, revenue, api_calls) VALUES (?,?,?,?,?,?,?)`);
     const base = [120, 145, 132, 168, 190, 176, 205, 231, 214, 248, 262, 239, 271, 288];

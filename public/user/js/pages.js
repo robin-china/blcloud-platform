@@ -691,7 +691,7 @@ window.PageMyLicenses = {
     }
 
     async function unbind(d) {
-      if (!confirm(`解绑机器 ${d.device_sn}？解绑后该机器需要重新激活才能使用。`)) return;
+      if (!(await U.confirm(`解绑机器 ${d.device_sn}？解绑后该机器需要重新激活才能使用。`))) return;
       try {
         await U.api.del(`/api/portal/licenses/${cur.value.id}/devices/${d.id}`);
         U.toast('已解绑，名额已释放', 'success');

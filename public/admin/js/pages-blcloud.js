@@ -200,7 +200,7 @@ window.PageAdminBlcloud = {
     }
 
     async function delKey(k) {
-      if (!confirm('确认删除该密钥？使用该密钥的服务将立即失效。')) return;
+      if (!(await U.confirm('确认删除该密钥？使用该密钥的服务将立即失效。'))) return;
       try {
         await U.api.del(`/api/admin/blcloud/keys/${k.id}`);
         U.toast('已删除', 'success');

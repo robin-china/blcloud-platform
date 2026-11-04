@@ -161,7 +161,7 @@ window.PageOrders = {
     }
 
     async function refund(o) {
-      if (!confirm(`确定退款订单 ${o.order_no}？`)) return;
+      if (!(await U.confirm(`确定退款订单 ${o.order_no}？`))) return;
       try {
         await U.api.post(`/api/orders/${o.id}/refund`, {});
         U.toast('已退款', 'success');

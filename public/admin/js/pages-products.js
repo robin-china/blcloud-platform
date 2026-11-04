@@ -195,10 +195,35 @@ window.PageProducts = {
     }
 
     async function remove(p) {
-      if (!confirm(`确定删除「${p.name}」？`)) return;
-      await U.api.del(`/api/products/${p.id}`);
-      U.toast('已删除', 'success');
-      load();
+      if (!(await U.confirm(`确定删除「${p.name}」？`))) return;
+      try {
+        await U.api.del(`/api/products/${p.id}`);
+        U.toast('已删除', 'success');
+        load();
+      } catch (e) {
+        // 409 = 还有授权或软件应用绑着，服务端给出了原因。这里必须把原因摊开讲，
+        // 再让管理员决定是否强删 —— 以前是直接静默失败，看起来像「删不掉」。
+        if (e.data && e.data.code === 'PRODUCT_IN_USE') {
+          const b = e.data.blockers || {};
+          const detail = [
+            b.licenses ? `• ${b.licenses} 张未作废授权会被一并作废` : '',
+            b.open_app ? `• 软件应用「${b.open_app.name}」会解除商品绑定` : '',
+            b.plans ? `• ${b.plans} 个套餐档位会解除商品关联` : '',
+          ].filter(Boolean).join('\n');
+          const ok = await U.confirm(
+            `${e.data.error}\n\n强制删除会：\n${detail}\n\n已售授权将立即失效、对应客户端会掉线。确定继续？`,
+            { title: '该商品仍在使用', okText: '强制删除' },
+          );
+          if (!ok) return;
+          try {
+            const res = await U.api.del(`/api/products/${p.id}?force=1`);
+            U.toast(`已强制删除${res.revoked ? `，作废 ${res.revoked} 张授权` : ''}`, 'success');
+            load();
+          } catch (e2) { U.toast(U.failMsg(e2, '删除失败'), 'error'); }
+          return;
+        }
+        U.toast(U.failMsg(e, '删除失败'), 'error');
+      }
     }
 
     async function uploadIcon(e) {

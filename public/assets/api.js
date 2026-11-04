@@ -71,6 +71,81 @@
     setTimeout(() => el.remove(), 2600);
   }
 
+  /**
+   * 自绘确认框，替代原生 window.confirm。
+   *
+   * 原生 confirm 在部分环境里是**静默失效**的：WorkBuddy 预览面板、IDE 内置浏览器、
+   * 某些企业策略下的 iframe 会直接把 confirm 判定为 false 且不弹任何框。
+   * 表现就是「点了删除完全没反应」——既没对话框，也没报错，用户以为删不掉。
+   * 所以这里用 DOM 自己画，行为可控，还能带标题/按钮文案。
+   *
+   * 用法：`if (!(await U.confirm('确定删除？'))) return;`
+   */
+  function confirmBox(message, opts) {
+    const o = typeof opts === 'string' ? { title: opts } : (opts || {});
+    return new Promise((resolve) => {
+      const mask = document.createElement('div');
+      mask.className = 'mask ui-confirm';
+      // toast-wrap 是 100，普通 mask 是 50；确认框必须盖在抽屉/弹窗之上
+      mask.style.zIndex = '200';
+
+      const modal = document.createElement('div');
+      modal.className = 'modal';
+      modal.style.maxWidth = '420px';
+
+      const head = document.createElement('div');
+      head.className = 'modal-head';
+      const h3 = document.createElement('h3');
+      h3.textContent = o.title || '确认操作';
+      head.appendChild(h3);
+
+      const body = document.createElement('div');
+      body.className = 'modal-body';
+      const text = document.createElement('div');
+      text.style.cssText = 'font-size:14px;line-height:1.75;color:var(--text-1);white-space:pre-wrap;word-break:break-word';
+      text.textContent = String(message == null ? '' : message);
+      body.appendChild(text);
+
+      const foot = document.createElement('div');
+      foot.className = 'modal-foot';
+      const cancel = document.createElement('button');
+      cancel.className = 'btn';
+      cancel.textContent = o.cancelText || '取消';
+      const ok = document.createElement('button');
+      ok.className = 'btn ' + (o.danger === false ? 'primary' : 'danger');
+      ok.textContent = o.okText || '确定';
+      foot.append(cancel, ok);
+
+      modal.append(head, body, foot);
+      mask.appendChild(modal);
+      document.body.appendChild(mask);
+
+      let settled = false;
+      const done = (val) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('keydown', onKey);
+        mask.remove();
+        resolve(val);
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); done(false); }
+        else if (e.key === 'Enter') { e.preventDefault(); done(true); }
+      };
+      cancel.onclick = () => done(false);
+      ok.onclick = () => done(true);
+      mask.onclick = (e) => { if (e.target === mask) done(false); };
+      document.addEventListener('keydown', onKey);
+      setTimeout(() => { try { ok.focus(); } catch { /* 忽略 */ } }, 0);
+    });
+  }
+
+  /** 统一的失败提示：删除/提交类操作失败时必须让人看见原因，不能静默 */
+  function failMsg(e, fallback = '操作失败') {
+    const m = (e && (e.message || e.error)) || fallback;
+    return /请求失败 401/.test(m) ? '登录已过期，请重新登录' : m;
+  }
+
   const fmt = {
     money(n) {
       const v = Number(n) || 0;
@@ -245,7 +320,7 @@
   }
 
   window.U = {
-    api, toast, fmt, lineChart, barChart, donut, applySiteSettings,
+    api, toast, confirm: confirmBox, failMsg, fmt, lineChart, barChart, donut, applySiteSettings,
     icons: ICONS, svgIcon, avatar, avatarPresets, basePath: BASE,
   };
 })();
