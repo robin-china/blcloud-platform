@@ -73,5 +73,12 @@ check('头像库是 UMD（前后端共用一份）',
 check('头像库提供 8 个预设', (avatarJs.match(/id: '\d\d', name:/g) || []).length === 8);
 check('头像库导出 defaultValue 供服务端分配', /defaultValue/.test(avatarJs));
 
+console.log('\n开关组件：.field 里的 label.switch 必须保住 inline-flex');
+// .field label { display:block } 与 label.switch 同为 (0,1,1)，靠后者胜 → label.switch 必须存在
+check('ui.css 有 label.switch 显式声明（压过 .field label 的 display:block）',
+  /label\.switch\s*\{[^}]*inline-flex/.test(css));
+check('.switch .track 有 display:inline-block 兜底（inline 上宽高失效）',
+  /\.switch \.track\s*\{[^}]*display:\s*inline-block/.test(css));
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
 if (fail > 0) process.exitCode = 1;
