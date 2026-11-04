@@ -6,7 +6,7 @@
 const db = require('../db');
 const crypto = require('crypto');
 const { now, today, genScene, genCode } = require('../lib/util');
-const { getConfig, basePath } = require('../lib/config');
+const { getConfig, basePath, publicUrl } = require('../lib/config');
 const { verifySignature, issueSession, requireClient, getSession, getSessionState, touchSession, revokeSession } = require('../lib/openauth');
 const wechatService = require('../services/wechat');
 const { ensureUser } = require('../routes/wechat');
@@ -15,6 +15,7 @@ const bindSvc = require('../lib/licensebind');
 const plans = require('../lib/plans');
 const profileLib = require('../lib/profile');
 const avatars = require('../lib/avatars');
+const release = require('../lib/release');
 
 const ACCESS_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -135,6 +136,29 @@ module.exports = async function openRoutes(app) {
   /* ---------------- 应用信息 ---------------- */
 
   app.get('/api/open/v1/app/version', async (req, reply) => {
+    const q = req.query || {};
+
+    /* 更新清单模式（桌面客户端每启动轮询）：?product=LabelGo&version=1.0.20
+     *
+     * 这条分支**不鉴权**，理由：
+     *  - 客户端在用户登录前就要检查更新，弹阻断窗时手里还没有令牌；
+     *  - 清单里没有机密信息，包本身还有 sha256 兜底；
+     *  - 若走签名，密钥随安装包分发，等于没有鉴权，只是把「下载 404」换成「401」。
+     * 老客户端不带 product（走 X-App-Key 签名拿离线宽限/档位）的行为保持不变。
+     */
+    if (q.product) {
+      // 清单要实时：客户端每次启动都来问，缓存住就会出现「发了版半小时没人收到」
+      reply.header('Cache-Control', 'no-cache');
+      return release.manifest({
+        product: q.product,
+        channel: q.channel,
+        platform: q.platform,
+        arch: q.arch,
+        current: q.version,
+        machine: q.machine,
+      }, publicUrl(req, '/').replace(/\/+$/, ''));
+    }
+
     if (!(await withApp(req, reply))) return;
     const a = req.app;
     track(0, a.app_key, 'app.version');

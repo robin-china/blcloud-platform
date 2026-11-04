@@ -6,6 +6,12 @@ const multipart = require('@fastify/multipart');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
+// 客户端更新包：大文件、按版本分目录。生产建议 nginx 直接 alias 出去（见 deploy/nginx-subpath.conf），
+// 这条静态挂载是本地开发/没配 nginx 时的兜底，Range 断点续传由 @fastify/static 内置支持。
+const UPDATES_DIR = process.env.UPDATES_DIR
+  ? path.resolve(process.env.UPDATES_DIR)
+  : path.join(__dirname, '..', 'data', 'updates');
+fs.mkdirSync(UPDATES_DIR, { recursive: true });
 const { basePath } = require('./lib/config');
 
 function build() {
@@ -32,6 +38,27 @@ function build() {
   });
 
   app.register(fastifyStatic, { root: UPLOAD_DIR, prefix: `${BASE}/uploads/`, decorateReply: false });
+
+  // 客户端更新包：禁止列目录（index/list 全关）、包按文件名里的版本号长缓存、清单不缓存。
+  // Content-Type 一律 octet-stream —— 上传目录里若混进 html/svg，被浏览器当页面渲染就是存储型 XSS。
+  app.register(fastifyStatic, {
+    root: UPDATES_DIR,
+    prefix: `${BASE}/updates/`,
+    decorateReply: false,
+    index: false,
+    list: false,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.json')) {
+        res.header('Cache-Control', 'no-cache');
+        res.header('Content-Type', 'application/json; charset=utf-8');
+        return;
+      }
+      res.header('Cache-Control', 'public, max-age=31536000, immutable');
+      res.header('Content-Type', 'application/octet-stream');
+      // 断点续传：客户端用 Range 续传，必须显式声明支持
+      res.header('Accept-Ranges', 'bytes');
+    },
+  });
   app.register(fastifyStatic, {
     root: PUBLIC_DIR,
     prefix: `${BASE}/`,
@@ -48,7 +75,7 @@ function build() {
   // 所有业务路由统一挂到 BASE 前缀下
   const opts = BASE ? { prefix: BASE } : {};
   for (const name of ['admin', 'products', 'plans', 'users', 'licenses', 'orders', 'stats',
-    'pay', 'wechat', 'portal', 'open', 'openapps', 'agents', 'blcloud', 'blcloud-admin', 'backup']) {
+    'pay', 'wechat', 'portal', 'open', 'openapps', 'agents', 'blcloud', 'blcloud-admin', 'backup', 'releases']) {
     app.register(require(`./routes/${name}`), opts);
   }
 
@@ -77,6 +104,15 @@ async function start() {
   // 每天自动留一份账套备份：被攻击/误删时，最坏情况也能退回昨天。
   // 放在 start() 里而不是 build()，测试反复 build() 不该产生备份文件。
   const backup = require('./lib/backup');
+  // 更新包的兜底清单如果丢了（比如换服务器只迁了库），按库里现有版本补一份。
+  // 站点地址没配就不写：写出来会是相对路径，客户端在 Electron 里用不了。
+  try {
+    const release = require('./lib/release');
+    if (!fs.existsSync(path.join(release.ROOT, 'latest.json')) && release.siteBase()) {
+      const body = release.writeLatest();
+      if (body.latest) app.log.info(`已重建更新清单 latest.json（${body.latest}）`);
+    }
+  } catch (e) { app.log.warn(`重建更新清单失败: ${e.message}`); }
   const snapshot = () => {
     try {
       const pkg = backup.autoSnapshot();

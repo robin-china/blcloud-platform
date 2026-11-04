@@ -10,6 +10,7 @@
         { key: 'products', name: '产品管理', icon: 'box' },
         { key: 'plans', name: '套餐档位', icon: 'shield' },
         { key: 'storefront', name: '官方上架', icon: 'store' },
+        { key: 'release', name: '客户端更新', icon: 'download' },
         { key: 'licenses', name: '授权管理', icon: 'shield' },
       ],
     },

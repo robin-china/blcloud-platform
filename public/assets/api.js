@@ -53,6 +53,7 @@
     scope: 'admin',
     get(url) { return request(this.scope, 'GET', url); },
     post(url, body) { return request(this.scope, 'POST', url, body ?? {}); },
+    patch(url, body) { return request(this.scope, 'PATCH', url, body ?? {}); },
     del(url) { return request(this.scope, 'DELETE', url); },
     getToken, setToken,
   };

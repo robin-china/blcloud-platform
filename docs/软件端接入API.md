@@ -189,6 +189,18 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 
 > 服务端不代管离线状态，它只负责把这个数字准确地告诉你。
 
+### 更新清单（同一路径的第二种用法）
+
+带 `product` 参数时，`GET /app/version` 变成**公开的更新清单接口**（不鉴权、不签名），返回 `latest / full / delta / mandatory`，供桌面端每次启动轮询：
+
+```
+GET /api/open/v1/app/version?product=LabelGo&version=1.0.20&platform=win32&arch=x64&channel=stable&machine=BLBT-XXXX
+```
+
+两种用法互不干扰：**不带 `product` 时仍按应用签名走上面那套**（老客户端不受影响）。
+
+完整契约、静态目录、发布与灰度流程见 **[客户端更新包接入.md](./客户端更新包接入.md)**。
+
 ### 5.1 激活（最核心）
 
 `POST /auth/activate`

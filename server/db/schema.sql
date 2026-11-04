@@ -441,3 +441,36 @@ CREATE TABLE IF NOT EXISTS license_reminders (
 );
 CREATE INDEX IF NOT EXISTS idx_remind_user ON license_reminders(user_id);
 
+
+-- 桌面客户端更新包清单（LabelGo 等 Electron 端）
+-- 与 ThingsBoard OTA 完全无关：包在文件系统里（data/updates），nginx 直出；
+-- 这张表只记元数据，接口按 machine/版本实时算「该不该给他更新」。
+-- 文件名带版本号，所以同版本重复发布是替换，不是新增。
+CREATE TABLE IF NOT EXISTS app_release (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product TEXT NOT NULL,
+  channel TEXT DEFAULT 'stable',
+  platform TEXT DEFAULT 'win32',
+  arch TEXT DEFAULT 'x64',
+  version TEXT NOT NULL,
+  -- 相对 updates 根目录的路径，如 1.0.21/LabelGo-1.0.21-full.zip
+  -- 存相对路径而不是整条 URL：换域名/换部署路径后旧记录不会指向死链
+  full_path TEXT DEFAULT '',
+  -- 需要走 CDN 或对象存储时才填；留空则由接口按请求域名现拼绝对地址
+  full_url TEXT DEFAULT '',
+  full_sha256 TEXT DEFAULT '',
+  full_size INTEGER DEFAULT 0,
+  -- 增量包数组：[{from, path, sha256, size}]
+  delta_json TEXT DEFAULT '[]',
+  mandatory INTEGER DEFAULT 0,
+  min_version TEXT DEFAULT '',
+  changelog TEXT DEFAULT '',
+  -- 灰度比例 0-100：按 machine 哈希分桶，100=全量，0=暂停
+  rollout INTEGER DEFAULT 100,
+  published_at TEXT,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_app_release_ver ON app_release(product, channel, platform, arch, version);
+CREATE INDEX IF NOT EXISTS idx_app_release_pick ON app_release(product, channel, platform, arch, enabled);
