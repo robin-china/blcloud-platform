@@ -48,6 +48,22 @@ function basePath() {
   return '/' + p.replace(/^\/+|\/+$/g, '');
 }
 
+/**
+ * 拼对外可访问的绝对地址：protocol + host + basePath() + pathname。
+ * pathname 不必带前导斜杠，函数会补齐 —— 直接 `basePath() + 'user/'`
+ * 在子路径部署下会拼成 `/platformuser/` 直接 404，别自己拼。
+ */
+function publicUrl(req, pathname = '/') {
+  const headers = (req && req.headers) || {};
+  const proto =
+    String((req && req.protocol) || headers['x-forwarded-proto'] || 'http')
+      .split(',')[0].trim() || 'http';
+  const host = String(headers['x-forwarded-host'] || headers.host || '')
+    .split(',')[0].trim();
+  const p = String(pathname || '/');
+  return `${proto}://${host}${basePath()}${p.startsWith('/') ? '' : '/'}${p}`;
+}
+
 function getSetting(key, fallback = '') {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
   return row ? row.value : fallback;
@@ -110,4 +126,4 @@ function getConfigMasked(name) {
   return out;
 }
 
-module.exports = { basePath, getSetting, setSetting, allSettings, getConfig, setConfig, getConfigMasked, devMode, SENSITIVE, DEFAULTS };
+module.exports = { basePath, publicUrl, getSetting, setSetting, allSettings, getConfig, setConfig, getConfigMasked, devMode, SENSITIVE, DEFAULTS };

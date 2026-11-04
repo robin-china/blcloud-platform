@@ -56,6 +56,10 @@ async function loginAs(app, openid, nickname, agentCode) {
     headers: { authorization: 'Bearer ' + agentLogin.token } })).json();
   check('代理商视角下发推广链接', agentInfo.is_agent && (agentInfo.promote_url || '').includes('agent=' + auth.agent_code),
     agentInfo.promote_url);
+  // 落地页必须是 /user/，子路径部署下不能粘成 /platformuser/（线上 404 过）
+  check('推广链接落地页路径为 /user/',
+    /\/user\/\?agent=/.test(agentInfo.promote_url || '') && !/platformuser/.test(agentInfo.promote_url || ''),
+    agentInfo.promote_url);
   const normalInfo = (await app.inject({ method: 'GET', url: '/api/portal/agent',
     headers: { authorization: 'Bearer ' + agentLogin.token } })).json();
   check('非代理商不下发推广链接（下一节用普通用户验证）', typeof agentInfo.agent_rate === 'number');

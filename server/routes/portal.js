@@ -1,7 +1,7 @@
 const db = require('../db');
 const { now, safeJson, genOrderNo, genCode } = require('../lib/util');
 const { requireUser, signUser } = require('../lib/auth');
-const { getSetting, getConfig, devMode, basePath } = require('../lib/config');
+const { getSetting, getConfig, devMode, publicUrl } = require('../lib/config');
 const { createPayment, markPaid } = require('../services/pay');
 const wxpay = require('../services/wxpay');
 const paydiag = require('../lib/paydiag');
@@ -459,10 +459,9 @@ module.exports = async function portalRoutes(app) {
     // 首次扫码登录自动归到该代理商名下（不依赖 Cookie，参数存在浏览器里跟着登录走）。
     let promoteUrl = '';
     if (me && me.agent_status === 'active' && me.agent_code) {
-      // trustProxy 打开时 req.protocol 已是反代透传的真实协议；不硬默认 https
-      const proto = String(req.protocol || req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim() || 'http';
-      const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
-      promoteUrl = `${proto}://${host}${basePath()}user/?agent=${encodeURIComponent(me.agent_code)}`;
+      // 走 publicUrl 统一拼协议/主机/子路径，别手写 basePath() + 'user/'：
+      // basePath() 不带尾斜杠，手拼会得到 /platformuser/ 直接 404（2026-11-04 线上踩过）
+      promoteUrl = publicUrl(req, `/user/?agent=${encodeURIComponent(me.agent_code)}`);
     }
     return {
       is_agent: !!(me && me.agent_status === 'active'),

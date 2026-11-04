@@ -34,6 +34,11 @@ function probe(dbFile, env) {
       out.__login = l.statusCode;
       const { baseUrl } = require(${JSON.stringify(path.join(ROOT, 'server', 'services', 'pay.js'))});
       out.__baseUrl = baseUrl({ headers: { host: 'www.bliot.cn', 'x-forwarded-proto': 'https' } });
+      // 对外链接统一走 publicUrl：手写 basePath() + 'user/' 会拼出 /platformuser/（线上 404 过）
+      const cfg = require(${JSON.stringify(path.join(ROOT, 'server', 'lib', 'config.js'))});
+      const fakeReq = { headers: { host: 'www.bliot.cn', 'x-forwarded-proto': 'https' } };
+      out.__promote = cfg.publicUrl(fakeReq, '/user/?agent=AG4CA8D3AA');
+      out.__promoteNoSlash = cfg.publicUrl(fakeReq, 'user/?agent=AG4CA8D3AA');
       fs.writeFileSync(${JSON.stringify(outFile)}, JSON.stringify(out));
       await app.close();
       process.exit(0);
@@ -77,6 +82,10 @@ check('子路径下登录接口可用', sub.__login === 200, sub.__login);
 check('未加前缀的 /api/health 应 404', sub['/api/health'] === 404, sub['/api/health']);
 check('未加前缀的 /admin/ 应 404', sub['/admin/'] === 404, sub['/admin/']);
 check('回调地址自动带上 /platform', sub.__baseUrl === 'https://www.bliot.cn/platform', sub.__baseUrl);
+check('推广链接带 /platform/user/（不粘成 platformuser）',
+  sub.__promote === 'https://www.bliot.cn/platform/user/?agent=AG4CA8D3AA', sub.__promote);
+check('publicUrl 自动补前导斜杠',
+  sub.__promoteNoSlash === 'https://www.bliot.cn/platform/user/?agent=AG4CA8D3AA', sub.__promoteNoSlash);
 
 console.log('\n[2] 根路径部署（不设 BASE_PATH，向后兼容）');
 const db2 = path.join(ROOT, 'data', 'test-rootpath.db');
@@ -89,6 +98,8 @@ check('/assets/api.js 可访问', root['/assets/api.js'] === 200, root['/assets/
 check('根路径下登录接口可用', root.__login === 200, root.__login);
 check('根路径下 /platform/... 应 404', root['/platform/api/health'] === 404, root['/platform/api/health']);
 check('回调地址不带多余前缀', root.__baseUrl === 'https://www.bliot.cn', root.__baseUrl);
+check('根路径下推广链接为 /user/?agent=',
+  root.__promote === 'https://www.bliot.cn/user/?agent=AG4CA8D3AA', root.__promote);
 
 console.log('\n[3] 前端基础路径推断（与后端保持一致）');
 const m = (p) => { const x = p.match(/^(.*?)\/(admin|user)(\/|$)/); return x ? x[1] : ''; };
