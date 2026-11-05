@@ -28,6 +28,21 @@ function build() {
   // 恢复接口只接受管理员令牌，不存在匿名打满内存的入口。
   app.register(multipart, { limits: { fileSize: 64 * 1024 * 1024 } });
 
+  // DELETE 这类没有 body 的请求，只要带了 `Content-Type: application/json`，
+  // Fastify 默认会判成 FST_ERR_CTP_EMPTY_JSON_BODY 直接 400 —— 表现是「删除按钮全报 BadRequest」。
+  // 前端已改成无 body 不带该头，这里再兜一层：空 body 当 {}，避免旧缓存页面/第三方客户端继续踩。
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+    const raw = typeof body === 'string' ? body.trim() : '';
+    if (!raw) return done(null, {});
+    try {
+      return done(null, JSON.parse(raw));
+    } catch (e) {
+      e.statusCode = 400;
+      e.message = '请求体不是合法 JSON';
+      return done(e, undefined);
+    }
+  });
+
   // 防混合内容：页面上若混入 http:// 的子资源，浏览器会显示「此页面不安全（HTTPS 连接断开）」，
   // 且用户点过一次「加载不安全内容」后 Chrome 会长期记住、一直挂红。
   // upgrade-insecure-requests 让浏览器把所有 http:// 子资源自动升级为 https，从源头杜绝。

@@ -97,6 +97,17 @@ module.exports = async function releaseRoutes(app) {
     };
   });
 
+  /* ---------------- 升级记录（谁升了 / 谁还在旧版本） ---------------- */
+  app.get('/api/releases/updates', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const q = req.query || {};
+    return release.listUpdates({
+      product: q.product || undefined,
+      action: q.action || undefined,
+      limit: q.limit || 200,
+    });
+  });
+
   /* ---------------- 发布（multipart） ---------------- */
   app.post('/api/releases/publish', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;

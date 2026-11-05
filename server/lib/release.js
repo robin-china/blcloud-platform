@@ -326,7 +326,11 @@ function manifest(opts, baseUrl) {
   const machine = String(opts.machine || '').trim();
 
   const rec = pick({ product, channel, platform, arch, current, machine });
-  const head = { product, channel, platform, arch, server_time: now() };
+  const head = {
+    product, channel, platform, arch, server_time: now(),
+    // 客户端升级后回调这个地址，后台才有「谁真的升了」的记录
+    report_url: `${String(baseUrl || '').replace(/\/+$/, '')}/api/open/v1/app/update-report`,
+  };
 
   if (!rec) {
     return {
@@ -478,6 +482,115 @@ function writeLatest(baseUrl) {
   return rootBody;
 }
 
+/* ---------------- 升级事件记录 ---------------- */
+
+function clientMeta(req) {
+  const ip = String((req && (req.ip || req.headers['x-forwarded-for'])) || '').split(',')[0].trim();
+  const ua = String((req && req.headers && req.headers['user-agent']) || '').slice(0, 200);
+  return { ip, ua };
+}
+
+const clip = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
+
+/**
+ * 记录一次「清单命中」：说明这台机器被告知有新版。
+ * 客户端每次启动都轮询，同一台机器 10 分钟内对同一目标版本只留一条，
+ * 否则列表会被同一台机器的重复请求刷屏。
+ */
+function logCheck(rec, opts, req) {
+  if (!rec) return null;
+  const meta = clientMeta(req);
+  const machine = clip(opts.machine, 64);
+  // 注意：这里传进来的是 manifest() 的结果，版本字段叫 latest（不是 version）
+  const to = clip(rec.version || rec.latest, 32);
+  if (!to) return null;
+  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const dup = db.prepare(`SELECT id FROM app_update_log
+    WHERE product=? AND machine=? AND from_version=? AND to_version=? AND action='check' AND created_at>=?
+    LIMIT 1`).get(rec.product, machine, clip(opts.current, 32), to, since);
+  if (dup) return null;
+  return insertUpdate({
+    product: rec.product,
+    channel: rec.channel,
+    platform: rec.platform,
+    arch: rec.arch,
+    machine,
+    from: clip(opts.current, 32),
+    to,
+    action: 'check',
+    ip: meta.ip,
+    ua: meta.ua,
+    note: '',
+  });
+}
+
+/** 客户端上报升级结果（成功/失败），也允许后台手工补录 */
+function logUpdate(input) {
+  return insertUpdate({
+    product: clip(input.product, 64),
+    channel: clip(input.channel, 16) || 'stable',
+    platform: clip(input.platform, 16),
+    arch: clip(input.arch, 16),
+    machine: clip(input.machine, 64),
+    from: clip(input.from, 32),
+    to: clip(input.to, 32),
+    action: input.action === 'fail' ? 'fail' : (input.action === 'check' ? 'check' : 'success'),
+    ip: clip(input.ip, 64),
+    ua: clip(input.ua, 200),
+    note: clip(input.note, 300),
+  });
+}
+
+function insertUpdate(e) {
+  if (!e.product) throw new Error('缺少 product');
+  const info = db.prepare(`INSERT INTO app_update_log
+    (product, channel, platform, arch, machine, from_version, to_version, action, ip, user_agent, note, created_at)
+    VALUES (@product,@channel,@platform,@arch,@machine,@from_version,@to_version,@action,@ip,@user_agent,@note,@created_at)`)
+    .run({
+      product: e.product,
+      channel: e.channel || 'stable',
+      platform: e.platform || '',
+      arch: e.arch || '',
+      machine: e.machine || '',
+      from_version: e.from || '',
+      to_version: e.to || '',
+      action: e.action || 'check',
+      ip: e.ip || '',
+      user_agent: e.ua || '',
+      note: e.note || '',
+      created_at: now(),
+    });
+  return db.prepare('SELECT * FROM app_update_log WHERE id=?').get(info.lastInsertRowid);
+}
+
+/** 升级记录列表 + 汇总；machine 去重后的升级成功率一眼可见 */
+function listUpdates({ product, action, limit = 200 } = {}) {
+  const where = [];
+  const args = [];
+  if (product) { where.push('product=?'); args.push(product); }
+  if (action) { where.push('action=?'); args.push(action); }
+  const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const max = Math.max(1, Math.min(1000, Number(limit) || 200));
+  const list = db.prepare(`SELECT * FROM app_update_log ${whereSql} ORDER BY id DESC LIMIT ${max}`).all(...args);
+
+  const sumArgs = product ? [product] : [];
+  const sumWhere = product ? 'WHERE product=?' : '';
+  const counts = db.prepare(`SELECT action, COUNT(*) AS n FROM app_update_log ${sumWhere} GROUP BY action`)
+    .all(...sumArgs).reduce((acc, r) => { acc[r.action] = r.n; return acc; }, {});
+  const machines = db.prepare(`SELECT COUNT(DISTINCT machine) AS n FROM app_update_log ${sumWhere}${product ? ' AND' : ' WHERE'} machine<>''`)
+    .get(...sumArgs).n;
+
+  return {
+    list,
+    summary: {
+      check: counts.check || 0,
+      success: counts.success || 0,
+      fail: counts.fail || 0,
+      machines,
+    },
+  };
+}
+
 /* ---------------- 维护 ---------------- */
 
 function verify(id) {
@@ -559,6 +672,9 @@ module.exports = {
   writeLatest,
   latestBodyFor,
   getLastWriteInfo,
+  logCheck,
+  logUpdate,
+  listUpdates,
   siteBase,
   defaultTarget,
   verify,

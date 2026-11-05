@@ -280,6 +280,47 @@ function sha(buf) {
   check('重建清单回显每产品文件数', r.statusCode === 200 && (r.json().files || []).length >= 4,
     (r.body || '').slice(0, 200));
 
+
+  console.log('\n[升级记录]');
+  const MAN = `${B}/api/open/v1/app/version?product=TestPad&version=2.0.0&machine=BLBT-TEST-0001&platform=win32&arch=x64`;
+  r = await app.inject({ method: 'GET', url: MAN });
+  check('清单带 report_url', /\/api\/open\/v1\/app\/update-report$/.test(r.json().report_url || ''), r.json().report_url);
+
+  await app.inject({ method: 'GET', url: MAN }); // 同一机器重复查一次
+  let ups = await app.inject({ method: 'GET', url: `${B}/api/releases/updates?product=TestPad`, headers: AUTH });
+  check('清单命中落记录且 10 分钟内去重（同一机器同目标只一条）',
+    ups.json().list.filter((x) => x.action === 'check' && x.machine === 'BLBT-TEST-0001').length === 1,
+    ups.json().list.filter((x) => x.action === 'check').map((x) => [x.machine, x.from_version]));
+
+  r = await app.inject({
+    method: 'POST', url: `${B}/api/open/v1/app/update-report`,
+    payload: { product: 'TestPad', machine: 'BLBT-TEST-0001', from: '2.0.0', to: '2.1.0', status: 'success' },
+  });
+  check('升级成功上报 200', r.statusCode === 200 && r.json().action === 'success', r.body);
+
+  r = await app.inject({
+    method: 'POST', url: `${B}/api/open/v1/app/update-report`,
+    payload: { product: 'TestPad', machine: 'BLBT-TEST-0002', from: '2.0.0', to: '2.1.0', status: 'fail', note: '磁盘空间不足' },
+  });
+  check('升级失败上报 200', r.statusCode === 200 && r.json().action === 'fail', r.body);
+
+  r = await app.inject({ method: 'POST', url: `${B}/api/open/v1/app/update-report`, payload: {} });
+  check('上报缺 product → 400', r.statusCode === 400, r.statusCode);
+
+  ups = await app.inject({ method: 'GET', url: `${B}/api/releases/updates?product=TestPad`, headers: AUTH });
+  check('汇总里有成功与失败', ups.json().summary.success >= 1 && ups.json().summary.fail >= 1, ups.json().summary);
+  check('涉及机器数去重', ups.json().summary.machines >= 2, ups.json().summary);
+  check('失败记录带原因', ups.json().list.some((x) => x.action === 'fail' && /磁盘/.test(x.note)), ups.json().list[0]);
+
+  // 没有新版本时不该刷记录
+  await app.inject({ method: 'GET', url: `${B}/api/open/v1/app/version?product=Nobody&version=9.9.9&machine=BLBT-X` });
+  ups = await app.inject({ method: 'GET', url: `${B}/api/releases/updates?product=Nobody`, headers: AUTH });
+  check('已是最新时不产生记录', ups.json().list.length === 0, ups.json().summary);
+
+  // 后台筛选动作
+  ups = await app.inject({ method: 'GET', url: `${B}/api/releases/updates?product=TestPad&action=fail`, headers: AUTH });
+  check('按动作筛选只看失败', ups.json().list.every((x) => x.action === 'fail') && ups.json().list.length >= 1, ups.json().list.length);
+
   console.log(`\n结果：${pass} 通过，${fail} 失败\n`);
   await app.close();
   process.exit(fail ? 1 : 0);

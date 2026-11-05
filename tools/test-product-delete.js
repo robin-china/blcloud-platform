@@ -67,6 +67,14 @@ const ROOT = path.join(__dirname, '..');
   const repeat = await app.inject({ method: 'DELETE', url: `/api/products/${another.id}`, headers: H });
   check('重复删除幂等', repeat.statusCode === 200 && repeat.json().already === true, repeat.json());
 
+  // 浏览器真实请求形态：声明 application/json 但没有 body。
+  // Fastify 默认会回 400 FST_ERR_CTP_EMPTY_JSON_BODY（线上「删除按钮全报 BadRequest」就是这个）
+  const jsonDel = await app.inject({
+    method: 'DELETE', url: `/api/products/${another.id}`,
+    headers: { ...H, 'content-type': 'application/json' },
+  });
+  check('空 body + JSON 头的 DELETE 不再 400', jsonDel.statusCode === 200, jsonDel.body);
+
   console.log('\n[5] 软件应用绑定商品时同样要挡住');
   const p2 = (await app.inject({ method: 'GET', url: '/api/products', headers: H })).json().list[0];
   db.prepare(`INSERT INTO open_apps (app_key, app_secret, name, product_id, status, created_at)

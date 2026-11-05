@@ -127,6 +127,53 @@ window.PageRelease = {
       </div>
     </div>
 
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h3>升级记录</h3>
+        <div style="display:flex;gap:8px">
+          <span class="hint" style="margin:0;align-self:center">涉及机器 {{ upSummary.machines }} 台</span>
+          <button class="btn sm" @click="loadUpdates">刷新</button>
+        </div></div>
+      <div class="card-body" style="padding:0">
+        <div style="display:flex;gap:10px;padding:12px 16px 0;flex-wrap:wrap">
+          <span class="tag">清单命中 {{ upSummary.check }}</span>
+          <span class="tag" style="color:#0a7"><b>升级成功 {{ upSummary.success }}</b></span>
+          <span class="tag danger" v-if="upSummary.fail">升级失败 {{ upSummary.fail }}</span>
+          <span class="tag" v-else>升级失败 0</span>
+        </div>
+        <div style="display:flex;gap:8px;padding:10px 16px 12px;flex-wrap:wrap">
+          <button class="btn sm" :class="!upAction ? 'primary' : ''" @click="setUpAction('')">全部</button>
+          <button class="btn sm" :class="upAction === 'success' ? 'primary' : ''" @click="setUpAction('success')">成功</button>
+          <button class="btn sm" :class="upAction === 'fail' ? 'primary' : ''" @click="setUpAction('fail')">失败</button>
+          <button class="btn sm" :class="upAction === 'check' ? 'primary' : ''" @click="setUpAction('check')">清单命中</button>
+        </div>
+        <table class="table">
+          <thead><tr>
+            <th>时间</th><th>产品</th><th>机器码</th><th>版本变化</th><th>状态</th><th>IP</th><th>备注</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="u in updates" :key="u.id">
+              <td>{{ when(u.created_at) }}</td>
+              <td>{{ u.product }}<div class="hint" style="margin:0">{{ u.platform }} / {{ u.arch }}</div></td>
+              <td style="font-family:ui-monospace,monospace">{{ u.machine || '-' }}</td>
+              <td>{{ u.from_version || '?' }} → <b>{{ u.to_version || '?' }}</b></td>
+              <td>
+                <span v-if="u.action === 'success'" class="tag" style="color:#0a7">成功</span>
+                <span v-else-if="u.action === 'fail'" class="tag danger">失败</span>
+                <span v-else class="tag">命中</span>
+              </td>
+              <td class="hint" style="margin:0">{{ u.ip || '-' }}</td>
+              <td class="hint" style="margin:0">{{ u.note || '-' }}</td>
+            </tr>
+            <tr v-if="!updates.length"><td colspan="7"><div class="empty">还没有升级记录（客户端查到新版、或升级后回调上报时会出现）</div></td></tr>
+          </tbody>
+        </table>
+        <div class="hint" style="padding:10px 16px">
+          「命中」= 这台机器被告知有新版（同一机器 10 分钟内同一目标只记一条）；「成功/失败」需要客户端升级后回调
+          <code>report_url</code> 才会出现。
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-head"><h3>客户端会看到什么</h3>
         <span class="tag">按版本号 + 机器码模拟一次检查</span></div>
@@ -172,6 +219,9 @@ window.PageRelease = {
     const totalAllSize = ref(0);
     const filter = ref('');
     const busy = ref(false);
+    const updates = ref([]);
+    const upAction = ref('');
+    const upSummary = reactive({ check: 0, success: 0, fail: 0, machines: 0 });
     const probing = ref(false);
     const probeOut = ref('');
     const fullFile = ref(null);
@@ -237,7 +287,28 @@ window.PageRelease = {
         products.value = r.products || [];
         totalSize.value = r.total_size || 0;
         totalAllSize.value = r.total_all_size != null ? r.total_all_size : (r.total_size || 0);
+        await loadUpdates();
       } catch (e) { U.toast(U.failMsg(e, '加载失败'), 'error'); }
+    }
+
+    async function loadUpdates() {
+      try {
+        const q = new URLSearchParams();
+        if (filter.value) q.set('product', filter.value);
+        if (upAction.value) q.set('action', upAction.value);
+        const r = await U.api.get('/api/releases/updates?' + q.toString());
+        updates.value = r.list || [];
+        Object.assign(upSummary, r.summary || {});
+      } catch (e) {
+        updates.value = [];
+        U.toast(U.failMsg(e, '升级记录加载失败'), 'error');
+      }
+    }
+
+    async function setUpAction(a) {
+      if (upAction.value === a) return;
+      upAction.value = a;
+      await loadUpdates();
     }
 
     async function setFilter(p) {
@@ -375,8 +446,10 @@ window.PageRelease = {
 
     return {
       cfg, rows, products, totalSize, totalAllSize, filter, busy, form, probe, probeOut, probing,
+      updates, upAction, upSummary,
       fullFile, deltaFile, checkUrl, latestVersion,
-      bytes, when, short, load, setFilter, pickFull, pickDelta, publish, toggle, verify, remove,
+      bytes, when, short, load, setFilter, loadUpdates, setUpAction,
+      pickFull, pickDelta, publish, toggle, verify, remove,
       rebuild, saveSite, runProbe, copy,
     };
   },

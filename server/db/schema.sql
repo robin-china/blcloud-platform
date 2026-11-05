@@ -474,3 +474,25 @@ CREATE TABLE IF NOT EXISTS app_release (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_app_release_ver ON app_release(product, channel, platform, arch, version);
 CREATE INDEX IF NOT EXISTS idx_app_release_pick ON app_release(product, channel, platform, arch, enabled);
+
+-- 客户端升级事件流水：谁、什么时候、从哪个版本升到哪个版本
+-- check   = 清单命中（这台机器被告知有新版，但还没确认升级成功）
+-- success = 客户端升级成功后回调上报
+-- fail    = 客户端升级失败（note 里带原因）
+CREATE TABLE IF NOT EXISTS app_update_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product TEXT NOT NULL,
+  channel TEXT DEFAULT 'stable',
+  platform TEXT DEFAULT '',
+  arch TEXT DEFAULT '',
+  machine TEXT DEFAULT '',
+  from_version TEXT DEFAULT '',
+  to_version TEXT DEFAULT '',
+  action TEXT DEFAULT 'check',
+  ip TEXT DEFAULT '',
+  user_agent TEXT DEFAULT '',
+  note TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_app_update_log_pick ON app_update_log(product, created_at);
+CREATE INDEX IF NOT EXISTS idx_app_update_log_machine ON app_update_log(machine, product);

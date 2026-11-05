@@ -135,6 +135,36 @@ function bindMachine(lic, machineId, opts = {}) {
 module.exports = async function openRoutes(app) {
   /* ---------------- 应用信息 ---------------- */
 
+  /* 客户端升级结果上报（不鉴权，和清单接口一致）
+   * 客户端下载并安装完新版本后调用一次，后台才有「谁真的升级成功/失败」的记录。
+   * 只写流水，不改任何业务状态，所以即使被刷也只是一张表变大；前端后台可随时清理。
+   */
+  app.post('/api/open/v1/app/update-report', async (req, reply) => {
+    const b = req.body || {};
+    const product = String(b.product || '').trim().slice(0, 64);
+    if (!product) return reply.code(400).send({ error: '缺少 product' });
+    const status = String(b.status || b.action || 'success').toLowerCase();
+    const action = status === 'fail' || status === 'failed' || status === 'error' ? 'fail' : 'success';
+    try {
+      const rec = release.logUpdate({
+        product,
+        channel: b.channel,
+        platform: b.platform,
+        arch: b.arch,
+        machine: b.machine,
+        from: b.from || b.from_version || b.version,
+        to: b.to || b.to_version || b.target || '',
+        action,
+        note: b.note || b.error || b.message || '',
+        ip: req.ip,
+        ua: (req.headers || {})['user-agent'],
+      });
+      return { ok: true, id: rec.id, action };
+    } catch (e) {
+      return reply.code(400).send({ error: e.message });
+    }
+  });
+
   app.get('/api/open/v1/app/version', async (req, reply) => {
     const q = req.query || {};
 
@@ -149,14 +179,21 @@ module.exports = async function openRoutes(app) {
     if (q.product) {
       // 清单要实时：客户端每次启动都来问，缓存住就会出现「发了版半小时没人收到」
       reply.header('Cache-Control', 'no-cache');
-      return release.manifest({
+      const opts = {
         product: q.product,
         channel: q.channel,
         platform: q.platform,
         arch: q.arch,
         current: q.version,
         machine: q.machine,
-      }, publicUrl(req, '/').replace(/\/+$/, ''));
+      };
+      const body = release.manifest(opts, publicUrl(req, '/').replace(/\/+$/, ''));
+      // 命中了新版才记一条：后台「升级记录」可见哪些机器还在旧版本。
+      // 记录失败绝不能影响客户端检查更新（包都拿到了，日志写不进去是运维问题）。
+      if (body && body.update_available) {
+        try { release.logCheck(body, opts, req); } catch { /* ignore */ }
+      }
+      return body;
     }
 
     if (!(await withApp(req, reply))) return;

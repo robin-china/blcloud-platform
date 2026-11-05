@@ -29,10 +29,16 @@
   }
 
   async function request(scope, method, url, body) {
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = {};
     const t = getToken(scope);
     if (t) headers.Authorization = `Bearer ${t}`;
-    const res = await fetch(abs(url), { method, headers, body: body ? JSON.stringify(body) : undefined });
+    // 只有真的有 body 才声明 Content-Type：DELETE 带空 body + application/json
+    // 会被 Fastify 判成 FST_ERR_CTP_EMPTY_JSON_BODY，整片删除按钮报 400（2026-11-05 线上）
+    const hasBody = body !== undefined && body !== null;
+    if (hasBody) headers['Content-Type'] = 'application/json';
+    const res = await fetch(abs(url), {
+      method, headers, body: hasBody ? JSON.stringify(body) : undefined,
+    });
     let data = null;
     const text = await res.text();
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
