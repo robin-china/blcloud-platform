@@ -64,14 +64,16 @@ module.exports = async function releaseRoutes(app) {
   app.get('/api/releases', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     const q = req.query || {};
-    const rows = release.list({
-      product: q.product || undefined,
-      channel: q.channel || undefined,
-      platform: q.platform || undefined,
-      arch: q.arch || undefined,
-    });
+    // 产品/渠道等筛选：产品下拉和筛选 chips 永远给全量，列表给筛选后的
+    const all = release.list({});
+    const rows = (q.product || q.channel || q.platform || q.arch)
+      ? all.filter((r) => (!q.product || r.product === q.product)
+        && (!q.channel || r.channel === q.channel)
+        && (!q.platform || r.platform === q.platform)
+        && (!q.arch || r.arch === q.arch))
+      : all;
     const base = baseFrom(req);
-    const list = rows.map((r) => {
+    const withFiles = (r) => {
       const file = r.full_path ? release.absPath(r.full_path) : '';
       return {
         ...r,
@@ -83,12 +85,13 @@ module.exports = async function releaseRoutes(app) {
           exists: d.path ? fs.existsSync(release.absPath(d.path)) : false,
         })),
       };
-    });
-    const products = [...new Set(list.map((r) => r.product))];
+    };
+    const list = rows.map(withFiles);
     return {
       list,
-      products,
+      products: [...new Set(all.map((r) => r.product))],
       total_size: list.reduce((s, r) => s + Number(r.full_size || 0), 0),
+      total_all_size: all.reduce((s, r) => s + Number(r.full_size || 0), 0),
       site_url: getSetting('release_site_url', '') || '',
       detected_base: base,
     };
@@ -277,12 +280,13 @@ module.exports = async function releaseRoutes(app) {
     return { ok: true, files_removed: withFiles };
   });
 
-  /* ---------------- 重建 latest.json ---------------- */
+  /* ---------------- 重建兜底清单（每产品一份 latest.json + 产品索引） ---------------- */
   app.post('/api/releases/latest.json', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     const body = release.writeLatest(baseFrom(req));
-    logAdmin(req, '重建更新清单 latest.json', body.latest || '（无版本）');
-    return { ok: true, latest: body };
+    const info = release.getLastWriteInfo();
+    logAdmin(req, '重建更新清单', `共 ${info.files.length} 份：${info.files.join('、')}`);
+    return { ok: true, latest: body, files: info.files };
   });
 
   /* ---------------- 预览：这台机器现在会看到什么 ---------------- */

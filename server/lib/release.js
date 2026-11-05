@@ -381,43 +381,101 @@ function defaultTarget() {
   };
 }
 
+/** 原子写 JSON 到 updates 目录下（相对 ROOT） */
+function writeJson(relPath, body) {
+  const dest = path.join(ROOT, relPath);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const tmp = `${dest}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(body, null, 2));
+  fs.renameSync(tmp, dest);
+}
+
+/** 单个产品的兜底清单体；该产品没有任何启用版本时返回 null */
+function latestBodyFor(product, base) {
+  // 优先默认渠道/平台；该组合没发过版（比如纯 mac 产品）就取该产品下任意一条最高版
+  let pool = candidates({ product, channel: 'stable', platform: 'win32', arch: 'x64' });
+  if (!pool.length) {
+    pool = db.prepare("SELECT * FROM app_release WHERE product=? AND enabled=1 AND full_sha256<>''")
+      .all(product).map(rowToRecord)
+      .sort((a, b) => cmpVersion(b.version, a.version));
+  }
+  const full = pool.filter((r) => r.rollout >= 100);
+  const rec = (full[0] || pool[0] || null);
+  if (!rec) return null;
+  return {
+    generated_at: now(),
+    product,
+    channel: rec.channel,
+    platform: rec.platform,
+    arch: rec.arch,
+    latest: rec.version,
+    mandatory: !!rec.mandatory,
+    minVersion: rec.min_version || '0.0.0',
+    changelog: rec.changelog || '',
+    publishedAt: rec.published_at || '',
+    full: {
+      url: fileUrl(base, rec.full_url || rec.full_path),
+      sha256: String(rec.full_sha256 || '').toLowerCase(),
+      size: Number(rec.full_size || 0),
+    },
+    delta: deltaOut(base, rec),
+  };
+}
+
+/** 最近一次 writeLatest 写了哪些文件（给后台回显/排障用） */
+let lastWriteInfo = { files: [], at: '' };
+function getLastWriteInfo() { return lastWriteInfo; }
+
 /**
- * 写 /updates/latest.json —— 接口挂了客户端还能退回静态文件。
+ * 重建兜底清单 —— 多产品各写一份：
+ *   /updates/<产品>/latest.json   每个产品自己的兜底清单
+ *   /updates/products.json        产品索引（有哪些产品、各自最新版、清单地址）
+ *   /updates/latest.json          默认产品的清单（老客户端/文档兼容，结构不变）
  * 只能取「全量发布」的那一版：静态文件没法按机器分桶，写灰度版会坑到所有人。
  */
 function writeLatest(baseUrl) {
   const tgt = defaultTarget();
   const base = siteBase(baseUrl);
-  const all = candidates(tgt);
-  const full = all.filter((r) => r.rollout >= 100);
-  const rec = (full[0] || all[0] || null);
-  const body = {
+  const products = db.prepare('SELECT DISTINCT product FROM app_release WHERE enabled=1 ORDER BY product')
+    .all().map((r) => r.product);
+
+  const bodies = {};
+  const written = [];
+  for (const p of products) {
+    const body = latestBodyFor(p, base);
+    if (!body) continue;
+    const dir = safeToken(p, 'app');
+    writeJson(`${dir}/latest.json`, body);
+    written.push(`${dir}/latest.json`);
+    bodies[p] = body;
+  }
+
+  writeJson('products.json', {
+    generated_at: now(),
+    products: products.filter((p) => bodies[p]).map((p) => ({
+      product: p,
+      latest: bodies[p].latest,
+      channel: bodies[p].channel,
+      platform: bodies[p].platform,
+      manifest_url: fileUrl(base, `${safeToken(p, 'app')}/latest.json`),
+    })),
+  });
+  written.push('products.json');
+
+  // 根 latest.json 固定给默认产品：单产品时代的老客户端与文档都指向这个路径
+  const rootBody = bodies[tgt.product] || {
     generated_at: now(),
     product: tgt.product,
     channel: tgt.channel,
     platform: tgt.platform,
     arch: tgt.arch,
-    ...(rec ? {
-      latest: rec.version,
-      mandatory: !!rec.mandatory,
-      minVersion: rec.min_version || '0.0.0',
-      changelog: rec.changelog || '',
-      publishedAt: rec.published_at || '',
-      full: {
-        url: fileUrl(base, rec.full_url || rec.full_path),
-        sha256: String(rec.full_sha256 || '').toLowerCase(),
-        size: Number(rec.full_size || 0),
-      },
-      delta: deltaOut(base, rec),
-    } : {
-      latest: '',
-    }),
+    latest: '',
   };
-  const dest = path.join(ROOT, 'latest.json');
-  const tmp = `${dest}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(body, null, 2));
-  fs.renameSync(tmp, dest);
-  return body;
+  writeJson('latest.json', rootBody);
+  written.push('latest.json');
+
+  lastWriteInfo = { files: written, at: now() };
+  return rootBody;
 }
 
 /* ---------------- 维护 ---------------- */
@@ -499,6 +557,8 @@ module.exports = {
   pick,
   manifest,
   writeLatest,
+  latestBodyFor,
+  getLastWriteInfo,
   siteBase,
   defaultTarget,
   verify,

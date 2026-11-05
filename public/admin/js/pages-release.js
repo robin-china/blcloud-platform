@@ -6,14 +6,14 @@ window.PageRelease = {
   <div>
     <div class="grid g4" style="margin-bottom:16px">
       <div class="stat"><div class="label">已发布版本</div><div class="value">{{ rows.length }}</div>
-        <div class="delta">{{ products.length ? products.join(' · ') : '还没有发布记录' }}</div></div>
+        <div class="delta">{{ filter ? '产品「' + filter + '」' : (products.length ? products.join(' · ') : '还没有发布记录') }}</div></div>
       <div class="stat"><div class="label">最新版本</div><div class="value">{{ latestVersion || '-' }}</div>
-        <div class="delta">{{ latestVersion ? '客户端最低可升到此版本' : '先上传一个全量包' }}</div></div>
-      <div class="stat"><div class="label">更新包占用</div><div class="value">{{ bytes(totalSize) }}</div>
-        <div class="delta">{{ cfg.updates_dir }}</div></div>
+        <div class="delta">{{ filter ? '「' + filter + '」客户端可升到此版本' : (latestVersion ? '客户端最低可升到此版本' : '先上传一个全量包') }}</div></div>
+      <div class="stat"><div class="label">更新包占用</div><div class="value">{{ bytes(totalAllSize) }}</div>
+        <div class="delta">{{ filter ? '当前筛选 ' + bytes(totalSize) : cfg.updates_dir }}</div></div>
       <div class="stat"><div class="label">清单地址</div>
         <div class="value" style="font-size:13px;word-break:break-all">{{ checkUrl }}</div>
-        <div class="delta">客户端每次启动轮询，不鉴权</div></div>
+        <div class="delta">客户端每次启动轮询，不鉴权；每产品一份 latest.json</div></div>
     </div>
 
     <div class="card" style="margin-bottom:16px">
@@ -21,7 +21,10 @@ window.PageRelease = {
         <span class="tag">全量包必填，增量包可选</span></div>
       <div class="card-body">
         <div class="grid g4">
-          <div class="field"><label>产品</label><input v-model.trim="form.product" placeholder="LabelGo" /></div>
+          <div class="field"><label>产品</label>
+            <input v-model.trim="form.product" placeholder="LabelGo" list="release-product-list" />
+            <datalist id="release-product-list"><option v-for="p in products" :key="p" :value="p"></option></datalist>
+            <div class="hint" style="margin:4px 0 0">多产品各自独立发版：填新产品名即新建一条产品线</div></div>
           <div class="field"><label>版本号</label><input v-model.trim="form.version" placeholder="1.0.21" /></div>
           <div class="field"><label>渠道</label><input v-model.trim="form.channel" placeholder="stable" /></div>
           <div class="field"><label>平台 / 架构</label>
@@ -74,10 +77,15 @@ window.PageRelease = {
     <div class="card" style="margin-bottom:16px">
       <div class="card-head"><h3>版本列表</h3>
         <div style="display:flex;gap:8px">
-          <button class="btn sm" @click="rebuild">重建 latest.json</button>
+          <button class="btn sm" @click="rebuild">重建兜底清单</button>
           <button class="btn sm" @click="load">刷新</button>
         </div></div>
       <div class="card-body" style="padding:0">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;padding:12px 16px 0">
+          <button class="btn sm" :class="!filter ? 'primary' : ''" @click="setFilter('')">全部</button>
+          <button v-for="p in products" :key="p" class="btn sm" :class="filter === p ? 'primary' : ''"
+            @click="setFilter(p)">{{ p }}</button>
+        </div>
         <table class="table">
           <thead><tr>
             <th>版本</th><th>产品 / 渠道</th><th>平台</th><th>全量包</th><th>增量</th>
@@ -113,7 +121,7 @@ window.PageRelease = {
                 </div>
               </td>
             </tr>
-            <tr v-if="!rows.length"><td colspan="9"><div class="empty">还没有发布过版本</div></td></tr>
+            <tr v-if="!rows.length"><td colspan="9"><div class="empty">{{ filter ? '「' + filter + '」还没有发布记录' : '还没有发布过版本' }}</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -126,7 +134,8 @@ window.PageRelease = {
         <div class="grid g4">
           <div class="field"><label>当前版本</label><input v-model.trim="probe.version" placeholder="1.0.20" /></div>
           <div class="field"><label>机器码（灰度分桶用）</label><input v-model.trim="probe.machine" placeholder="BLBT-XXXX-XXXX" /></div>
-          <div class="field"><label>产品</label><input v-model.trim="probe.product" /></div>
+          <div class="field"><label>产品</label>
+            <input v-model.trim="probe.product" list="release-product-list" /></div>
           <div class="field" style="display:flex;align-items:flex-end">
             <button class="btn" :disabled="probing" @click="runProbe">{{ probing ? '查询中…' : '查询' }}</button>
           </div>
@@ -160,6 +169,8 @@ window.PageRelease = {
     const rows = ref([]);
     const products = ref([]);
     const totalSize = ref(0);
+    const totalAllSize = ref(0);
+    const filter = ref('');
     const busy = ref(false);
     const probing = ref(false);
     const probeOut = ref('');
@@ -216,15 +227,23 @@ window.PageRelease = {
 
     async function load() {
       try {
+        const q = filter.value ? '?product=' + encodeURIComponent(filter.value) : '';
         const [c, r] = await Promise.all([
           U.api.get('/api/releases/config'),
-          U.api.get('/api/releases'),
+          U.api.get('/api/releases' + q),
         ]);
         Object.assign(cfg, c);
         rows.value = r.list || [];
         products.value = r.products || [];
         totalSize.value = r.total_size || 0;
+        totalAllSize.value = r.total_all_size != null ? r.total_all_size : (r.total_size || 0);
       } catch (e) { U.toast(U.failMsg(e, '加载失败'), 'error'); }
+    }
+
+    async function setFilter(p) {
+      if (filter.value === p) return;
+      filter.value = p;
+      await load();
     }
 
     function pickFull(ev) {
@@ -307,7 +326,8 @@ window.PageRelease = {
     async function rebuild() {
       try {
         const r = await U.api.post('/api/releases/latest.json');
-        U.toast('latest.json 已重建：' + (r.latest.latest || '无版本'), 'success');
+        const n = (r.files || []).length;
+        U.toast('已重建 ' + n + ' 份兜底清单，默认产品最新：' + (r.latest.latest || '无版本'), 'success');
       } catch (e) { U.toast(U.failMsg(e, '重建失败'), 'error'); }
     }
 
@@ -354,9 +374,9 @@ window.PageRelease = {
     });
 
     return {
-      cfg, rows, products, totalSize, busy, form, probe, probeOut, probing,
+      cfg, rows, products, totalSize, totalAllSize, filter, busy, form, probe, probeOut, probing,
       fullFile, deltaFile, checkUrl, latestVersion,
-      bytes, when, short, load, pickFull, pickDelta, publish, toggle, verify, remove,
+      bytes, when, short, load, setFilter, pickFull, pickDelta, publish, toggle, verify, remove,
       rebuild, saveSite, runProbe, copy,
     };
   },

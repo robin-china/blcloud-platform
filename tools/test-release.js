@@ -240,6 +240,46 @@ function sha(buf) {
   r = await app.inject({ method: 'GET', url: `${B}/api/open/v1/app/version?product=Nobody&version=2.0.0` });
   check('没有发布记录 → 200 且无更新', r.statusCode === 200 && r.json().latest === '2.0.0', r.body);
 
+
+  console.log('\n[多产品]');
+  r = await publish([
+    { name: 'product', value: 'TestPad' },
+    { name: 'version', value: '2.1.0' },
+    { name: 'file', filename: 'TestPad-2.1.0-full.zip', file: Buffer.from('testpad-full') },
+    { name: 'changelog', value: '- TestPad 首发版' },
+  ]);
+  check('发布第二个产品 200', r.statusCode === 200, r.body.slice(0, 200));
+
+  r = await app.inject({ method: 'GET', url: `${B}/api/open/v1/app/version?product=TestPad&version=2.0.0` });
+  check('TestPad 清单独立返回且有更新',
+    r.statusCode === 200 && r.json().latest === '2.1.0' && r.json().update_available === true,
+    r.body.slice(0, 200));
+  r = await app.inject({ method: 'GET', url: `${B}/api/open/v1/app/version?product=LabelGo&version=1.0.20` });
+  check('LabelGo 清单不受第二个产品影响（product 正确、latest 不会串到 TestPad）',
+    r.json().product === 'LabelGo' && r.json().latest !== '2.1.0',
+    { product: r.json().product, latest: r.json().latest });
+
+  const padLatest = path.join(UPDATES, 'TestPad', 'latest.json');
+  check('TestPad/latest.json 存在且 product=TestPad',
+    fs.existsSync(padLatest) && JSON.parse(fs.readFileSync(padLatest, 'utf8')).product === 'TestPad');
+  check('根 latest.json 仍是默认产品',
+    JSON.parse(fs.readFileSync(path.join(UPDATES, 'latest.json'), 'utf8')).product === 'LabelGo');
+  const idx = JSON.parse(fs.readFileSync(path.join(UPDATES, 'products.json'), 'utf8'));
+  check('products.json 索引含全部产品',
+    idx.products.map((p) => p.product).sort().join() === 'LabelGo,TestPad', idx.products);
+  check('索引里的清单地址是绝对地址',
+    idx.products.every((p) => /^https?:\/\/.+\/updates\/.+\/latest\.json$/.test(p.manifest_url)), idx.products);
+
+  r = await app.inject({ method: 'GET', url: `${B}/api/releases?product=TestPad`, headers: AUTH });
+  check('列表按产品筛选', r.statusCode === 200 && r.json().list.length >= 1
+    && r.json().list.every((x) => x.product === 'TestPad'), r.statusCode);
+  check('筛选时 products 仍返回全量', r.json().products.length === 2, r.json().products);
+  check('total_all_size 统计所有产品', r.json().total_all_size >= r.json().total_size, r.json());
+
+  r = await app.inject({ method: 'POST', url: `${B}/api/releases/latest.json`, headers: AUTH });
+  check('重建清单回显每产品文件数', r.statusCode === 200 && (r.json().files || []).length >= 4,
+    (r.body || '').slice(0, 200));
+
   console.log(`\n结果：${pass} 通过，${fail} 失败\n`);
   await app.close();
   process.exit(fail ? 1 : 0);
