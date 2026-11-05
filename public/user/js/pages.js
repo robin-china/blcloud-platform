@@ -1073,35 +1073,108 @@ window.PageUserLogin = {
           <div style="color:var(--text-3);font-size:12px">个人空间与产品服务</div>
         </div>
       </div>
-      <h2>微信扫码登录</h2>
-      <div class="tip">使用微信扫描下方二维码，完成登录</div>
-      <div class="qr-box">
-        <img v-if="qrcode_url" :src="qrcode_url" />
-        <div v-else-if="errmsg" class="qr-placeholder" style="cursor:default">
-          <div style="color:var(--danger);font-weight:600">二维码生成失败</div>
+      <!-- 微信内：不扫码，直接用当前微信账号登录 -->
+      <template v-if="wechatLogin">
+        <h2>微信登录</h2>
+        <div class="tip">已检测到微信环境，无需扫码</div>
+        <div class="qr-box">
+          <div class="qr-placeholder" style="cursor:default">
+            <div v-if="oauthError" style="color:var(--danger);font-weight:600;line-height:1.7">{{ oauthError }}</div>
+            <div v-else>点下方按钮，用当前微信账号直接登录</div>
+          </div>
         </div>
-        <div v-else-if="simulatable" class="qr-placeholder" @click="simulate" style="cursor:pointer">
-          未配置服务号参数<br />点击此处使用演示扫码登录
+        <div class="hint" style="text-align:center">{{ oauthError ? '可以重试一次' : '首次使用会自动创建账号' }}</div>
+        <div class="btn-group" style="justify-content:center;margin-top:12px">
+          <button class="btn primary" @click="wxLogin">微信一键登录</button>
         </div>
-        <div v-else class="qr-placeholder" style="cursor:default">未获取到二维码</div>
-      </div>
-      <div v-if="errmsg" style="text-align:center;font-size:12px;color:var(--danger);margin:8px 12px;word-break:break-all;line-height:1.6">{{ errmsg }}</div>
-      <div class="hint" style="text-align:center">{{ statusText }}</div>
-      <div class="btn-group" style="justify-content:center;margin-top:12px">
-        <button class="btn" @click="refresh">刷新二维码</button>
-        <button class="btn" v-if="simulatable && !qrcode_url" @click="simulate">演示登录</button>
-      </div>
+      </template>
+
+      <!-- 微信内但服务号没配网页授权：扫码没意义（自己扫自己） -->
+      <template v-else-if="inWechat">
+        <h2>请在电脑上登录</h2>
+        <div class="tip">当前在微信内打开，但站点还没开通网页授权</div>
+        <div class="hint" style="text-align:center;line-height:1.9">
+          请复制链接到电脑浏览器打开，用微信扫码登录。<br />
+          管理员可在后台「接入配置 → 微信服务号」开通网页授权后，微信内即可直接登录。
+        </div>
+        <div class="btn-group" style="justify-content:center;margin-top:14px">
+          <button class="btn" @click="copyLink">复制本页链接</button>
+        </div>
+      </template>
+
+      <template v-else>
+        <h2>微信扫码登录</h2>
+        <div class="tip">使用微信扫描下方二维码，完成登录</div>
+        <div class="qr-box">
+          <img v-if="qrcode_url" :src="qrcode_url" />
+          <div v-else-if="errmsg" class="qr-placeholder" style="cursor:default">
+            <div style="color:var(--danger);font-weight:600">二维码生成失败</div>
+          </div>
+          <div v-else-if="simulatable" class="qr-placeholder" @click="simulate" style="cursor:pointer">
+            未配置服务号参数<br />点击此处使用演示扫码登录
+          </div>
+          <div v-else class="qr-placeholder" style="cursor:default">未获取到二维码</div>
+        </div>
+        <div v-if="errmsg" style="text-align:center;font-size:12px;color:var(--danger);margin:8px 12px;word-break:break-all;line-height:1.6">{{ errmsg }}</div>
+        <div class="hint" style="text-align:center">{{ statusText }}</div>
+        <div class="btn-group" style="justify-content:center;margin-top:12px">
+          <button class="btn" @click="refresh">刷新二维码</button>
+          <button class="btn" v-if="simulatable && !qrcode_url" @click="simulate">演示登录</button>
+        </div>
+      </template>
     </div>
   </div>
   `,
   setup() {
     const settings = Vue.inject('settings');
+    const site = Vue.inject('site');
     const qrcode_url = ref('');
     const scene = ref('');
     const statusText = ref('正在获取二维码...');
     const errmsg = ref('');
     const simulatable = ref(false);
     let timer = null;
+
+    const inWechat = /MicroMessenger/i.test(navigator.userAgent || '');
+    const wechatLogin = !!(inWechat && site && site.value && site.value.wechat_oauth);
+
+    // 授权回调失败会把原因放在 #/login?wxerr=xxx 里，换成能看懂的话
+    const WXERR = {
+      off: '站点未开通微信网页授权',
+      state: '登录超时（页面停留太久），请重试',
+      cancel: '已取消微信授权',
+      disabled: '账号已停用，请联系客服',
+      fail: '微信登录失败，请重试',
+    };
+    function readWxErr() {
+      const h = String(location.hash || '');
+      const i = h.indexOf('?');
+      if (i < 0) return '';
+      const v = new URLSearchParams(h.slice(i + 1)).get('wxerr') || '';
+      return WXERR[v] || (v ? '微信登录未完成，请重试' : '');
+    }
+    const oauthError = ref(readWxErr());
+    // 原因读出来就从地址栏抹掉，刷新时不再重复提示
+    if (oauthError.value && location.hash.includes('wxerr=')) {
+      history.replaceState(null, '', location.pathname + location.search + '#/login');
+    }
+
+    function wxLogin() {
+      // 上一次自动尝试留下的标记要清掉，否则用户手动点会被当成「已试过」
+      sessionStorage.removeItem('wx_oauth_tried');
+      const agent = localStorage.getItem('agent_ref') || '';
+      location.href = `${U.basePath}/api/wechat/oauth/start?to=space&agent=${encodeURIComponent(agent)}`;
+    }
+
+    async function copyLink() {
+      const link = location.origin + location.pathname;
+      try {
+        await navigator.clipboard.writeText(link);
+        U.toast('链接已复制，请在电脑浏览器打开', 'success');
+      } catch (e) {
+        U.toast(link, 'info');
+      }
+    }
 
     async function refresh() {
       clearInterval(timer);
@@ -1163,8 +1236,10 @@ window.PageUserLogin = {
       }
     }
 
-    onMounted(refresh);
-    return { settings, qrcode_url, statusText, errmsg, simulatable, refresh, simulate };
+    // 微信内不生成二维码（既没必要，也会白调一次微信接口）
+    onMounted(() => { if (!inWechat) refresh(); });
+    return { settings, qrcode_url, statusText, errmsg, simulatable, refresh, simulate,
+      inWechat, wechatLogin, oauthError, wxLogin, copyLink };
   },
 };
 })();

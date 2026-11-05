@@ -156,6 +156,25 @@ window.PageIntegration = {
           <div class="field"><label>消息加密密钥</label><input class="input" v-model="c.aes_key" /></div>
         </div>
         <div class="hint">服务器地址（URL）填写：<b>{{ origin }}/api/wechat/server</b>，消息加密方式可选明文或安全模式，系统均已兼容。</div>
+        <div class="field-row" style="margin-top:14px">
+          <div class="field">
+            <label>微信内免扫码登录（网页授权范围）</label>
+            <select class="select" v-model="c.oauth_scope">
+              <option value="snsapi_base">静默授权：不弹窗，直接登录（推荐）</option>
+              <option value="snsapi_userinfo">需要昵称头像：首次弹一次「允许」</option>
+            </select>
+            <div class="hint">
+              微信内置浏览器打开用户中心时自动登录，不再要求扫码。
+              需到公众号后台「设置与开发 → 公众号设置 → 功能设置 → <b>网页授权域名</b>」填
+              <b>{{ wxDomain }}</b>（只填域名，不带路径和 /platform）；未配置时微信会报 redirect_uri 参数错误。
+            </div>
+          </div>
+          <div class="field">
+            <label>网页授权回调地址（自动生成，供核对）</label>
+            <input class="input" :value="origin + '/api/wechat/oauth/callback'" readonly />
+            <div class="hint">静默授权拿不到昵称，已关注用户仍会补齐微信昵称/头像；未关注则显示「用户XXXX」，可在账户中心自行修改。</div>
+          </div>
+        </div>
         <div class="btn-group" style="margin-top:14px">
           <button class="btn primary" @click="save('wechat')">保存</button>
           <button class="btn" @click="testWechat">测试连接</button>
@@ -356,6 +375,8 @@ window.PageIntegration = {
       : c.platform_cert ? '手动平台证书' : '自动下载平台证书'));
     // 带上部署基础路径，子路径部署时提示的回调地址才是对的
     const origin = location.origin + (window.U?.basePath || '');
+    // 网页授权域名只能填域名（微信不接受端口与路径），所以单独算一个
+    const wxDomain = location.hostname;
 
     async function load() {
       const res = await U.api.get('/api/settings/integration');
@@ -430,7 +451,7 @@ window.PageIntegration = {
 
     onMounted(load);
     Vue.watch(tab, sync);
-    return { tabs, tab, c, origin, save, testWechat, diagWechat, diag, fmtTime, testTb, diagTb, tbDiag, tbStatusText, testWxpay, diagPay, payDiag, verifyModeText };
+    return { tabs, tab, c, origin, wxDomain, save, testWechat, diagWechat, diag, fmtTime, testTb, diagTb, tbDiag, tbStatusText, testWxpay, diagPay, payDiag, verifyModeText };
   },
 };
 

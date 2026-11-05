@@ -4,6 +4,9 @@ const { ref, reactive, onMounted, computed } = Vue;
 window.PageDashboard = {
   template: `
   <div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px">
+      <button class="btn sm" :disabled="resetting" @click="resetStats">{{ resetting ? '处理中…' : '清零演示统计' }}</button>
+    </div>
     <div class="grid g4" style="margin-bottom:16px">
       <div class="stat">
         <div class="label">累计下载 / 安装</div>
@@ -92,6 +95,7 @@ window.PageDashboard = {
     const ov = reactive({ products: {}, today: {}, revenue: {}, devices: {} });
     const trend = ref([]);
     const revenue = reactive({ trend: [], byChannel: [], topProducts: [] });
+    const resetting = ref(false);
 
     const fmt = U.fmt;
     const icon = (n) => `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">${U.icons[n]}</svg>`;
@@ -119,6 +123,37 @@ window.PageDashboard = {
       return items.length ? U.donut(items) : '<div class="empty">暂无支付数据</div>';
     });
 
+    async function loadAll() {
+      const o = await U.api.get('/api/stats/overview');
+      Object.assign(ov, o);
+      const t = await U.api.get('/api/stats/trend?days=14');
+      trend.value = t.list || [];
+      const r = await U.api.get('/api/stats/revenue?days=14');
+      Object.assign(revenue, r);
+    }
+
+    /**
+     * 早期演示数据里塞了假的下载/安装/活跃与趋势曲线。这里给一个显式入口：
+     * 下载/安装/活跃归 0、趋势清空、销量按已支付订单重算（真卖出去的不抹）。
+     */
+    async function resetStats() {
+      const ok = await U.confirm(
+        '将把商品的累计下载、安装、活跃数字清零，并清空趋势曲线。\n销量会按已支付订单重新计算，不会抹掉真实成交。确定继续？',
+        { danger: true, okText: '清零' }
+      );
+      if (!ok) return;
+      resetting.value = true;
+      try {
+        const r = await U.api.post('/api/stats/reset', { real_sales: true });
+        U.toast(`已清零：下载 ${r.before.d} → ${r.after.d}，趋势清空 ${r.trend_rows_removed} 行`, 'success');
+        await loadAll();
+      } catch (e) {
+        U.toast(U.failMsg(e, '清零失败'), 'error');
+      } finally {
+        resetting.value = false;
+      }
+    }
+
     onMounted(async () => {
       try {
         const o = await U.api.get('/api/stats/overview');
@@ -132,7 +167,7 @@ window.PageDashboard = {
       }
     });
 
-    return { ov, trend, revenue, fmt, icon, trendChart, revenueChart, channelChart };
+    return { ov, trend, revenue, resetting, fmt, icon, trendChart, revenueChart, channelChart, resetStats };
   },
 };
 })();

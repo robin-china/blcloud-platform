@@ -341,3 +341,89 @@ table.table tbody tr:hover { background: var(--surface-2); }
 .qr-box { display: grid; place-items: center; padding: 20px; }
 .qr-box img { width: 200px; height: 200px; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
 .qr-placeholder { width: 200px; height: 200px; border: 1px dashed var(--border); border-radius: 10px; display: grid; place-items: center; color: var(--text-3); font-size: 13px; text-align: center; padding: 12px; }
+
+/* ================= 手机端适配 =================
+ * 用户端主要通过微信内置浏览器打开（375~430px），后台偶尔也会在手机上看。
+ * 这一段的规则只影响窄屏，桌面端视觉零变化。
+ */
+@media (max-width: 720px) {
+  /* --- 前台顶栏：品牌 + 用户区一行，导航单独一行横向滚动 --- */
+  .site-header .inner { padding: 10px 14px; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .site-header .brand { font-size: 15px; }
+  .site-header .brand img { width: 28px; height: 28px; }
+  .site-header .spacer { display: none; }
+  .site-nav {
+    order: 3; width: 100%; flex-wrap: nowrap; overflow-x: auto; gap: 2px;
+    padding: 6px 0 4px; border-top: 1px solid var(--border);
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .site-nav::-webkit-scrollbar { display: none; }
+  .site-nav a { flex: none; white-space: nowrap; padding: 8px 12px; font-size: 13px; }
+  .user-chip { margin-left: auto; font-size: 12.5px; }
+  .user-chip > span { max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .site-main { padding: 14px 12px 28px; }
+  .site-foot { padding: 20px 14px 30px; font-size: 12px; }
+
+  /* --- 卡片 / 表格：不再把列挤成一团，超出就横向滑 --- */
+  .card-head { padding: 12px 14px; flex-wrap: wrap; }
+  .card-body { padding: 14px; }
+  .card-body.tight { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .table-wrap { -webkit-overflow-scrolling: touch; }
+  table.table { font-size: 12.5px; }
+  table.table th, table.table td { padding: 9px 10px; }
+  table.table th { white-space: nowrap; }
+
+  /* --- 其它通用块 --- */
+  .hero { padding: 20px 16px; border-radius: 14px; margin-bottom: 16px; }
+  .hero h2 { font-size: 19px; }
+  .hero p { font-size: 13px; }
+  .login-card { width: min(420px, 94vw); padding: 26px 18px; }
+  .qr-box { padding: 12px; }
+  .qr-box img, .qr-placeholder { width: 180px; height: 180px; }
+  .btn-group .btn { flex: 1 1 auto; justify-content: center; }
+  .stat { padding: 14px; }
+  .stat .value { font-size: 22px; }
+  .stat .icon { width: 30px; height: 30px; right: 12px; top: 12px; }
+  .tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { flex: none; white-space: nowrap; }
+  .kv { grid-template-columns: 84px 1fr; }
+  .prod-grid { grid-template-columns: 1fr; }
+  .field-row { grid-template-columns: 1fr; }
+  .modal { width: 92vw !important; max-width: 92vw !important; }
+  /* 微信内置浏览器底部有工具条，给内容留出安全区，避免最后一行贴边 */
+  body { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* 触控设备：把可点区域抬高到 34px，手指不容易点错 */
+@media (hover: none) and (pointer: coarse) {
+  .btn { min-height: 34px; }
+  .site-nav a { display: flex; align-items: center; min-height: 34px; }
+  .switch .track { width: 44px; height: 24px; }
+  .switch .track::after { width: 20px; height: 20px; }
+  .switch input:checked + .track::after { transform: translateX(20px); }
+}
+
+/* 后台管理在手机上也别崩：侧栏改成顶部可横滑的导航条，主区占满宽度 */
+@media (max-width: 768px) {
+  .layout { flex-direction: column; }
+  .sidebar {
+    position: static; width: 100%; flex: none; height: auto;
+    flex-direction: row; align-items: center; overflow: hidden;
+  }
+  .sidebar-brand { padding: 10px 14px; border-bottom: none; flex: none; }
+  .sidebar-brand small { display: none; }
+  .sidebar-nav {
+    display: flex; flex: 1; overflow-x: auto; padding: 8px 10px; gap: 4px;
+    scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .sidebar-nav::-webkit-scrollbar { display: none; }
+  .nav-group { display: none; }
+  .nav-item { flex: none; white-space: nowrap; margin-bottom: 0; padding: 7px 12px; }
+  .sidebar-foot { display: none; }
+  .main { margin-left: 0; }
+  .topbar { height: 54px; padding: 0 14px; }
+  .topbar h1 { font-size: 15px; }
+  .topbar .sub { display: none; }
+  .content { padding: 14px 12px 32px; }
+}

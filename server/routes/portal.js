@@ -83,7 +83,15 @@ module.exports = async function portalRoutes(app) {
     if (getConfig('wxpay').enabled) channels.push('wxpay');
     if (getConfig('alipay').enabled) channels.push('alipay');
     if (!channels.length && String(getSetting('pay_simulate', '0')) === '1') channels.push('simulate');
-    return { settings: out, pay_channels: channels };
+    // 微信内置浏览器是否可以走网页授权免扫码登录（前端据此决定要不要自动跳）
+    const wx = getConfig('wechat');
+    const wechatOauth = !!(wx.enabled && wx.appid && wx.appsecret);
+    return {
+      settings: out,
+      pay_channels: channels,
+      wechat_oauth: wechatOauth,
+      wechat_oauth_scope: wechatOauth ? (wx.oauth_scope || 'snsapi_base') : '',
+    };
   });
 
   /**

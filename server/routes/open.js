@@ -14,6 +14,7 @@ const offlineKey = require('../lib/offlinekey');
 const bindSvc = require('../lib/licensebind');
 const plans = require('../lib/plans');
 const profileLib = require('../lib/profile');
+const handoff = require('../lib/handoff');
 const avatars = require('../lib/avatars');
 const release = require('../lib/release');
 
@@ -385,8 +386,6 @@ module.exports = async function openRoutes(app) {
    *
    * `to` 只接受白名单里的页面名，避免被当成任意跳转（开放重定向）。
    */
-  const HANDOFF_PAGES = new Set(['account', 'licenses', 'devices', 'orders', 'space', 'earnings']);
-
   app.post('/api/open/v1/auth/handoff', async (req, reply) => {
     const s = await requireClient(req, reply);
     if (!s) return;
@@ -396,8 +395,7 @@ module.exports = async function openRoutes(app) {
       return reply.code(403).send({ error: '账号已被停用，请联系客服', code: 'USER_DISABLED' });
     }
 
-    const rawTo = String((req.body || {}).to || 'account').trim();
-    const to = HANDOFF_PAGES.has(rawTo) ? rawTo : 'account';
+    const to = handoff.page((req.body || {}).to, 'account');
 
     // to=space 时可带 app=<app_key>：客户端「升级套餐」按钮直接落到用户自己的那张产品卡片，
     // 而不是扔进「我的空间」让用户自己找。app_key 必须真实存在，防任意参数注入 URL。
@@ -410,13 +408,10 @@ module.exports = async function openRoutes(app) {
       }
     }
 
-    // 每次只保留该用户最近一张有效票：旧票在被点开前就作废，
-    // 免得用户在软件里点了三次「用户中心」，三个链接都能进。
-    db.prepare("DELETE FROM handoff_tickets WHERE user_id = ? AND used = 0").run(user.id);
-    const code = 'ho_' + crypto.randomBytes(24).toString('hex');
+    // 票据签发抽到 lib/handoff.js：微信网页授权回调也要用同一套规则
+    // （只能换一次、5 分钟过期、同用户仅保留最近一张）
     const ttlMs = 5 * 60 * 1000;
-    db.prepare('INSERT INTO handoff_tickets (code, user_id, app_id, machine_id, used, expires_at, created_at) VALUES (?,?,?,?,0,?,?)')
-      .run(code, user.id, s.app_id || null, s.machine_id || '', new Date(Date.now() + ttlMs).toISOString(), now());
+    const code = handoff.issue(user.id, { appId: s.app_id || null, machineId: s.machine_id || '', ttlMs });
 
     track(user.id, s.app_id, 'auth.handoff');
     return {

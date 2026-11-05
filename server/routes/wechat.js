@@ -1,12 +1,14 @@
 const db = require('../db');
+const crypto = require('crypto');
 const { now, genScene } = require('../lib/util');
-const { getConfig, devMode } = require('../lib/config');
+const { getConfig, devMode, publicUrl } = require('../lib/config');
 const { signUser } = require('../lib/auth');
 const wechat = require('../services/wechat');
 const wxdiag = require('../lib/wxdiag');
 const tb = require('../services/tb');
 const plans = require('../lib/plans');
 const profileLib = require('../lib/profile');
+const handoff = require('../lib/handoff');
 
 async function ensureUser(openid, profile = {}) {
   let user = db.prepare('SELECT * FROM users WHERE openid = ?').get(openid);
@@ -125,6 +127,120 @@ module.exports = async function wechatRoutes(app) {
       return { status: 'confirmed', token: signUser(user), user: profileLib.publicUser(user) };
     }
     return { status: s.status };
+  });
+
+  /* ---------------- 微信内置浏览器：网页授权免扫码登录 ----------------
+   * 扫码在微信里体验很别扭（人已经在微信里，还要再扫一次）。
+   * 这里走公众号网页授权：/oauth/start 跳微信授权页 → 微信回 /oauth/callback
+   * → 换 openid → 复用 ensureUser → 发一张一次性票据，302 回 /user/?t=…
+   * 前端 app.js 的 claimHandoff 会自动把票据换成网页登录态。
+   *
+   * state 用 AppSecret 做 HMAC 自签名，不落库：既能防伪造回调，
+   * 又能顺带带上「登录后去哪一页」和代理渠道码（微信会原样回传 state）。
+   */
+  function signState(payload, secret) {
+    const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const mac = crypto.createHmac('sha256', secret).update(body).digest('base64url').slice(0, 24);
+    return `${body}.${mac}`;
+  }
+
+  function verifyState(state, secret) {
+    const [body, mac] = String(state || '').split('.');
+    if (!body || !mac) return null;
+    const want = crypto.createHmac('sha256', secret).update(body).digest('base64url').slice(0, 24);
+    // 长度不等时 timingSafeEqual 会抛错，先比长度
+    if (mac.length !== want.length) return null;
+    if (!crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return null;
+    try {
+      const o = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+      // 10 分钟内有效：用户授权页停留太久就重来，避免陈旧 state 被重放
+      if (!o || !o.ts || Date.now() - Number(o.ts) > 10 * 60 * 1000) return null;
+      return o;
+    } catch { return null; }
+  }
+
+  function oauthReady() {
+    const cfg = getConfig('wechat');
+    return !!(cfg.enabled && cfg.appid && cfg.appsecret);
+  }
+
+  app.get('/api/wechat/oauth/start', async (req, reply) => {
+    const cfg = getConfig('wechat');
+    const to = handoff.page((req.query || {}).to, 'space');
+    // 未配置服务号：回登录页，由页面自己走二维码/演示模式
+    if (!oauthReady()) {
+      return reply.redirect(publicUrl(req, '/user/#/login?wxerr=off'));
+    }
+    const agent = String((req.query || {}).agent || '').trim().toUpperCase().slice(0, 24);
+    // redirect_uri 的域名必须与公众号后台「网页授权域名」一致；
+    // 子路径部署也要带 /platform 前缀，否则回调 404
+    const redirectUri = publicUrl(req, '/api/wechat/oauth/callback');
+    const state = signState({ to, agent, ts: Date.now() }, cfg.appsecret);
+    const url = wechat.oauthAuthorizeUrl(redirectUri, state, cfg.oauth_scope || 'snsapi_base');
+    wxdiag.push('info', 'oauth', `发起微信网页授权（${cfg.oauth_scope || 'snsapi_base'}）→ ${to}`);
+    reply.header('Cache-Control', 'no-store');
+    return reply.redirect(url);
+  });
+
+  app.get('/api/wechat/oauth/callback', async (req, reply) => {
+    const cfg = getConfig('wechat');
+    // 失败一律回登录页并带原因，不给用户看裸 JSON（微信内置浏览器里没法处理）
+    const back = (reason) => {
+      reply.header('Cache-Control', 'no-store');
+      return reply.redirect(publicUrl(req, `/user/#/login?wxerr=${encodeURIComponent(reason)}`));
+    };
+    if (!oauthReady()) return back('off');
+
+    const st = verifyState((req.query || {}).state, cfg.appsecret);
+    if (!st) {
+      wxdiag.push('warn', 'oauth', '网页授权回调 state 校验失败或已过期（可能停留太久或链接被伪造）');
+      return back('state');
+    }
+    const code = String((req.query || {}).code || '');
+    if (!code) {
+      wxdiag.push('warn', 'oauth', `网页授权未返回 code（用户可能取消授权），微信提示：${(req.query || {}).errmsg || '-'}`);
+      return back('cancel');
+    }
+
+    try {
+      const tk = await wechat.oauthAccessToken(code);
+      // 昵称头像：已关注用户用普通接口就能拿到（静默授权也可以）；
+      // 没关注且 scope 是 userinfo 时再调一次网页授权接口
+      let profile = { nickname: '', avatar: '', unionid: tk.unionid };
+      try {
+        const info = await wechat.getUserInfo(tk.openid);
+        if (info && info.nickname) {
+          profile = { nickname: info.nickname, avatar: info.headimgurl, unionid: info.unionid || tk.unionid };
+        }
+      } catch { /* 未关注/接口受限都不影响登录，昵称回退系统默认 */ }
+      if (!profile.nickname && String(tk.scope || '').includes('snsapi_userinfo') && tk.access_token) {
+        try {
+          const u = await wechat.oauthUserInfo(tk.access_token, tk.openid);
+          profile = { nickname: u.nickname, avatar: u.headimgurl, unionid: u.unionid || tk.unionid };
+        } catch { /* 同上 */ }
+      }
+
+      const { user, isNew } = await ensureUser(tk.openid, profile);
+      if (user.status && user.status !== 'active') {
+        wxdiag.push('warn', 'oauth', `账号已停用，拒绝网页授权登录：user=${user.id}`);
+        return back('disabled');
+      }
+      // 与扫码登录一致的渠道归属：只对新建用户生效，老用户已有归属不抢
+      const agentId = resolveAgentId(st.agent);
+      if (isNew && agentId && !user.agent_id) {
+        db.prepare('UPDATE users SET agent_id = ? WHERE id = ?').run(agentId, user.id);
+        wxdiag.push('ok', 'oauth', `新用户已归属代理商 #${agentId}`);
+      }
+
+      const ticket = handoff.issue(user.id, { ttlMs: 2 * 60 * 1000 });
+      wxdiag.push('ok', 'oauth', `微信内免扫码登录成功：${user.nickname || tk.openid}（id=${user.id}）`);
+      reply.header('Cache-Control', 'no-store');
+      return reply.redirect(publicUrl(req, `/user/?t=${ticket}#/${st.to}`));
+    } catch (e) {
+      wxdiag.push('error', 'oauth', `网页授权失败：${e.message}`);
+      console.error('[wechat] 网页授权失败:', e.message);
+      return back('fail');
+    }
   });
 
   // 开发/演示：模拟扫码。接入真实服务号后强制关闭，避免任意 openid 登录

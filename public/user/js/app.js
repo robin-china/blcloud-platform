@@ -22,6 +22,8 @@ const userApp = createApp({
       route: 'shop',
       param: '',
       settings: {},
+      // 服务端是否具备微信网页授权能力（前端据此决定微信内要不要自动登录）
+      site: { wechat_oauth: false, wechat_oauth_scope: '' },
       menu: USER_MENU,
       cart: [],
     });
@@ -47,6 +49,10 @@ const userApp = createApp({
       try {
         const res = await U.api.get('/api/portal/site');
         state.settings = res.settings || {};
+        state.site = {
+          wechat_oauth: !!res.wechat_oauth,
+          wechat_oauth_scope: res.wechat_oauth_scope || '',
+        };
         U.applySiteSettings(state.settings);
       } catch (e) { /* ignore */ }
     }
@@ -123,6 +129,33 @@ const userApp = createApp({
       }
     }
 
+    /**
+     * 微信内置浏览器里不需要扫码：用户已经登录着微信，再让他扫一次很别扭。
+     * 这里直接跳公众号网页授权（snsapi_base 静默），回调服务端发一张一次性票据，
+     * 页面用 claimHandoff 换登录态。
+     *
+     * 用 sessionStorage 记「本次会话试过」：用户取消授权、state 过期、公众号没配
+     * 网页授权域名时，不能让页面陷入无限跳转。
+     */
+    function isWechatBrowser() {
+      return /MicroMessenger/i.test(navigator.userAgent || '');
+    }
+
+    function tryWechatOAuth() {
+      if (state.token) return false;
+      if (!isWechatBrowser()) return false;
+      if (!state.site || !state.site.wechat_oauth) return false;
+      if (sessionStorage.getItem('wx_oauth_tried') === '1') return false;
+      sessionStorage.setItem('wx_oauth_tried', '1');
+      // 落到用户当前想看的页面，默认「我的空间」
+      const pages = ['space', 'licenses', 'devices', 'orders', 'account', 'shop', 'earnings', 'blcloud'];
+      const to = pages.includes(state.route) ? state.route : 'space';
+      const agent = localStorage.getItem('agent_ref') || '';
+      const qs = `?to=${encodeURIComponent(to)}&agent=${encodeURIComponent(agent)}`;
+      location.replace(`${U.basePath}/api/wechat/oauth/start${qs}`);
+      return true;
+    }
+
     async function onLogged() {
       state.token = localStorage.getItem('user_token') || '';
       await loadMe();
@@ -131,6 +164,7 @@ const userApp = createApp({
 
     Vue.provide('state', state);
     Vue.provide('settings', computed(() => state.settings));
+    Vue.provide('site', computed(() => state.site));
     Vue.provide('user', computed(() => state.user));
 
     onMounted(async () => {
@@ -141,9 +175,11 @@ const userApp = createApp({
       await claimHandoff();
       await loadSite();
       await loadMe();
+      // 票据/本地登录态都没有、又在微信里打开 → 直接走免扫码登录
+      tryWechatOAuth();
     });
 
-    return { state, go, logout, onLogged, loadMe, userAvatar };
+    return { state, go, logout, onLogged, loadMe, userAvatar, isWechatBrowser };
   },
 });
 

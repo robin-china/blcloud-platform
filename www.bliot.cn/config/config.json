@@ -1,0 +1,163 @@
+{
+  "company": {
+    "name": "天津佰莱科技有限公司",
+    "brand": "佰 莱 物 联",
+    "address": "天津市武清经济技术开发区金瑞园1栋",
+    "phone": "022-59619762",
+    "servicePhone": "189-020-54880",
+    "email": "info@bliot.cn",
+    "workHours": "周一至周五 9:00-18:00",
+    "copyright": "天津佰莱科技有限公司 版权所有",
+    "beian": "津ICP备2020008639号-3"
+  },
+  "products": {
+    "categories": [
+      {
+        "id": "all",
+        "name": "全部产品"
+      },
+      {
+        "id": "industrial",
+        "name": "工业物联网"
+      },
+      {
+        "id": "elevator",
+        "name": "电梯物联网"
+      },
+      {
+        "id": "sensor",
+        "name": "传感器"
+      },
+      {
+        "id": "software",
+        "name": "软件平台"
+      }
+    ],
+    "items": [
+      {
+        "id": 1,
+        "name": "BLIOT-GW2000工业物联网网关",
+        "category": "industrial",
+        "price": "¥ 3,850.00",
+        "description": "高性能工业物联网网关，支持多种工业协议转换，具备边缘计算能力和安全通信功能，适用于智能制造、能源管理等场景。",
+        "features": [
+          "支持5G/4G/WiFi/Ethernet多种通信方式",
+          "内置边缘计算引擎，支持数据预处理",
+          "工业级设计，宽温工作范围(-40℃~85℃)",
+          "支持远程配置和固件升级"
+        ],
+        "image": "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80",
+        "specs": {
+          "型号": "BLIOT-GW2000",
+          "处理器": "ARM Cortex-A53 四核 1.5GHz",
+          "内存": "2GB DDR4",
+          "存储": "16GB eMMC",
+          "通信接口": "5G/4G, WiFi, Ethernet, RS485, RS232, CAN",
+          "支持协议": "Modbus, Profibus, CANopen, MQTT, HTTP/HTTPS",
+          "工作温度": "-40℃ ~ 85℃",
+          "防护等级": "IP40",
+          "电源输入": "DC 12-36V",
+          "尺寸": "200mm × 150mm × 50mm"
+        }
+      },
+      {
+        "id": 2,
+        "name": "BLIOT-EM100电梯物联网监测终端",
+        "category": "elevator",
+        "price": "¥ 2,980.00",
+        "description": "专为电梯设计的物联网监测终端，实时采集电梯运行数据，支持远程故障诊断和预警，符合电梯安全监管要求。",
+        "features": [
+          "实时监测电梯运行状态和故障信息",
+          "支持电梯困人自动报警和远程安抚",
+          "内置备用电源，断电后可工作8小时",
+          "符合GB/T 24476-2017电梯物联网标准"
+        ],
+        "image": "images/设备s.png"
+      },
+      {
+        "id": 3,
+        "name": "BLIOT-TH10智能温湿度传感器",
+        "category": "sensor",
+        "price": "¥ 450.00",
+        "description": "高精度温湿度传感器，支持无线传输和低功耗设计，适用于工业环境监测、仓储管理、智能楼宇等场景。",
+        "features": [
+          "温度测量精度±0.3℃，湿度±2%RH",
+          "支持LoRa/NB-IoT/WiFi无线传输",
+          "低功耗设计，电池续航可达3年",
+          "IP67防护等级，适用于恶劣环境"
+        ],
+        "image": "https://images.unsplash.com/photo-1581094794329-c8112a89af12?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80"
+      },
+      {
+        "id": 4,
+        "name": "BLIOT-VM50振动监测传感器",
+        "category": "industrial",
+        "price": "¥ 2,150.00",
+        "description": "工业设备振动监测传感器，用于旋转机械的状态监测和故障预警，可早期发现设备异常，避免非计划停机。",
+        "features": [
+          "三轴振动测量，频率范围5Hz-10kHz",
+          "内置温度传感器，同步监测设备温度",
+          "支持边缘计算，可本地分析振动特征",
+          "工业级设计，抗冲击抗振动"
+        ],
+        "image": "https://images.unsplash.com/photo-1620712943543-bcc4688e7485?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80"
+      },
+      {
+        "id": 5,
+        "name": "BLIOT-EC200电梯安全监测摄像头",
+        "category": "elevator",
+        "price": "¥ 1,850.00",
+        "description": "电梯专用智能摄像头，具备AI识别功能，可监测电梯轿厢内异常行为、乘客人数统计、电动自行车识别等。",
+        "features": [
+          "200万像素高清摄像头，支持夜视功能",
+          "内置AI芯片，支持多种行为识别算法",
+          "支持人数统计和拥挤度分析",
+          "自动识别电动自行车进入电梯并告警"
+        ],
+        "image": "https://images.unsplash.com/photo-1542751110-97427bbecf20?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80"
+      },
+      {
+        "id": 6,
+        "name": "BLIOT-IoT Platform物联网管理平台",
+        "category": "software",
+        "price": "按需定价",
+        "description": "企业级物联网管理平台，支持设备管理、数据可视化、报警管理、远程控制等功能，提供API接口便于系统集成。",
+        "features": [
+          "支持百万级设备接入和管理",
+          "提供丰富的数据可视化组件",
+          "灵活的报警规则和通知方式",
+          "支持私有化部署和云端部署"
+        ],
+        "image": "https://images.unsplash.com/photo-1551288049-bebda4e38f71?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80"
+      },
+      {
+        "id": 7,
+        "name": "BLIOT-PS20压力传感器",
+        "category": "sensor",
+        "price": "¥ 680.00",
+        "description": "工业级压力传感器，适用于液体和气体压力测量，具有高精度、高稳定性和抗干扰能力强等特点。",
+        "features": [
+          "测量范围0-10MPa，精度±0.1%FS",
+          "316L不锈钢材质，耐腐蚀",
+          "支持4-20mA/0-5V/RS485输出",
+          "宽温补偿，工作温度-40℃~125℃"
+        ],
+        "image": "https://images.unsplash.com/photo-1586769852044-692a501d9d3d?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80"
+      },
+      {
+        "id": 8,
+        "name": "BLIOT-ECG500边缘计算网关",
+        "category": "industrial",
+        "price": "¥ 5,200.00",
+        "description": "高性能边缘计算网关，具备强大的本地数据处理和分析能力，支持AI推理和机器学习算法部署。",
+        "features": [
+          "搭载高性能ARM处理器，算力达4TOPS",
+          "支持TensorFlow/PyTorch模型部署",
+          "内置8GB内存，64GB存储",
+          "支持多种工业协议和通信接口"
+        ],
+        "image": "https://images.unsplash.com/photo-1563013544-824ae1b704d3?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80"
+      }
+    ]
+  }
+}

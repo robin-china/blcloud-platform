@@ -1,6 +1,8 @@
 const db = require('../db');
 const { requireAdmin } = require('../lib/auth');
 const { today } = require('../lib/util');
+const { logAdmin } = require('../lib/adminlog');
+const statsreset = require('../lib/statsreset');
 
 module.exports = async function statsRoutes(app) {
   app.get('/api/stats/overview', async (req, reply) => {
@@ -57,6 +59,20 @@ module.exports = async function statsRoutes(app) {
     const byEndpoint = db.prepare(`SELECT endpoint, SUM(calls) AS calls FROM api_usage GROUP BY endpoint ORDER BY calls DESC LIMIT 10`).all();
     const keys = db.prepare(`SELECT k.*, u.nickname FROM api_keys k LEFT JOIN users u ON u.id=k.user_id ORDER BY k.id DESC LIMIT 50`).all();
     return { byDay: byDay.reverse(), byUser, byEndpoint, keys };
+  });
+
+  /**
+   * 清零演示统计。
+   * 下载/安装/活跃归 0；趋势曲线清空；销量默认按真实订单重算。
+   * body: { real_sales: false } 时销量也一并归零（彻底要一张白纸的场景）。
+   */
+  app.post('/api/stats/reset', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const realSales = (req.body || {}).real_sales !== false;
+    const r = statsreset.reset({ realSales, dropTrend: true });
+    logAdmin(req, '清零演示统计', `下载 ${r.before.d} → ${r.after.d}，安装 ${r.before.i} → ${r.after.i}，`
+      + `活跃 ${r.before.a} → ${r.after.a}，销量 ${r.before.s} → ${r.after.s}（重算 ${r.sales_rebuilt} 个商品，清趋势 ${r.trend_rows_removed} 行）`);
+    return { ok: true, ...r };
   });
 
   app.post('/api/stats/track', async (req, reply) => {

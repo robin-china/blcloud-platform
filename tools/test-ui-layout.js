@@ -80,5 +80,16 @@ check('ui.css 有 label.switch 显式声明（压过 .field label 的 display:bl
 check('.switch .track 有 display:inline-block 兜底（inline 上宽高失效）',
   /\.switch \.track\s*\{[^}]*display:\s*inline-block/.test(css));
 
+console.log('\n手机端适配：微信内打开（375px 上下）不能把内容挤成一团');
+check('有 720px 手机断点', /@media \(max-width:\s*720px\)/.test(css));
+const mobile = css.slice(css.indexOf('@media (max-width: 720px)'));
+check('前台导航在手机上横向滚动而不是换行堆叠',
+  /\.site-nav\s*\{[^}]*overflow-x:\s*auto/.test(mobile));
+check('表格容器在窄屏横向滚动（.card-body.tight）',
+  /\.card-body\.tight\s*\{[^}]*overflow-x:\s*auto/.test(mobile));
+check('微信底部工具条安全区（env(safe-area-inset-bottom)）', /safe-area-inset-bottom/.test(mobile));
+check('后台侧栏在 768px 以下变成顶部横条',
+  /@media \(max-width:\s*768px\)[\s\S]*\.layout\s*\{[^}]*flex-direction:\s*column/.test(css));
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
 if (fail > 0) process.exitCode = 1;

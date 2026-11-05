@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+  <title>EL-DAQ8-4G12-GEN · 电梯运行状态监测终端</title>
+  <!-- Font Awesome 6 (免费) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #0b1424;
+      font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: #e8f0fe;
+      line-height: 1.5;
+      padding: 2rem 1rem;
+    }
+
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      background: radial-gradient(circle at 20% 30%, #142b44, #0a1628);
+      border-radius: 2.5rem;
+      box-shadow: 0 30px 60px -15px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(0, 180, 255, 0.15);
+      overflow: hidden;
+      padding: 2.8rem 2.5rem;
+      backdrop-filter: blur(2px);
+      border: 1px solid rgba(0, 180, 255, 0.2);
+    }
+
+    /* 主图区域 — 科技感排版 */
+    .hero-section {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 2rem;
+      margin-bottom: 2.8rem;
+      background: rgba(0, 40, 70, 0.25);
+      border-radius: 2rem;
+      padding: 1.5rem 2rem;
+      backdrop-filter: blur(4px);
+      border: 1px solid rgba(0, 200, 255, 0.2);
+      box-shadow: 0 10px 30px -10px rgba(0, 150, 255, 0.2);
+    }
+
+    .hero-image-placeholder {
+      flex: 1.2 1 280px;
+      min-height: 200px;
+      background: linear-gradient(145deg, #102a42, #05182b);
+      border-radius: 1.8rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(0, 200, 255, 0.4);
+      box-shadow: inset 0 0 40px rgba(0, 120, 255, 0.15), 0 10px 30px -8px #00000066;
+      padding: 1.8rem 1rem;
+      transition: all 0.3s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-image-placeholder::after {
+      content: '';
+      position: absolute;
+      top: -30%;
+      left: -20%;
+      width: 80%;
+      height: 80%;
+      background: radial-gradient(circle, rgba(0, 180, 255, 0.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-image-placeholder i {
+      font-size: 5.5rem;
+      background: linear-gradient(135deg, #5bc0ff, #2b8cff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      filter: drop-shadow(0 0 18px #0088ff66);
+      margin-bottom: 0.4rem;
+      z-index: 2;
+    }
+
+    .hero-image-placeholder .placeholder-label {
+      font-weight: 600;
+      font-size: 1.6rem;
+      letter-spacing: 2px;
+      background: linear-gradient(135deg, #b0e0ff, #6cb4ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-shadow: 0 0 20px #0088ff33;
+      z-index: 2;
+    }
+
+    .hero-image-placeholder .sub-label {
+      margin-top: 0.6rem;
+      font-size: 0.9rem;
+      color: #8bb9e6;
+      background: rgba(0, 30, 60, 0.5);
+      padding: 0.2rem 1.8rem;
+      border-radius: 40px;
+      backdrop-filter: blur(4px);
+      border: 1px solid rgba(0, 180, 255, 0.2);
+      z-index: 2;
+      letter-spacing: 0.3px;
+    }
+
+    .hero-tagline {
+      flex: 1 1 240px;
+      z-index: 2;
+    }
+
+    .hero-tagline .badge-main {
+      display: inline-block;
+      background: linear-gradient(135deg, #0077ff, #00b0ff);
+      padding: 0.2rem 1.4rem;
+      border-radius: 40px;
+      font-weight: 600;
+      font-size: 0.8rem;
+      letter-spacing: 1.5px;
+      color: white;
+      box-shadow: 0 0 20px #0088ff66;
+      margin-bottom: 0.8rem;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .hero-tagline h1 {
+      font-size: 2.6rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #fff, #aad0ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-shadow: 0 0 30px #0066ff33;
+      line-height: 1.2;
+    }
+
+    .hero-tagline .sub-desc {
+      margin-top: 0.5rem;
+      color: #b0d4ff;
+      font-size: 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.8rem 1.8rem;
+      border-top: 1px solid rgba(0, 180, 255, 0.2);
+      padding-top: 0.8rem;
+    }
+
+    .hero-tagline .sub-desc i {
+      color: #3fa2ff;
+      margin-right: 0.3rem;
+    }
+
+    /* 卡片通用 — 科技靓丽 */
+    .section-title {
+      font-size: 1.7rem;
+      font-weight: 650;
+      margin: 2.5rem 0 1.2rem 0;
+      letter-spacing: -0.2px;
+      display: flex;
+      align-items: center;
+      gap: 0.8rem;
+      color: #d6ecff;
+      text-shadow: 0 0 15px #0066ff22;
+      border-bottom: 2px solid rgba(0, 180, 255, 0.25);
+      padding-bottom: 0.5rem;
+    }
+
+    .section-title i {
+      color: #3fa2ff;
+      font-size: 1.8rem;
+      filter: drop-shadow(0 0 8px #0088ff55);
+    }
+
+    .grid-2col {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+      gap: 1.6rem;
+    }
+
+    .card {
+      background: rgba(12, 34, 60, 0.45);
+      backdrop-filter: blur(8px);
+      border-radius: 1.6rem;
+      padding: 1.6rem 1.5rem;
+      border: 1px solid rgba(0, 180, 255, 0.15);
+      box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+      transition: all 0.25s;
+    }
+
+    .card:hover {
+      border-color: rgba(0, 180, 255, 0.5);
+      background: rgba(16, 46, 78, 0.55);
+      box-shadow: 0 12px 32px -10px #0033aa33, 0 0 0 1px rgba(0, 150, 255, 0.2);
+      transform: translateY(-3px);
+    }
+
+    .card h3 {
+      font-weight: 600;
+      font-size: 1.2rem;
+      margin-bottom: 0.6rem;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      color: #c6e2ff;
+    }
+
+    .card h3 i {
+      color: #3fa2ff;
+      font-size: 1.3rem;
+      filter: drop-shadow(0 0 6px #0088ff44);
+      width: 1.8rem;
+    }
+
+    .card ul, .card p {
+      font-size: 0.95rem;
+      color: #cfdcee;
+      margin-top: 0.2rem;
+    }
+
+    .card ul {
+      list-style: none;
+      padding-left: 0.1rem;
+    }
+
+    .card ul li {
+      padding: 0.25rem 0 0.25rem 1.6rem;
+      position: relative;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+    }
+
+    .card ul li::before {
+      content: "▹";
+      position: absolute;
+      left: 0;
+      color: #4daeff;
+      font-weight: bold;
+      text-shadow: 0 0 10px #0088ff88;
+    }
+
+    .spec-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.8fr;
+      gap: 0.3rem 1rem;
+      font-size: 0.95rem;
+      padding: 0.2rem 0;
+      color: #cfdcee;
+    }
+
+    .spec-grid .label {
+      font-weight: 600;
+      color: #b0d0f0;
+    }
+
+    .chip {
+      display: inline-block;
+      background: rgba(0, 120, 255, 0.15);
+      padding: 0.15rem 1rem;
+      border-radius: 30px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: #8fcbff;
+      border: 1px solid rgba(0, 180, 255, 0.2);
+      letter-spacing: 0.2px;
+      margin-right: 0.2rem;
+    }
+
+    .badge-icon {
+      background: linear-gradient(135deg, #0077ff, #0099ff);
+      color: white;
+      border-radius: 30px;
+      padding: 0.1rem 0.9rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      box-shadow: 0 0 20px #0077ff55;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 1.5rem;
+      border: 1px solid rgba(0, 180, 255, 0.15);
+      background: rgba(6, 24, 44, 0.4);
+      backdrop-filter: blur(4px);
+      margin: 1rem 0;
+    }
+
+    .mini-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }
+
+    .mini-table td {
+      padding: 0.7rem 1.2rem;
+      border-bottom: 1px solid rgba(0, 180, 255, 0.08);
+      color: #d4e3f5;
+    }
+
+    .mini-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .mini-table .label {
+      font-weight: 600;
+      width: 30%;
+      color: #b0d0f0;
+    }
+
+    .feature-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem 0.8rem;
+      margin-top: 0.3rem;
+    }
+
+    .feature-list span {
+      background: rgba(0, 120, 255, 0.08);
+      padding: 0.1rem 0.9rem;
+      border-radius: 30px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: #9ac8ff;
+      border: 1px solid rgba(0, 180, 255, 0.1);
+    }
+
+    hr {
+      border: none;
+      border-top: 1px solid rgba(0, 180, 255, 0.2);
+      margin: 2rem 0 1rem 0;
+    }
+
+    .footer-note {
+      margin-top: 2.8rem;
+      background: rgba(0, 40, 80, 0.25);
+      backdrop-filter: blur(6px);
+      border-radius: 2.5rem;
+      padding: 1.8rem 2.2rem;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      border: 1px solid rgba(0, 180, 255, 0.1);
+    }
+
+    .footer-note .highlight {
+      font-weight: 600;
+      background: linear-gradient(135deg, #b0e0ff, #6cb4ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    @media (max-width: 700px) {
+      .container { padding: 1.5rem 1rem; }
+      .hero-tagline h1 { font-size: 2rem; }
+      .hero-section { padding: 1rem; }
+      .hero-image-placeholder { min-height: 150px; }
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <!-- 主图区域：美观排版，科技感 -->
+  <div class="hero-section">
+<div class="hero-image-placeholder">
+    <img src="daq8.png" alt="EL-DAQ8-4G12-GEN 产品图" style="width: 100%; height: auto; display: block; border-radius: 8px;">
+</div>
+    <div class="hero-tagline">
+      <div class="badge-main"><i class="fas fa-bolt"></i> 新一代智能监测</div>
+      <h1>电梯运行状态<br>监测终端</h1>
+      <div class="sub-desc">
+        <span><i class="fas fa-satellite-dish"></i> 4G Cat.1 全域通</span>
+        <span><i class="fas fa-cubes"></i> 多源传感器融合</span>
+        <span><i class="fas fa-cloud-upload-alt"></i> 远程运维 · 预警</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 硬件架构 (去除具体型号，高端词汇) -->
+  <div class="section-title"><i class="fas fa-server"></i> 硬件架构 · 高端集成</div>
+  <div class="table-wrap">
+    <table class="mini-table">
+      <tr><td class="label">主控平台</td><td>高性能工业级处理器 (LuatOS 嵌入式实时系统)</td></tr>
+      <tr><td class="label">通信模组</td><td>4G LTE Cat.1，全网通，低功耗广域覆盖</td></tr>
+      <tr><td class="label">加速度传感</td><td>三轴 MEMS 高精度加速度计，多量程可配置，I2C 高速接口</td></tr>
+      <tr><td class="label">气压传感</td><td>超高分辨率气压计，I2C 接口，用于精密高度/楼层解算</td></tr>
+      <tr><td class="label">数字 I/O 扩展</td><td>双路 16 位 GPIO 扩展，I2C 总线，支持 8 路传感器输入 + 8 路通道指示 + 3 路系统状态</td></tr>
+      <tr><td class="label">智能诊断</td><td>每路传感器独立断连检测，断连时通道 LED 频闪、故障灯慢闪</td></tr>
+      <tr><td class="label">存储系统</td><td>嵌入式文件系统，配置/故障/事件/运行/统计档案持久化</td></tr>
+      <tr><td class="label">供电</td><td>宽压 DC 12–24V，工业级防护</td></tr>
+    </table>
+  </div>
+
+  <!-- 核心功能 -->
+  <div class="section-title"><i class="fas fa-bolt"></i> 核心功能 · 智能感知</div>
+  <div class="grid-2col">
+
+    <div class="card">
+      <h3><i class="fas fa-sync-alt"></i> 全息运行状态</h3>
+      <ul>
+        <li>四级状态机：停止 → 启动 → 运行 → 停止</li>
+        <li>启停双阈值校验 (加速度+速度+时间窗口)</li>
+        <li>气压高度 + 自定义楼层表 (支持不等层高)</li>
+        <li>基准楼层偏移 (含地下楼层) · 气压漂移补偿</li>
+        <li>双通道门磁监测，累计开关门次数</li>
+        <li>安全回路 · 平层 · 检修模式 · 开锁区域外停梯检测</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3><i class="fas fa-person-circle-exclamation"></i> 智能困人检测</h3>
+      <ul>
+        <li>复合逻辑：停止+门关超时 + 楼层稳定</li>
+        <li>连续多次采样确认，去抖防误报</li>
+        <li>解除条件：电梯再次运行或门打开</li>
+        <li><span class="chip">即时上报</span> 困人事件 &amp; 累计次数</li>
+      </ul>
+      <div style="margin-top: 0.6rem;"><span class="badge-icon"><i class="far fa-clock"></i> 无需额外传感器</span></div>
+    </div>
+
+    <div class="card">
+      <h3><i class="fas fa-wave-square"></i> 振动异常预警</h3>
+      <ul>
+        <li>实时三轴加速度振动幅值监测</li>
+        <li>可配置报警阈值 (默认 0.4g)</li>
+        <li>超阈值自动触发振动报警，云平台推送</li>
+        <li>自动恢复：振动正常持续30秒后解除</li>
+        <li>累计振动事件，辅助预测性维护</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3><i class="fas fa-microchip"></i> 全自动校准</h3>
+      <ul>
+        <li>上电全自动传感器校准，无需人工</li>
+        <li>加速度计：自动识别重力轴，零偏补偿</li>
+        <li>气压计：多组采样基准零点偏移</li>
+        <li>楼层高度学习：运行中自动建立高度表</li>
+      </ul>
+      <div style="margin-top: 0.4rem;"><span class="chip">零配置 · 自适应</span></div>
+    </div>
+
+    <div class="card">
+      <h3><i class="fas fa-database"></i> 多级数据记录</h3>
+      <ul>
+        <li><strong>故障记录</strong> 循环存储 · 即时上报</li>
+        <li><strong>事件记录</strong> 循环存储 · 即时上报</li>
+        <li><strong>运行记录</strong> 循环存储 · 定时上报</li>
+        <li><strong>统计档案</strong> 持久化 (里程/时长/开关门/振动/困人)</li>
+        <li><strong>安装档案</strong> 注册代码/单位/GPS/楼层配置</li>
+        <li>延时批量写入，延长存储寿命</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3><i class="fas fa-cloud-upload-alt"></i> 远程管理</h3>
+      <ul>
+        <li>远程配置下发 (楼层表/阈值/通道/间隔)</li>
+        <li>远程查询故障/事件/运行/统计/档案</li>
+        <li>FOTA 固件远程升级 (4G下载，自动检查)</li>
+        <li>电子围栏：地理围栏防异地安装</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3><i class="fas fa-wifi"></i> 通信与流量</h3>
+      <ul>
+        <li>MQTT (QoS 1) 上行协议</li>
+        <li>遥测上报 30s (加速度/高度/楼层/速度/振动)</li>
+        <li>心跳上报 120s (状态/统计数据)</li>
+        <li>故障/事件即时上报</li>
+        <li>每日流量上限，超限暂停，0点重置</li>
+        <li>状态位掩码压缩，高效传输</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3><i class="fas fa-screwdriver-wrench"></i> 本地调试</h3>
+      <ul>
+        <li>8路通道LED + 3路系统状态灯 (NET/ERROR/485)</li>
+        <li>传感器断连时通道LED频闪，故障灯慢闪</li>
+        <li>串口配置工具，本地参数配置</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- 平台能力 -->
+  <div class="section-title"><i class="fas fa-cloud"></i> 物联数据平台 · 开箱即用</div>
+  <div class="grid-2col">
+    <div class="card">
+      <h3><i class="fas fa-life-ring"></i> 全生命周期</h3>
+      <ul>
+        <li>设备注册/认证/分组/标签</li>
+        <li>安装档案关联 (注册代码/使用单位/GPS)</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3><i class="fas fa-bell"></i> 实时监控与告警</h3>
+      <ul>
+        <li>自定义仪表盘 · GIS地图展示</li>
+        <li>故障/困人/振动异常即时推送 (短信/邮件/微信)</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3><i class="fas fa-chart-pie"></i> 数据分析报表</h3>
+      <ul>
+        <li>运行热力图 / 楼层使用频次</li>
+        <li>开关门/运行里程自动统计</li>
+        <li>振动异常趋势 · MTBF分析</li>
+        <li>维保签到与周期提醒</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3><i class="fas fa-remote"></i> 远程运维</h3>
+      <ul>
+        <li>云端配置下发，固件升级</li>
+        <li>在线查询日志与统计数据</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3><i class="fas fa-network-wired"></i> 开放集成</h3>
+      <ul>
+        <li>多租户 SAAS，数据隔离</li>
+        <li>RESTful API + WebSocket</li>
+        <li>分级权限 (管理员/运维/只读)</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3><i class="fas fa-shield-alt"></i> 安全合规</h3>
+      <ul>
+        <li>IMEI认证 + MQTT鉴权</li>
+        <li>传输加密 · 电子围栏</li>
+        <li>满足特种设备安全监管规范</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- 优势 + 场景 -->
+  <div style="display: flex; flex-wrap: wrap; gap: 2rem; margin-top: 2rem;">
+    <div style="flex: 1 1 300px;">
+      <div class="section-title" style="margin-top: 0;"><i class="fas fa-star"></i> 方案优势</div>
+      <div class="card" style="background: rgba(0, 40, 80, 0.3);">
+        <ul style="list-style: none; padding-left: 0;">
+          <li style="padding: 0.4rem 0;"><i class="fas fa-check-circle" style="color: #3fa2ff; width: 1.6rem;"></i> 高集成度：多传感器+8路I/O+4G，安装简洁</li>
+          <li style="padding: 0.4rem 0;"><i class="fas fa-check-circle" style="color: #3fa2ff; width: 1.6rem;"></i> 即装即用：上电自动联网、自动校准</li>
+          <li style="padding: 0.4rem 0;"><i class="fas fa-check-circle" style="color: #3fa2ff; width: 1.6rem;"></i> 算法成熟：楼层学习/漂移补偿/困人/振动预警</li>
+          <li style="padding: 0.4rem 0;"><i class="fas fa-check-circle" style="color: #3fa2ff; width: 1.6rem;"></i> 低功耗低成本：Cat.1 功耗与资费优势</li>
+          <li style="padding: 0.4rem 0;"><i class="fas fa-check-circle" style="color: #3fa2ff; width: 1.6rem;"></i> 远程全管理：配置/升级/诊断/查询</li>
+          <li style="padding: 0.4rem 0;"><i class="fas fa-check-circle" style="color: #3fa2ff; width: 1.6rem;"></i> 数据闭环：采集→存储→上报→分析</li>
+        </ul>
+      </div>
+    </div>
+    <div style="flex: 1 1 300px;">
+      <div class="section-title" style="margin-top: 0;"><i class="fas fa-building"></i> 典型应用场景</div>
+      <div class="card" style="background: rgba(0, 40, 80, 0.3);">
+        <ul style="list-style: none; padding-left: 0;">
+          <li style="padding: 0.5rem 0;"><i class="fas fa-users" style="color: #3fa2ff; width: 1.8rem;"></i> 维保单位：远程掌控，从“故障响应”到“预警”</li>
+          <li style="padding: 0.5rem 0;"><i class="fas fa-warehouse" style="color: #3fa2ff; width: 1.8rem;"></i> 物业管理：集中监控，自动报表，合规管理</li>
+          <li style="padding: 0.5rem 0;"><i class="fas fa-gavel" style="color: #3fa2ff; width: 1.8rem;"></i> 监管部门：API对接，辖区电梯数据纳管</li>
+          <li style="padding: 0.5rem 0;"><i class="fas fa-industry" style="color: #3fa2ff; width: 1.8rem;"></i> 制造商：预置监测，延伸服务，数据反哺</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 底部 -->
+  <div class="footer-note">
+    <div><i class="fas fa-microchip" style="margin-right: 8px; color: #3fa2ff;"></i> <span class="highlight">EL-DAQ8-4G12-GEN</span> · 电梯运行状态监测终端</div>
+    <div><i class="fas fa-check-circle" style="color: #3fa2ff;"></i> 即装即用 · 远程管理 · 数据驱动</div>
+    <div><i class="fas fa-arrow-right" style="color: #3fa2ff;"></i> 产品规格以实际为准</div>
+  </div>
+
+
+</div>
+</body>
+</html>

@@ -16,6 +16,10 @@ const DEFAULTS = {
   wechat: {
     enabled: 0, appid: '', appsecret: '', token: '', aes_key: '',
     verify_type: 'simulate', qr_mode: 'ticket',
+    // 微信内置浏览器免扫码登录的授权范围：
+    //   snsapi_base     静默拿 openid（默认，无任何弹窗）
+    //   snsapi_userinfo 首次弹一次「允许授权」，可拿昵称头像
+    oauth_scope: 'snsapi_base',
   },
   wxpay: {
     enabled: 0, mchid: '', appid: '', api_v3_key: '', mch_cert_serial: '',

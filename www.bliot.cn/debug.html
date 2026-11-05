@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>调试页面</title>
+</head>
+<body>
+    <h1>配置调试页面</h1>
+    <div id="debug-info"></div>
+    
+    <script src="js/config.js"></script>
+    <script>
+        async function testConfig() {
+            const debug = document.getElementById('debug-info');
+            debug.innerHTML = '<p>开始测试配置加载...</p>';
+            
+            try {
+                await window.siteConfig.waitForInit();
+                
+                const company = window.siteConfig.getCompanyInfo();
+                const products = window.siteConfig.getProducts();
+                
+                debug.innerHTML += `
+                    <h3>公司信息加载成功:</h3>
+                    <pre>${JSON.stringify(company, null, 2)}</pre>
+                    <h3>产品数量: ${products.length}</h3>
+                    <pre>${JSON.stringify(products, null, 2)}</pre>
+                `;
+            } catch (error) {
+                debug.innerHTML += `<p style="color: red;">错误: ${error.message}</p>`;
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', testConfig);
+    </script>
+</body>
+</html>

@@ -59,6 +59,60 @@ async function getUserInfo(openid) {
   return data;
 }
 
+/* ---------------- 公众号网页授权（微信内免扫码登录） ----------------
+ * 扫码登录在微信内置浏览器里体验很怪：用户明明已经登录微信，还要再扫一次。
+ * 网页授权（OAuth2）可以直接拿到 openid，静默完成登录：
+ *   snsapi_base      → 完全静默，只拿 openid（默认）
+ *   snsapi_userinfo  → 首次会弹一次「允许授权」，能拿昵称头像
+ * 注意：redirect_uri 的域名必须与公众号后台「网页授权域名」一致（不含路径），
+ * 且微信只接受 80/443 端口。
+ */
+
+/** 生成跳转到微信授权页的地址 */
+function oauthAuthorizeUrl(redirectUri, state, scope = 'snsapi_base') {
+  const cfg = getConfig('wechat');
+  const s = String(scope) === 'snsapi_userinfo' ? 'snsapi_userinfo' : 'snsapi_base';
+  return 'https://open.weixin.qq.com/connect/oauth2/authorize'
+    + `?appid=${encodeURIComponent(cfg.appid)}`
+    + `&redirect_uri=${encodeURIComponent(redirectUri)}`
+    + '&response_type=code'
+    + `&scope=${s}`
+    + `&state=${encodeURIComponent(state)}`
+    + '#wechat_redirect';
+}
+
+/** code 换网页授权 access_token（同时拿到 openid / unionid / scope） */
+async function oauthAccessToken(code) {
+  const cfg = getConfig('wechat');
+  if (!cfg.appid || !cfg.appsecret) throw new Error('未配置服务号 AppID / AppSecret');
+  const url = `${API}/snsapi/oauth2/access_token?appid=${encodeURIComponent(cfg.appid)}`
+    + `&secret=${encodeURIComponent(cfg.appsecret)}`
+    + `&code=${encodeURIComponent(code)}`
+    + '&grant_type=authorization_code';
+  const res = await fetch(url);
+  const data = await res.json();
+  if (data.errcode) {
+    // 40029 = code 无效/已用过（用户刷新回调页就会踩到）；40163 = code 已被使用
+    const extra = {
+      40029: '授权码无效或已被使用（刷新回调页会导致这个错误，请重新打开页面）',
+      40163: '授权码已被使用（同一次授权只能换一次，请重新打开页面）',
+      41008: '缺少 code 参数',
+    }[Number(data.errcode)];
+    throw new Error(extra ? `微信 ${data.errcode}：${extra}` : explainWxError(data.errcode, data.errmsg));
+  }
+  return data;
+}
+
+/** snsapi_userinfo 拉昵称头像（静默授权拿不到，只能拿 openid） */
+async function oauthUserInfo(accessToken, openid) {
+  const url = `${API}/snsapi/userinfo?access_token=${encodeURIComponent(accessToken)}`
+    + `&openid=${encodeURIComponent(openid)}&lang=zh_CN`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (data.errcode) throw new Error(explainWxError(data.errcode, data.errmsg));
+  return data;
+}
+
 async function sendTemplateMessage(openid, templateId, data, url = '') {
   const token = await getAccessToken();
   const res = await fetch(`${API}/cgi-bin/message/template/send?access_token=${token}`, {
@@ -127,4 +181,5 @@ function textReply(toUser, fromUser, content) {
 module.exports = {
   getAccessToken, createQrScene, getUserInfo, sendTemplateMessage,
   checkSignature, checkMsgSignature, decryptMessage, parseXml, textReply,
+  oauthAuthorizeUrl, oauthAccessToken, oauthUserInfo,
 };
