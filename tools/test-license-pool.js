@@ -105,7 +105,7 @@ async function newUser(app, openid) {
   check('未绑定的码激活被拒（403 LICENSE_UNASSIGNED）',
     actBefore.statusCode === 403 && actBefore.json().code === 'LICENSE_UNASSIGNED', actBefore.json());
   check('拒绝原因告诉用户该怎么做',
-    /绑定/.test(actBefore.json().reason || ''), actBefore.json().reason);
+    /绑定/.test(actBefore.json().message || actBefore.json().reason_text || ''), actBefore.json().message);
 
   /* ---------------- 3. 用户自助绑定 ---------------- */
   console.log('\n用户自助绑定卡密');

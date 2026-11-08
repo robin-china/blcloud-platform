@@ -335,28 +335,50 @@ GET /api/open/v1/app/version?product=LabelGo&version=1.0.20&platform=win32&arch=
 
 > 解绑是**即时生效**的：后台或用户端一解绑，这台机器手上的旧令牌下次请求就会被拒，不用等令牌自然过期。
 
-### 5.3.1 删码 / 降档响应契约（LabelGo，2026-11-08）
+### 5.3.1 删码 / 降档响应契约 v2（LabelGo，2026-11-09）
 
-**总原则：`verify` / `heartbeat` 的每一个响应都必须带 `license` 字段。**
-字段缺失会被客户端当作「老后台、没给结论」而沿用上一次的权益快照 —— 后台删了码，
-界面却还显示「在线授权」，就是这么来的。有效时是完整对象，无结论之外的所有情况一律 `null`。
+> **v1 第 3 条已废弃**：`valid:true + license:null` **不再**表示「明确无授权」。
+> 客户端按 v2 判定：`license: null` / `{}` / 字段整个省略 = **后台没给结论**，
+> 沿用旧权益快照、**不降档**；只有同时带 `license_revoked: true` 时，null 才是明确撤回。
+> v1 写法曾导致「一次正常刷新把在线授权全清成免费版」，且后台不下发完整 license
+> 就再也同步不回来。
+
+**服务端给结论只有两种方式**（`verify` 与 `heartbeat` 一致）：
 
 | 场景 | HTTP | 响应体 | 客户端动作 |
 |---|---|---|---|
-| 授权被删 / 吊销 / 停用 / 到期 | verify `403`、心跳 `200` | `valid:false` + `license:null` + `reason`/`code` 标准码 + `entitlement_changed:true` | 立即清本地权益快照 → 免费版 |
-| 授权仍在但降到免费档 | `200` | `valid:true` + **完整 license**（含 entitlement） | 解析新 entitlement，标签库配额回 5 |
-| 账号一张授权都没有 | `200` | `valid:true` + `license:null` | 明确按免费版渲染 |
-| 服务端部署故障 | `5xx` | — | 走 7 天离线宽限，**不要降级** |
+| 授权被删 / 吊销 / 停用 / 到期 / 账号无授权 | **200** | `valid:false` + `reason` 标准码 + `license:null` + **`license_revoked:true`** + `entitlement_changed:true` | 立即清快照 → 免费版、标签库回 5 个 |
+| 授权仍在但降到免费档 | 200 | `valid:true` + **完整 license**（含 `entitlement`） | 解析新 entitlement |
+| 有授权且未变档 | 200 | `valid:true` + 完整 license，`entitlement_version` 稳定 | 连点刷新不掉档 |
+| 令牌过期 / 签名错 / appKey 权限 | 401 | 纯错误体（`error` + `code`），**不带** `valid` / `license` 字段 | 不降档，保留快照走 7 天离线宽限 |
+| 断网 / 部署故障 | 5xx（或 404 / 405 / 408 / 429） | 纯错误体 | 不降档，走离线宽限 |
 
-失败响应（`reason` / `code` 同值，`message` / `reason_text` 是可显示的中文）：
+> 也允许 `403` + 明确授权级 `code`，但 v2 推荐统一 200 —— 403 在部分客户端里容易和
+> 「部署故障」分支混淆。**服务端故障绝不能用 403**，会把全网付费客户降成免费版。
+
+`reason` 用契约标准短码（客户端按白名单判断），`code` 保留内部完整码供诊断与老客户端，
+中文文案在 `message` / `reason_text`：
+
+| reason | code | 触发 |
+|---|---|---|
+| `LICENSE_NOT_FOUND` | `LICENSE_NOT_FOUND` | 会话绑定的码被后台删除 |
+| `REVOKED` | `LICENSE_REVOKED` | 授权被吊销 |
+| `EXPIRED` | `LICENSE_EXPIRED` | 到期且无免费档可降级 |
+| `INACTIVE` | `LICENSE_INACTIVE` | 停用 |
+| `NO_LICENSE` | `NO_LICENSE` / `LICENSE_UNASSIGNED` / `PRODUCT_MISMATCH` | 账号无可用授权 / 码未绑定 / 产品不匹配 |
+| `MACHINE_NOT_BOUND` | `MACHINE_NOT_BOUND` / `SESSION_REVOKED` / `MACHINE_LIMIT` | 机器未绑定、被解绑、机器超限 |
+
+删码 / 无授权的响应体：
 
 ```json
 {
   "valid": false,
   "license": null,
+  "license_revoked": true,
   "reason": "LICENSE_NOT_FOUND",
   "code": "LICENSE_NOT_FOUND",
   "message": "授权不存在",
+  "reason_text": "授权不存在",
   "entitlement": null,
   "entitlement_version": "",
   "entitlement_changed": true,
@@ -364,12 +386,13 @@ GET /api/open/v1/app/version?product=LabelGo&version=1.0.20&platform=win32&arch=
 }
 ```
 
-标准码：`LICENSE_NOT_FOUND`（删码）、`LICENSE_REVOKED`（吊销）、`LICENSE_EXPIRED`（到期）、
-`LICENSE_INACTIVE`（停用）、`LICENSE_UNASSIGNED`（卡密未绑定）、`SESSION_REVOKED`（解绑）、
-`PRODUCT_MISMATCH`、`MACHINE_NOT_BOUND`。
+**硬边界**：删码时不能只回 `valid:true` + 省略 `license` 字段，也不能回
+`valid:true + license:null` 而不带 `license_revoked` —— 客户端一律当「老后台没下发」，
+沿用旧快照，删了码降不下来。服务端已删除 v1 的 `noLicense()` 辅助函数，
+「账号一张授权都没有」现在也回 `valid:false + NO_LICENSE`。
 
-降档 / 免费档一定下发完整权益，**不能只给 `license_key`**（客户端会回退显示「在线授权」，
-档位歧义）：
+降档 / 免费档一定下发完整权益，**不能只给 `license_key`**（客户端会回退显示
+「在线授权」，档位歧义）：
 
 ```json
 {
@@ -397,13 +420,21 @@ GET /api/open/v1/app/version?product=LabelGo&version=1.0.20&platform=win32&arch=
   功能判定仍应走 `entitlement.features` 的能力码，不要解析档位名或比较 tier。
 - 心跳额外带 `entitlement_version` / `entitlement_changed`：客户端上报上次版本即可增量感知，
   不上报也没关系，5 分钟一拍的心跳会整体解析 `license.entitlement`。
-- 服务端故障只用 `5xx`（断网 / `5xx` / `404` / `405` / `408` / `429` 走 7 天离线宽限）。
-  **绝不能用 403 表达部署问题** —— 403 会被当成「授权没了」，把付费客户降成免费版。
+- 401 / 5xx 响应体里**不得出现** `valid:false`，否则客户端可能一边按状态码保留快照、
+  一边按 body 清快照。解绑 / 吊销属于授权级撤销，心跳**不走** `requireClient` 的 401，
+  而是回 200 + `MACHINE_NOT_BOUND` 明确结论（否则「不点刷新等一拍心跳」永远降不下来）；
+  只有真正的令牌过期 / 签名失败才回 401。
 - 续费 / 重新激活是同一个授权码原地升回：`plan_code`、`features`、`limits` 全部回到付费档，
   `downgraded_from` 清空；客户端本地模板与数据源不受影响，无需重新初始化。
+- 登录类响应（扫码确认 / 手机号登录 / refresh）有授权时下发完整 license；无授权给 `null`
+  表示「本接口不下发结论」，随后 verify / heartbeat 会给出明确判定，**不要**在这里加
+  `license_revoked` —— 机器超限时账号其实还有授权，会误降付费客户。
 
-**验收**：删码 → 点「刷新授权」显示免费版；不点刷新等一拍心跳也自动降；
-续费 / 重新激活原地升回，模板与数据源不丢。服务端自测见 `tools/test-license-verdict.js`（58 项）。
+**验收**：① 有授权连点 3 次「刷新授权」档位不掉 ② 删码后点刷新立即免费版、
+不点刷新等一拍心跳也自动降 ③ 续费 / 重新激活原地升回，模板与数据源不丢。
+服务端自测见 `tools/test-license-verdict.js`（81 项）；运行后末尾会打印可直接回传的
+verify / heartbeat 响应 body（刷新前、删码后、账号无授权、401、免费档、续费恢复）。
+客户端日志中心「手动同步授权」会打印 valid / license 形状 / plan / caps，便于逐项对齐。
 
 ### 5.4 我的硬件与 TB 凭据
 

@@ -157,7 +157,7 @@ async function newUser(app, openid) {
 
   const hbA = await app.inject({ method: 'POST', url: '/api/open/v1/license/heartbeat', headers: HA, payload: {} });
   check('被解绑机器的老令牌失效且原因明确',
-    hbA.statusCode === 401 && hbA.json().code === 'SESSION_REVOKED', hbA.json());
+    hbA.statusCode === 200 && hbA.json().valid === false && hbA.json().code === 'SESSION_REVOKED' && hbA.json().reason === 'MACHINE_NOT_BOUND', hbA.json());
 
   const hbB = await app.inject({ method: 'POST', url: '/api/open/v1/license/heartbeat', headers: HB, payload: {} });
   check('另一台机器不受影响', hbB.json().valid === true, hbB.json());
@@ -183,7 +183,7 @@ async function newUser(app, openid) {
 
   const hbB2 = await app.inject({ method: 'POST', url: '/api/open/v1/license/heartbeat', headers: HB, payload: {} });
   check('自助解绑后老令牌也失效',
-    hbB2.statusCode === 401 && hbB2.json().code === 'SESSION_REVOKED', hbB2.json());
+    hbB2.statusCode === 200 && hbB2.json().valid === false && hbB2.json().code === 'SESSION_REVOKED' && hbB2.json().reason === 'MACHINE_NOT_BOUND', hbB2.json());
 
   const reAct = await activate('MACHINE-C');
   check('释放名额后可换机器激活', reAct.statusCode === 200 && reAct.json().valid === true, reAct.json());
@@ -198,7 +198,7 @@ async function newUser(app, openid) {
   await app.inject({ method: 'POST', url: `/api/licenses/${licId}/revoke`, headers: AH, payload: {} });
   const afterRevoke = await app.inject({ method: 'POST', url: '/api/open/v1/license/heartbeat', headers: HC, payload: {} });
   check('吊销后心跳立刻无效',
-    afterRevoke.statusCode === 401 && afterRevoke.json().code === 'SESSION_REVOKED', afterRevoke.json());
+    afterRevoke.statusCode === 200 && afterRevoke.json().valid === false && afterRevoke.json().code === 'SESSION_REVOKED' && afterRevoke.json().reason === 'MACHINE_NOT_BOUND', afterRevoke.json());
 
   const sess = db.prepare("SELECT COUNT(*) AS c FROM client_sessions WHERE license_id = ? AND status = 'active'").get(licId);
   check('吊销同时作废客户端会话', sess.c === 0, sess);
@@ -213,7 +213,7 @@ async function newUser(app, openid) {
     headers: { authorization: 'Bearer ' + reToken }, payload: {},
   });
   check('吊销后校验接口也拒绝且说明原因',
-    verifyAfter.statusCode === 403 && verifyAfter.json().valid === false && verifyAfter.json().code === 'SESSION_REVOKED', verifyAfter.json());
+    verifyAfter.statusCode === 200 && verifyAfter.json().valid === false && verifyAfter.json().code === 'SESSION_REVOKED' && verifyAfter.json().reason === 'MACHINE_NOT_BOUND', verifyAfter.json());
 
   /* ---------- 8. 恢复授权后可再次校验 ---------- */
   await app.inject({ method: 'POST', url: `/api/licenses/${licId}/resume`, headers: AH, payload: {} });

@@ -7,7 +7,7 @@ const db = require('../db');
 const crypto = require('crypto');
 const { now, today, genScene, genCode } = require('../lib/util');
 const { getConfig, basePath, publicUrl } = require('../lib/config');
-const { verifySignature, issueSession, requireClient, getSession, getSessionState, touchSession, revokeSession } = require('../lib/openauth');
+const { verifySignature, issueSession, requireClient, getSession, getSessionState, touchSession, revokeSession, readClientToken } = require('../lib/openauth');
 const wechatService = require('../services/wechat');
 const { ensureUser } = require('../routes/wechat');
 const offlineKey = require('../lib/offlinekey');
@@ -73,18 +73,40 @@ function licenseState(lic) {
 }
 
 /**
- * 授权「无结论」是客户端降级失效的头号原因（LabelGo 契约 2026-11-08）：
- * 只要响应里**没有 license 字段**，客户端就当作「老后台、没给结论」而沿用旧权益快照，
- * 于是删了码 / 降了档还显示「在线授权」。所以无论有效、无效、还是压根没授权，
- * license 字段都必须出现（有效=对象，其余=null）。
+ * LabelGo「在线授权 · 删码/降档响应契约 v2」（2026-11-09）。
+ *
+ * v1 第 3 条「valid:true + license:null = 明确无授权」已被软件方废弃 ——
+ * 客户端现在把 `license: null` / `{}` / 字段整个省略一律当作「后台没给结论」，
+ * **沿用旧快照、不降档**；只有同时带 `license_revoked: true` 时 null 才算明确撤回。
+ * 所以服务端给结论只能靠两样：
+ *   - 撤回：200（首选）+ `valid:false` + 契约标准 reason，并带 `license_revoked:true`
+ *   - 改档：200 + `valid:true` + 完整 license（含 entitlement）
+ * 反过来，`valid:true` + `license:null` 现在是**禁止**的写法：删了码客户端不会降档。
+ *
+ * reason 用契约清单里的短码（客户端可能按白名单判断），code 保留内部完整码供
+ * 诊断与老客户端；中文仍在 message / reason_text。
  */
+const VERDICT_REASON = {
+  LICENSE_NOT_FOUND: 'LICENSE_NOT_FOUND',
+  LICENSE_REVOKED: 'REVOKED',
+  SESSION_REVOKED: 'MACHINE_NOT_BOUND',
+  LICENSE_INACTIVE: 'INACTIVE',
+  LICENSE_EXPIRED: 'EXPIRED',
+  LICENSE_UNASSIGNED: 'NO_LICENSE',
+  NO_LICENSE: 'NO_LICENSE',
+  MACHINE_NOT_BOUND: 'MACHINE_NOT_BOUND',
+  MACHINE_LIMIT: 'MACHINE_NOT_BOUND',
+  PRODUCT_MISMATCH: 'NO_LICENSE',
+};
+
 function licenseVerdict(st, extra = {}) {
-  const code = st.code || 'LICENSE_INVALID';
+  const code = st.code || 'LICENSE_NOT_FOUND';
   return {
     valid: false,
     license: null,
-    // reason 按契约给枚举码；中文可读文案放 message / reason_text，老客户端照样能显示人话
-    reason: code,
+    // v2 第 3 条：null 只有带这个标记才是「明确撤回」，否则客户端沿用旧快照
+    license_revoked: true,
+    reason: VERDICT_REASON[code] || 'LICENSE_NOT_FOUND',
     code,
     message: st.reason || '',
     reason_text: st.reason || '',
@@ -92,19 +114,6 @@ function licenseVerdict(st, extra = {}) {
     entitlement_version: '',
     // 「从有到无」也是权益变了，客户端应立即清快照，不用等下一拍心跳
     entitlement_changed: true,
-    server_time: now(),
-    ...extra,
-  };
-}
-
-/** 账号一张授权都没有：给明确结论，别省略字段让客户端猜 */
-function noLicense(extra = {}) {
-  return {
-    valid: true,
-    license: null,
-    entitlement: null,
-    entitlement_version: '',
-    entitlement_changed: null,
     server_time: now(),
     ...extra,
   };
@@ -287,13 +296,13 @@ module.exports = async function openRoutes(app) {
     // 过期订阅先降级到 free 档再判状态：老用户拿过期码重新激活，得到的是「已降级」而不是死胡同
     lic = plans.settleExpiry(lic);
     const st = licenseState(lic);
-    // 激活失败也必须带 license:null：客户端缺这个字段会当「无结论」沿用旧快照
-    if (!st.valid) return reply.code(403).send({ valid: false, license: null, ...st });
+    // 激活失败也是明确的撤回结论（v2 第 3 条要求带 license_revoked:true）
+    if (!st.valid) return reply.code(403).send(licenseVerdict(st));
 
     // 三层匹配：授权归属 app_id、档位归属 app_id、老商品授权按 product_id。
     // 历史「不限应用」的授权（app_id=NULL + 通用模板档位）继续放行，不锁死老客户。
     if (!plans.licenseMatchesApp(lic, req.app)) {
-      return reply.code(403).send({ valid: false, license: null, reason: '授权与当前软件产品不匹配', code: 'PRODUCT_MISMATCH' });
+      return reply.code(403).send(licenseVerdict({ code: 'PRODUCT_MISMATCH', reason: '授权与当前软件产品不匹配' }));
     }
 
     const bound = bindMachine(lic, machineId, {
@@ -302,7 +311,7 @@ module.exports = async function openRoutes(app) {
       ip: clientIp(req),
       appId: req.app.id,
     });
-    if (!bound.ok) return reply.code(409).send({ valid: false, license: null, reason: bound.reason, code: bound.code });
+    if (!bound.ok) return reply.code(409).send(licenseVerdict({ code: bound.code, reason: bound.reason }));
 
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(lic.user_id);
     if (!user) return reply.code(404).send({ error: '授权所属用户不存在', code: 'USER_NOT_FOUND' });
@@ -405,8 +414,10 @@ module.exports = async function openRoutes(app) {
         ip: clientIp(req),
       });
       track(user.id, appRow.app_key, 'auth.qrcode.login');
-      // 无论有没有授权都显式给 license 字段：省略会被客户端当成「老后台、无结论」，
-      // 删码后继续沿用旧权益快照（LabelGo 契约第 4 条）
+      // 有授权就下发完整 license（v2 第 4 条：不能只给 license_key 不给 entitlement）。
+      // 无授权给 null：按 v2 第 3 条这是「后台没给结论」，客户端沿用旧快照，
+      // 随后 verify/heartbeat 会给出明确的 valid:false 撤回结论。
+      // 注意这里不能加 license_revoked —— 机器超限时账号其实还有授权，会误降付费客户。
       const out = {
         status: 'confirmed', valid: true, license: licenseOut || null,
         ...token, user: userPayload(user),
@@ -507,7 +518,8 @@ module.exports = async function openRoutes(app) {
       ip: clientIp(req),
     });
     track(user.id, req.app.app_key, 'auth.login.phone');
-    // 登录响应也要给明确结论：省略 license 字段会让客户端沿用上一次的权益快照
+    // 登录就把当前生效授权的完整 license 下发（v2 第 4 条），续费后原地升回；
+    // 无授权给 null = 按 v2 第 3 条「后台没给结论」，交由 verify/heartbeat 定论
     return {
       ...token, user: userPayload(user), is_new: false, valid: true,
       license: current ? licensePayload(current) : null,
@@ -638,11 +650,14 @@ module.exports = async function openRoutes(app) {
     let sessionLicenseMissing = false;
     let machineId = String(b.machine_id || b.device_sn || '').trim();
     const tokenSt = getSessionState(String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
-    // 令牌被作废（解绑 / 吊销 / 后台踢下线）时要直说，别让客户端去猜是不是过期
+    // 令牌被作废（解绑 / 吊销 / 后台踢下线）是授权级结论，按 v2 第 1 条回 200 +
+    // valid:false，不能回 401/403 让客户端走「无结论 / 离线宽限」。
     if (tokenSt.code === 'SESSION_REVOKED') {
-      return reply.code(403).send(licenseVerdict({
+      // code 保留 SESSION_REVOKED（老客户端靠它提示「重新激活」），
+      // reason 按 v2 映射到 MACHINE_NOT_BOUND 契约短码
+      return licenseVerdict({
         code: 'SESSION_REVOKED', reason: '该机器已被解绑或授权已吊销，请重新激活',
-      }));
+      }, { session_revoked: true });
     }
     const tokenSess = tokenSt.session;
 
@@ -651,8 +666,9 @@ module.exports = async function openRoutes(app) {
       if (!machineId) machineId = tokenSess.machine_id || '';
       if (tokenSess.license_id) {
         lic = db.prepare('SELECT * FROM licenses WHERE id = ?').get(tokenSess.license_id);
-        // 会话还记着授权、记录却查不到了 = 后台删码。这是契约第 1 条的场景，
-        // 必须给 valid:false + license:null 的明确结论，不能省略字段让客户端沿用旧快照。
+        // 会话还记着授权、记录却查不到了 = 后台删码（v2 第 1 条场景），
+        // 必须给 valid:false + license_revoked:true 的明确结论；
+        // 只给 license:null 客户端会当「无结论」沿用旧权益快照。
         sessionLicenseMissing = !lic;
       } else {
         // 扫码/手机号登录时机器超限可能没绑上授权；主动找该账号当前生效的那张，
@@ -663,37 +679,41 @@ module.exports = async function openRoutes(app) {
     } else {
       const r = verifySignature(req);
       if (!r.ok) {
-        return reply.code(401).send({ error: r.error, code: 'APP_SIGN_INVALID', valid: false, license: null });
+        // v2 第 5 条：401 一律不降档、保留快照走离线宽限。
+        // body 里绝不能出现 valid:false / license:null，否则客户端可能误判成撤回。
+        return reply.code(401).send({ error: r.error, code: 'APP_SIGN_INVALID' });
       }
       appRow = r.app;
       if (!b.license_key) {
-        return reply.code(400).send(licenseVerdict({ code: 'PARAM_MISSING', reason: '缺少 license_key' }));
+        return reply.code(400).send({ error: '缺少 license_key', code: 'PARAM_MISSING' });
       }
       lic = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(String(b.license_key).trim());
     }
 
-    // 应用记录都没了属于服务端配置故障：用 5xx 让客户端走离线宽限，
-    // 绝不能回 403 —— 403 会把付费客户直接降成免费版（契约第 6 条）。
+    // 应用记录都没了属于服务端配置故障：用 5xx 让客户端走离线宽限（v2 第 2/5 条）。
+    // body 不带授权结论，避免客户端把部署故障读成「授权没了」。
     if (!appRow) return reply.code(500).send({ error: '应用配置缺失', code: 'APP_CONFIG_MISSING' });
     if (sessionLicenseMissing) {
-      return reply.code(403).send(licenseVerdict({ code: 'LICENSE_NOT_FOUND', reason: '授权不存在' }));
+      return licenseVerdict({ code: 'LICENSE_NOT_FOUND', reason: '授权不存在' });
     }
-    // 账号确实一张授权都没有：明确回 valid:true + license:null（契约第 3 条）。
-    if (!lic) return noLicense();
+    // v2 第 1/3 条：账号无授权也必须回 valid:false + NO_LICENSE + license_revoked:true。
+    // v1 的 valid:true + license:null 现在被客户端当成「没给结论」，删了码降不下来。
+    if (!lic) return licenseVerdict({ code: 'NO_LICENSE', reason: '账号当前没有可用授权' });
 
     // 过期订阅先收敛（降到 free 档）：verify 是客户端最常走的校验口，降级要在这里生效
     lic = plans.settleExpiry(lic);
     const st = licenseState(lic);
-    if (!st.valid) return reply.code(403).send(licenseVerdict(st));
+    // 授权级结论统一 200（v2 第 1 条推荐的唯一写法）；403 虽仍允许，但 200 无歧义
+    if (!st.valid) return licenseVerdict(st);
     if (!plans.licenseMatchesApp(lic, appRow)) {
-      return reply.code(403).send(licenseVerdict({ code: 'PRODUCT_MISMATCH', reason: '授权与当前软件产品不匹配' }));
+      return licenseVerdict({ code: 'PRODUCT_MISMATCH', reason: '授权与当前软件产品不匹配' });
     }
 
     let boundInfo = null;
     if (machineId) {
       const d = db.prepare('SELECT * FROM license_devices WHERE license_id = ? AND device_sn = ?').get(lic.id, machineId);
       if (!d) {
-        return reply.code(403).send(licenseVerdict({ code: 'MACHINE_NOT_BOUND', reason: '该机器未激活此授权' }));
+        return licenseVerdict({ code: 'MACHINE_NOT_BOUND', reason: '该机器未激活此授权' });
       }
       db.prepare('UPDATE license_devices SET last_seen_at = ?, last_ip = ?, last_version = ? WHERE id = ?')
         .run(now(), clientIp(req), String(b.version || ''), d.id);
@@ -716,23 +736,40 @@ module.exports = async function openRoutes(app) {
   });
 
   app.post('/api/open/v1/license/heartbeat', async (req, reply) => {
-    if (!(await requireClient(req, reply))) return;
     const b = req.body || {};
+    // 这里不能复用 requireClient：它把「解绑/吊销」（SESSION_REVOKED）也回成 401，
+    // 而 v2 第 5 条规定 401 一律不降档、保留快照走 7 天离线宽限 ——
+    // 后台停用/吊销授权后，客户端不点刷新就永远等不到降档（验收②要求一拍心跳就要生效）。
+    // 授权级撤销必须在这里回 200 + valid:false 的明确结论；只有令牌过期才走 401。
+    const st0 = getSessionState(readClientToken(req));
+    if (st0.code === 'SESSION_REVOKED') {
+      return licenseVerdict({ code: 'SESSION_REVOKED', reason: '该机器已被解绑或授权已吊销，请重新激活' },
+        { expires_at: st0.session.expires_at, session_revoked: true });
+    }
+    if (st0.code) return reply.code(401).send({ error: '未授权或令牌已过期', code: 'UNAUTHORIZED' });
+    const appRowHb = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(st0.session.app_id);
+    if (!appRowHb || appRowHb.status !== 'active') {
+      return reply.code(401).send({ error: '应用已停用', code: 'APP_DISABLED' });
+    }
+    req.session = st0.session;
+    req.app = appRowHb;
     touchSession(req.session, clientIp(req));
     let lic = req.session.license_id ? db.prepare('SELECT * FROM licenses WHERE id = ?').get(req.session.license_id) : null;
     if (!lic && b.license_key) lic = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(String(b.license_key).trim());
-    // 会话绑定的那张码被后台删了：回 valid:false + license:null 的明确结论。
-    // 之前这里只回 valid:false 却省略 license 字段，客户端当成「老后台、无结论」
-    // 沿用旧快照 —— 这正是删码后仍显示「在线授权」的残余路径。
+    // 会话绑定的那张码被后台删了：200 + valid:false + license_revoked:true（v2 第 1/3 条）。
+    // 只回 valid:false 却省略 license 字段，或回 valid:true + license:null，
+    // 客户端都会当成「老后台、无结论」沿用旧快照 —— 删码后仍显示「在线授权」。
     if (req.session.license_id && !lic) {
-      return licenseVerdict({ code: 'LICENSE_NOT_FOUND', reason: '授权不存在' });
+      return licenseVerdict({ code: 'LICENSE_NOT_FOUND', reason: '授权不存在' },
+        { expires_at: req.session.expires_at });
     }
     if (!lic) {
       // 扫码/手机号登录时可能没绑上码；主动找账号当前生效的那张，续费后原地升回
       lic = plans.bestLicenseForApp(req.session.user_id, req.app);
     }
-    // 账号一张授权都没有：200 + valid:true + license:null（契约第 3 条）
-    if (!lic) return noLicense({ expires_at: req.session.expires_at });
+    // v2 第 1/3 条：无授权也是明确撤回，不能回 valid:true + license:null
+    if (!lic) return licenseVerdict({ code: 'NO_LICENSE', reason: '账号当前没有可用授权' },
+      { expires_at: req.session.expires_at });
     // 订阅到期在这里显式降级：客户端下次心跳就能拿到「已降级为免费版 + downgraded_from」
     lic = plans.settleExpiry(lic);
     const st = licenseState(lic);
@@ -807,7 +844,7 @@ module.exports = async function openRoutes(app) {
     // 出票据前先收敛过期订阅：降级后的权益（free 档 features/limits）才签得进票据
     const lic = plans.settleExpiry(licRaw);
     const st = licenseState(lic);
-    if (!st.valid) return reply.code(403).send({ valid: false, license: null, ...st });
+    if (!st.valid) return reply.code(403).send(licenseVerdict(st));
 
     const appRow = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(req.session.app_id);
     const ent = plans.licenseEntitlement(lic);

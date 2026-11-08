@@ -110,7 +110,7 @@ function check(name, cond, extra) {
 
   // 10. 未绑定机器校验失败
   const verify2 = await app.inject({ method: 'POST', url: '/api/open/v1/license/verify', headers: { authorization: 'Bearer ' + token }, payload: { machine_id: 'MAC-999' } });
-  check('未绑定机器被拒绝', verify2.statusCode === 403 && verify2.json().code === 'MACHINE_NOT_BOUND', verify2.json());
+  check('未绑定机器被拒绝', verify2.statusCode === 200 && verify2.json().valid === false && verify2.json().code === 'MACHINE_NOT_BOUND', verify2.json());
 
   // 11. 心跳
   const hb = await app.inject({ method: 'POST', url: '/api/open/v1/license/heartbeat', headers: { authorization: 'Bearer ' + token }, payload: { version: '1.2.0' } });
@@ -168,7 +168,7 @@ function check(name, cond, extra) {
   db.prepare('UPDATE licenses SET status = ? WHERE id = ?').run('revoked', lid);
   const vfBody = { license_key: licKey, machine_id: 'MAC-001' };
   const vf = await app.inject({ method: 'POST', url: '/api/open/v1/license/verify', ...signReq(AS, AK, 'POST', '/api/open/v1/license/verify', vfBody) });
-  check('吊销后校验失败', vf.statusCode === 403 && vf.json().code === 'LICENSE_REVOKED', vf.json());
+  check('吊销后校验失败', vf.statusCode === 200 && vf.json().valid === false && vf.json().code === 'LICENSE_REVOKED', vf.json());
 
   // 21. 管理端统计
   const st = await app.inject({ method: 'GET', url: '/api/open-stats/summary', headers: { authorization: 'Bearer ' + adminToken } });
