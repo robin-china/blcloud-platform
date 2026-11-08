@@ -45,6 +45,68 @@ window.PageDashboard = {
       </div>
     </div>
 
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:4px 0 10px">
+      <h3 style="margin:0;font-size:15px">应用接入</h3>
+      <span class="tag brand">软件端 open API</span>
+    </div>
+    <div class="grid g4" style="margin-bottom:16px">
+      <div class="stat">
+        <div class="label">接入应用</div>
+        <div class="value">{{ fmt.int(acc.apps?.active) }} / {{ fmt.int(acc.apps?.total) }}</div>
+        <div class="delta">启用 / 总数</div>
+        <div class="icon" v-html="icon('plug')"></div>
+      </div>
+      <div class="stat">
+        <div class="label">在线客户端</div>
+        <div class="value">{{ fmt.int(acc.sessions?.online) }}</div>
+        <div class="delta">今日活跃 {{ fmt.int(acc.sessions?.today_sessions) }} 台 · {{ fmt.int(acc.sessions?.online_users) }} 人</div>
+        <div class="icon" v-html="icon('device')"></div>
+      </div>
+      <div class="stat">
+        <div class="label">今日 API 调用</div>
+        <div class="value">{{ fmt.int(acc.calls?.total_today) }}</div>
+        <div class="delta">应用 {{ fmt.int(acc.calls?.open_today) }} · 设备 {{ fmt.int(acc.calls?.device_today) }}</div>
+        <div class="icon" v-html="icon('api')"></div>
+      </div>
+      <div class="stat">
+        <div class="label">累计 API 调用</div>
+        <div class="value">{{ fmt.int(acc.calls?.total) }}</div>
+        <div class="delta" :style="acc.calls?.device_fail_today ? 'color:var(--danger)' : ''">今日设备失败 {{ fmt.int(acc.calls?.device_fail_today) }} 次</div>
+        <div class="icon" v-html="icon('cloud')"></div>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-bottom:16px">
+      <div class="card">
+        <div class="card-head"><h3>API 调用趋势</h3><span class="tag brand">近 14 天</span></div>
+        <div class="card-body" v-html="apiChart"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3>各应用接入情况</h3>
+          <span class="tag" v-if="acc.updates">今日升级 检查 {{ fmt.int(acc.updates.check) }} · 成功 {{ fmt.int(acc.updates.success) }} · 失败 {{ fmt.int(acc.updates.fail) }}</span>
+        </div>
+        <div class="card-body tight">
+          <div class="row-list" style="padding:6px 18px">
+            <div class="row-item" v-for="a in acc.byApp || []" :key="a.id">
+              <div style="min-width:0">
+                <div style="font-weight:500;display:flex;align-items:center;gap:6px">
+                  <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.name }}</span>
+                  <span class="tag" v-if="a.status !== 'active'">已停用</span>
+                  <span class="tag" v-else-if="a.version">v{{ a.version }}</span>
+                </div>
+                <div style="color:var(--text-3);font-size:12px">
+                  在线 {{ fmt.int(a.online) }} · 用户 {{ fmt.int(a.users) }} · 授权 {{ fmt.int(a.licenses) }}
+                </div>
+              </div>
+              <span class="tag brand">今日 {{ fmt.int(a.calls_today) }} / 共 {{ fmt.int(a.calls) }}</span>
+            </div>
+            <div class="empty" v-if="!(acc.byApp || []).length">还没有接入应用，去「接入应用」创建一个</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="grid g3">
       <div class="card">
         <div class="card-head"><h3>支付渠道占比</h3></div>
@@ -95,6 +157,7 @@ window.PageDashboard = {
     const ov = reactive({ products: {}, today: {}, revenue: {}, devices: {} });
     const trend = ref([]);
     const revenue = reactive({ trend: [], byChannel: [], topProducts: [] });
+    const acc = reactive({ apps: {}, sessions: {}, calls: {}, updates: null, byApp: [], trend: [] });
     const resetting = ref(false);
 
     const fmt = U.fmt;
@@ -123,6 +186,13 @@ window.PageDashboard = {
       return items.length ? U.donut(items) : '<div class="empty">暂无支付数据</div>';
     });
 
+    const apiChart = computed(() => U.lineChart(acc.trend || [], {
+      keys: [
+        { key: 'open', color: '#2563eb', name: '应用 API' },
+        { key: 'device', color: '#16a34a', name: '设备 API' },
+      ],
+    }));
+
     async function loadAll() {
       const o = await U.api.get('/api/stats/overview');
       Object.assign(ov, o);
@@ -130,6 +200,8 @@ window.PageDashboard = {
       trend.value = t.list || [];
       const r = await U.api.get('/api/stats/revenue?days=14');
       Object.assign(revenue, r);
+      const a = await U.api.get('/api/stats/apps?days=14');
+      Object.assign(acc, a);
     }
 
     /**
@@ -156,18 +228,13 @@ window.PageDashboard = {
 
     onMounted(async () => {
       try {
-        const o = await U.api.get('/api/stats/overview');
-        Object.assign(ov, o);
-        const t = await U.api.get('/api/stats/trend?days=14');
-        trend.value = t.list || [];
-        const r = await U.api.get('/api/stats/revenue?days=14');
-        Object.assign(revenue, r);
+        await loadAll();
       } catch (e) {
         U.toast(e.message, 'error');
       }
     });
 
-    return { ov, trend, revenue, resetting, fmt, icon, trendChart, revenueChart, channelChart, resetStats };
+    return { ov, trend, revenue, acc, resetting, fmt, icon, trendChart, revenueChart, channelChart, apiChart, resetStats };
   },
 };
 })();
