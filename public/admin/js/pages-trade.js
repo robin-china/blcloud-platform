@@ -19,6 +19,7 @@ window.PageOrders = {
         <option value="pending">待支付</option>
         <option value="paid">已支付</option>
         <option value="refunded">已退款</option>
+        <option value="deleted">已删除</option>
       </select>
       <select class="select" v-model="channel">
         <option value="">全部渠道</option>
@@ -27,6 +28,7 @@ window.PageOrders = {
         <option value="simulate">模拟支付</option>
       </select>
       <button class="btn" @click="load">查询</button>
+      <button class="btn danger" @click="purge">清理 7 天前未付款</button>
     </div>
 
     <div class="card">
@@ -47,15 +49,17 @@ window.PageOrders = {
                 </td>
                 <td>{{ fmt.money(o.pay_amount) }}<div v-if="o.discount" style="color:var(--text-3);font-size:12px">已抵 {{ fmt.money(o.discount) }}</div></td>
                 <td>{{ channelName(o.channel) }}</td>
-                <td><span class="tag" :class="statusCls(o.status)">{{ statusText(o.status) }}</span></td>
+                <td><span class="tag" :class="statusCls(o)">{{ statusText(o) }}</span></td>
                 <td>{{ fmt.time(o.created_at) }}</td>
                 <td>
                   <div class="table-actions">
                     <button class="btn sm" @click="open(o)">详情</button>
-                    <button class="btn sm" v-if="o.status==='pending'" @click="simulatePay(o)">标记已付</button>
-                    <button class="btn sm" v-if="o.status==='pending'" @click="syncPay(o)">向微信查单</button>
+                    <button class="btn sm" v-if="o.status==='pending' && !o.deleted_at" @click="simulatePay(o)">标记已付</button>
+                    <button class="btn sm" v-if="o.status==='pending' && !o.deleted_at" @click="syncPay(o)">向微信查单</button>
                     <button class="btn sm" v-if="o.status==='paid'" @click="deliver(o)">补发授权</button>
                     <button class="btn sm danger" v-if="o.status==='paid'" @click="refund(o)">退款</button>
+                    <button class="btn sm danger" v-if="o.status==='pending' && !o.deleted_at" @click="remove(o)">删除</button>
+                    <button class="btn sm" v-if="o.deleted_at" @click="restore(o)">恢复</button>
                   </div>
                 </td>
               </tr>
@@ -78,7 +82,7 @@ window.PageOrders = {
         <div class="modal-body">
           <div class="kv">
             <div class="k">订单号</div><div>{{ detail.order.order_no }}</div>
-            <div class="k">状态</div><div><span class="tag" :class="statusCls(detail.order.status)">{{ statusText(detail.order.status) }}</span></div>
+            <div class="k">状态</div><div><span class="tag" :class="statusCls(detail.order)">{{ statusText(detail.order) }}</span></div>
             <div class="k">用户</div><div>{{ detail.user?.nickname || '-' }} {{ detail.user?.phone || '' }}</div>
             <div class="k">应付金额</div><div>{{ fmt.money(detail.order.pay_amount) }}</div>
             <div class="k">优惠</div><div>{{ fmt.money(detail.order.discount) }}</div>
@@ -169,8 +173,10 @@ window.PageOrders = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
 
-    const statusText = (s) => STATUS_MAP[s]?.text || s;
-    const statusCls = (s) => STATUS_MAP[s]?.cls || '';
+    // 已删除的未付款订单状态仍是 pending，列表里必须显示「已删除」，
+    // 否则管理员看不出这单是被谁清掉的
+    const statusText = (o) => (o && o.deleted_at ? '已删除' : (STATUS_MAP[o && o.status]?.text || (o && o.status) || ''));
+    const statusCls = (o) => (o && o.deleted_at ? 'danger' : (STATUS_MAP[o && o.status]?.cls || ''));
     const channelName = (c) => CHANNEL_MAP[c] || c || '-';
     // 订单「已支付」不等于「已发货」：额度包发的是 API 调用次数而不是授权码，
     // 管理员必须能在列表里一眼看到发了什么，否则客服无法应答
@@ -187,7 +193,35 @@ window.PageOrders = {
     }
 
     onMounted(load);
-    return { list, total, page, pages, q, status, channel, detail, fmt, load, open, simulatePay, syncPay, deliver, refund, statusText, statusCls, channelName, deliverText };
+    // 只清未付款订单，而且是软删除：二维码可能已经发出去了，
+    // 用户事后扫码付钱时回调必须还能找到这笔订单（付了会自动恢复）
+    async function remove(o) {
+      if (!(await U.confirm(`删除未付款订单 ${o.order_no}？\n会从用户端和后台列表消失，记录仍保留：用户若事后扫码付了款，回调会自动恢复这笔订单。`))) return;
+      try {
+        const r = await U.api.del(`/api/orders/${o.id}`);
+        U.toast(r.points_back > 0 ? `已删除，退回用户 ${r.points_back} 积分` : '已删除', 'success');
+        load();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
+    async function restore(o) {
+      try {
+        await U.api.post(`/api/orders/${o.id}/restore`, {});
+        U.toast('已恢复到待支付', 'success');
+        load();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
+    async function purge() {
+      if (!(await U.confirm('清理 7 天前仍未支付的订单？\n只会从列表移除，记录保留，之后付了款会自动恢复。'))) return;
+      try {
+        const r = await U.api.post('/api/orders/purge-pending', { days: 7 });
+        U.toast(`已清理 ${r.count} 条`, r.count ? 'success' : 'info');
+        load();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+
+    return { list, total, page, pages, q, status, channel, detail, fmt, load, open, simulatePay, syncPay, deliver, refund, remove, restore, purge, statusText, statusCls, channelName, deliverText };
   },
 };
 

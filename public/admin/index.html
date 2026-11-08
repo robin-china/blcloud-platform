@@ -6,8 +6,24 @@
 <title>管理后台</title>
 <!-- 资源用相对路径，这样根路径部署和 /platform/ 子路径部署都能正确加载 -->
 <link rel="stylesheet" href="../assets/ui.css" />
+<style>
+/* 首屏防闪：这套页面是 in-DOM 模板，{{ }} 就写在 HTML 里，
+   Vue 挂载前浏览器会把它们当普通文本渲染出来 —— 也就是用户看到的「一堆花括号」。
+   挂载完成前先把 #app 藏起来，只显示一个加载态。
+   必须内联：外链 CSS 还得等下载，等到了花括号早就闪过了。 */
+#app { display: none; }
+#app.ready { display: block; }
+#boot { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;
+  gap: 10px; background: #f6f7fb; color: #8a93a6;
+  font: 14px/1.5 "PingFang SC", "Microsoft YaHei", -apple-system, "Segoe UI", sans-serif; }
+#boot .spin { width: 16px; height: 16px; border: 2px solid #e6e9f0; border-top-color: #2563eb;
+  border-radius: 50%; animation: boot-spin .8s linear infinite; }
+#boot.fail { color: #dc2626; cursor: pointer; }
+@keyframes boot-spin { to { transform: rotate(360deg); } }
+</style>
 </head>
 <body>
+<div id="boot"><span class="spin"></span><span>加载中…</span></div>
 <div id="app">
   <page-login v-if="!state.token" :settings="state.settings" @logged="onLogged"></page-login>
   <div v-else class="layout">
@@ -89,7 +105,24 @@
     const comp = window['Page' + name];
     if (comp) AdminApp.app.component('page-' + kebab(name), comp);
   }
-  AdminApp.app.mount('#app');
+  // 挂载成功才撤遮罩：这时模板里的 {{ }} 已经全部编译掉了，不会闪
+  try {
+    AdminApp.app.mount('#app');
+    document.getElementById('app').classList.add('ready');
+    const boot = document.getElementById('boot');
+    if (boot) boot.remove();
+  } catch (err) {
+    console.error(err);
+    const boot = document.getElementById('boot');
+    if (boot) { boot.className = 'fail'; boot.textContent = '页面加载失败，点击刷新重试'; boot.onclick = () => location.reload(); }
+  }
+  // 兜底：某个脚本报错导致走不到挂载，也不能永远停在「加载中」
+  setTimeout(() => {
+    const el = document.getElementById('app');
+    if (!el || el.classList.contains('ready')) return;
+    const boot = document.getElementById('boot');
+    if (boot) { boot.className = 'fail'; boot.textContent = '加载超时，点击刷新重试'; boot.onclick = () => location.reload(); }
+  }, 10000);
 </script>
 </body>
 </html>

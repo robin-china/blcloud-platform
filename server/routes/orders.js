@@ -8,6 +8,8 @@ const { deliverOrder } = require('../services/deliver');
 const { markPaid } = require('../services/pay');
 const commission = require('../lib/commission');
 const paydiag = require('../lib/paydiag');
+const orderdel = require('../lib/orderdel');
+const { logAdmin } = require('../lib/adminlog');
 
 module.exports = async function orderRoutes(app) {
   app.get('/api/orders', async (req, reply) => {
@@ -20,7 +22,11 @@ module.exports = async function orderRoutes(app) {
     const where = [];
     const args = [];
     if (q) { where.push('(o.order_no LIKE ? OR u.nickname LIKE ? OR u.phone LIKE ? OR o.trade_no LIKE ?)'); args.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
-    if (status) { where.push('o.status = ?'); args.push(status); }
+    // 已删除的未付款订单不进默认列表（否则「删了还在」等于没删），
+    // 但仍可在后台按「已删除」筛出来核查，也不会被真删掉
+    if (status === 'deleted') where.push('o.deleted_at IS NOT NULL');
+    else if (status) { where.push('o.status = ? AND o.deleted_at IS NULL'); args.push(status); }
+    else where.push('o.deleted_at IS NULL');
     if (channel) { where.push('o.channel = ?'); args.push(channel); }
     const wsql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const total = db.prepare(`SELECT COUNT(*) AS c FROM orders o LEFT JOIN users u ON u.id=o.user_id ${wsql}`).get(...args).c;
@@ -126,6 +132,38 @@ module.exports = async function orderRoutes(app) {
       }
     }
     return { ok: true, reversed_commissions: reversed };
+  });
+
+  // 删除未付款订单（软删除，见 lib/orderdel.js）：只清列表，不销毁记录，
+  // 万一用户已经拿到二维码后又付了钱，回调仍能命中并自动恢复
+  app.delete('/api/orders/:id', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(Number(req.params.id));
+    if (!order) return reply.code(404).send({ error: '订单不存在' });
+    const r = orderdel.softDeletePending(order, 'admin');
+    if (r.error) return reply.code(400).send({ error: r.error });
+    logAdmin(req, 'order.delete', `删除未付款订单 ${order.order_no}（用户 ${order.user_id}，¥${order.pay_amount}）`);
+    return { ok: true, points_back: r.points_back };
+  });
+
+  // 删错了能恢复（软删除的好处，硬删就救不回来了）
+  app.post('/api/orders/:id/restore', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(Number(req.params.id));
+    if (!order) return reply.code(404).send({ error: '订单不存在' });
+    if (!order.deleted_at) return { ok: true, already: true };
+    db.prepare("UPDATE orders SET deleted_at = NULL, deleted_by = '' WHERE id = ?").run(order.id);
+    logAdmin(req, 'order.restore', `恢复订单 ${order.order_no}（原删除来源：${order.deleted_by || '未知'}）`);
+    return { ok: true };
+  });
+
+  // 批量清理：挂着的未付款订单多了以后，一条条点不现实
+  app.post('/api/orders/purge-pending', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const days = Math.max(Number((req.body || {}).days) || 7, 1);
+    const r = orderdel.purgeStalePending(days, 'admin');
+    logAdmin(req, 'order.purge', `批量清理 ${r.days} 天前未付款订单：${r.count} 条`);
+    return r;
   });
 
   app.get('/api/stats/revenue', async (req, reply) => {

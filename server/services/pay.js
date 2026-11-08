@@ -94,8 +94,14 @@ function markPaid(orderNo, tradeNo, channel, raw = '', paidAmount = null) {
       return { mismatch: true, expected, actual };
     }
   }
-  db.prepare('UPDATE orders SET status = ?, trade_no = ?, channel = ?, paid_at = ? WHERE id = ?')
+  // 订单可能已被用户/管理员当作「挂着的未付款订单」删掉了，但二维码早就发出去了，
+  // 用户事后扫码付钱时回调照样会来 —— 这时必须把订单复活，否则用户付了钱什么都看不到。
+  db.prepare(`UPDATE orders SET status = ?, trade_no = ?, channel = ?, paid_at = ?,
+    deleted_at = NULL, deleted_by = '' WHERE id = ?`)
     .run('paid', tradeNo || '', channel || order.channel, now(), order.id);
+  if (order.deleted_at) {
+    paydiag.push('warn', 'pay', `订单 ${orderNo} 曾被${order.deleted_by === 'admin' ? '管理员' : '用户'}删除，收到支付回调后已自动恢复`);
+  }
   db.prepare('INSERT INTO payments (order_no, channel, trade_no, amount, status, raw, created_at) VALUES (?,?,?,?,?,?,?)')
     .run(orderNo, channel || order.channel, tradeNo || '', order.pay_amount, 'success', String(raw).slice(0, 4000), now());
   const date = new Date().toISOString().slice(0, 10);

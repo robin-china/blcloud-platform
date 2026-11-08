@@ -857,6 +857,7 @@ window.PageMyOrders = {
             <td>
               <button class="btn sm" v-if="o.status==='pending'" @click="pay(o)">继续支付</button>
               <button class="btn sm" v-if="o.status==='pending' && canSimulate" @click="simulatePay(o)">模拟支付</button>
+              <button class="btn sm danger" v-if="o.status==='pending'" @click="remove(o)">删除</button>
             </td>
           </tr>
           <tr v-if="!list.length"><td colspan="7"><div class="empty">暂无订单</div></td></tr>
@@ -879,6 +880,17 @@ window.PageMyOrders = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
     function pay(o) { location.hash = `#/product/${o.items[0].product_id}`; }
+    // 没付钱的订单一直挂在列表里很闹心，允许用户自己删掉。
+    // 服务端是软删除（列表隐藏、记录保留），万一扫码付款的回调晚到也不会丢单。
+    async function remove(o) {
+      const tip = o.discount > 0 ? `删除后抵扣的 ¥${o.discount}（${Math.round(o.discount * 100)} 积分）会退回账户。` : '';
+      if (!(await U.confirm(`删除订单 ${o.order_no}？${tip}`))) return;
+      try {
+        const r = await U.api.del(`/api/portal/orders/${o.order_no}`);
+        U.toast(r.points_back > 0 ? `已删除，退回 ${r.points_back} 积分` : '已删除', 'success');
+        load();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
     const statusText = (s) => ({ pending: '待支付', paid: '已支付', refunded: '已退款' }[s] || s);
     const channelName = (c) => ({ wxpay: '微信支付', alipay: '支付宝', simulate: '模拟支付' }[c] || c || '-');
     // 付了钱到底发了什么，必须让用户自己看得见：额度包不会发授权码，
@@ -904,7 +916,7 @@ window.PageMyOrders = {
         canSimulate.value = (s.pay_channels || []).includes('simulate');
       } catch (e) { /* ignore */ }
     });
-    return { list, fmt, canSimulate, simulatePay, pay, statusText, channelName, deliverText };
+    return { list, fmt, canSimulate, simulatePay, pay, remove, statusText, channelName, deliverText };
   },
 };
 

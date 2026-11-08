@@ -134,6 +134,10 @@ ensureColumn('licenses', 'plan_code', "plan_code TEXT DEFAULT ''");
 ensureColumn('orders', 'kind', "kind TEXT DEFAULT 'purchase'");
 ensureColumn('orders', 'ref_license_id', 'ref_license_id INTEGER');
 ensureColumn('orders', 'plan_id', 'plan_id INTEGER');
+// 未付款订单允许用户/管理员清掉，但只做软删除：二维码可能已经发出去了，
+// 用户事后扫码付钱时回调必须还能找到这笔订单（markPaid 会顺手复活它）。
+ensureColumn('orders', 'deleted_at', 'deleted_at TEXT');
+ensureColumn('orders', 'deleted_by', "deleted_by TEXT DEFAULT ''");
 // 代理商：手动授权身份 + 名下用户归属。agent_code 是邀请码，注册/自助绑定时用。
 ensureColumn('users', 'agent_id', 'agent_id INTEGER DEFAULT 0');
 ensureColumn('users', 'agent_rate', 'agent_rate REAL');

@@ -149,7 +149,12 @@ CREATE TABLE IF NOT EXISTS orders (
   items TEXT DEFAULT '[]',
   remark TEXT DEFAULT '',
   paid_at TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- 软删除：用户/管理员可以清掉未付款订单，但不能真删记录 ——
+  -- 二维码可能已经发出去了，用户事后扫码付钱，回调找不到订单就是丢钱。
+  -- 所以只标记「谁在什么时候删的」，列表过滤掉，回调仍能命中并复活。
+  deleted_at TEXT,
+  deleted_by TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
 

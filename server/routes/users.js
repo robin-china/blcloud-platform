@@ -39,7 +39,8 @@ module.exports = async function userRoutes(app) {
       FROM licenses l LEFT JOIN products p ON p.id = l.product_id
       LEFT JOIN plans pl ON pl.id = l.plan_id WHERE l.user_id = ? ORDER BY l.id DESC`).all(id);
     const devices = db.prepare(`SELECT d.*, p.name AS product_name FROM devices d LEFT JOIN products p ON p.id = d.product_id WHERE d.user_id = ? ORDER BY d.id DESC`).all(id);
-    const orders = db.prepare('SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(id);
+    // 用户详情里也不显示被清掉的未付款订单（要看/恢复请到订单页筛「已删除」）
+    const orders = db.prepare('SELECT * FROM orders WHERE user_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 50').all(id);
     const points = db.prepare('SELECT * FROM points_logs WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(id);
     const apiKeys = db.prepare('SELECT * FROM api_keys WHERE user_id = ? ORDER BY id DESC').all(id);
     return { user, licenses, devices, orders, points, apiKeys };

@@ -17,7 +17,8 @@ module.exports = async function statsRoutes(app) {
     const users = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
     const todayRow = db.prepare('SELECT * FROM stats_daily WHERE date = ?').get(t) || {};
     const revenue = db.prepare(`SELECT IFNULL(SUM(pay_amount),0) AS total, COUNT(*) AS count FROM orders WHERE status='paid'`).get();
-    const pendingOrders = db.prepare(`SELECT COUNT(*) AS c FROM orders WHERE status='pending'`).get().c;
+    // 待付款只看「还挂在列表里的」，被用户/管理员删掉的不该继续报警
+    const pendingOrders = db.prepare(`SELECT COUNT(*) AS c FROM orders WHERE status='pending' AND deleted_at IS NULL`).get().c;
     const pendingLicenses = db.prepare(`SELECT COUNT(*) AS c FROM licenses WHERE status='pending'`).get().c;
     const monthRevenue = db.prepare(`SELECT IFNULL(SUM(pay_amount),0) AS total FROM orders WHERE status='paid' AND created_at >= ?`)
       .get(new Date(Date.now() - 30 * 86400000).toISOString()).total;

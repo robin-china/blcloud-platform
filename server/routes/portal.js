@@ -12,6 +12,7 @@ const plans = require('../lib/plans');
 const commission = require('../lib/commission');
 const reminders = require('../lib/reminders');
 const profileLib = require('../lib/profile');
+const orderdel = require('../lib/orderdel');
 
 /**
  * 用户端自动补单的节流表：orderId -> 上次查单时间戳。
@@ -308,8 +309,22 @@ module.exports = async function portalRoutes(app) {
   app.get('/api/portal/orders', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
     await autoSyncPendingOrders(req.user.sub);
-    const list = db.prepare('SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(req.user.sub);
+    const list = db.prepare('SELECT * FROM orders WHERE user_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 50').all(req.user.sub);
     return { list: list.map((o) => ({ ...o, items: safeJson(o.items, []) })) };
+  });
+
+  /**
+   * 删除自己挂着没付的订单（软删除）。
+   * 不硬删的原因：支付二维码可能已经发给用户了，他过一会儿才扫。
+   * 记录真删掉，微信回调来了找不到订单，钱就白收了 —— markPaid 会把订单复活。
+   */
+  app.delete('/api/portal/orders/:orderNo', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const order = db.prepare('SELECT * FROM orders WHERE order_no = ?').get(String(req.params.orderNo || ''));
+    if (!order || order.user_id !== req.user.sub) return reply.code(404).send({ error: '订单不存在' });
+    const r = orderdel.softDeletePending(order, 'user');
+    if (r.error) return reply.code(400).send({ error: r.error });
+    return { ok: true, already: !!r.already, points_back: r.points_back };
   });
 
   app.get('/api/portal/licenses', async (req, reply) => {
