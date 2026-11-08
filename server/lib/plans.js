@@ -467,13 +467,29 @@ function licenseMatchesApp(lic, appRow) {
 /** 客户端可见的权益描述（会进离线票据，必须短且稳定） */
 function licenseEntitlement(lic) {
   const p = licensePlan(lic);
+  // 历史商品授权 / 卡密池码没有档位：仍要把字段形状补齐。
+  // 客户端拿不到 entitlement 时会回退显示「在线授权」，档位歧义 —— 这正是
+  // LabelGo 删码/降档契约第 2 条要求堵死的路径，宁可给个明确的「标准授权」。
+  // 注意不擅自套免费档：它们的离线宽限要继续走 open_apps.offline_days。
   if (!p) return {
-    plan_code: String(lic.plan_code || lic.type || ''), features: [], limits: {}, seats: 1, offline_days: 0,
+    plan_code: String(lic.plan_code || lic.type || 'legacy'),
+    plan_name: '标准授权',
+    billing: 'once', is_free: false, tier: 0,
+    features: [], limits: {}, seats: 1, offline_days: 0, online_required: 0,
     app_id: lic.app_id || null,
+    product_id: lic.product_id || null,
+    product_name: '',
   };
+  const isFree = p.billing === 'free';
   return {
     plan_code: p.code,
-    plan_name: p.name,
+    // 降档/删码后客户端要显示「免费版」而不是后台自定义的档位名
+    // （默认种子叫「在线免费版」，客户端按字面判断会以为还是在线付费档）。
+    // 后台原名保留在 plan_display_name 里，管理界面不受影响。
+    plan_name: isFree ? '免费版' : p.name,
+    plan_display_name: p.name,
+    billing: p.billing,
+    is_free: isFree,
     tier: p.tier,
     features: p.features,
     limits: p.limits || {},

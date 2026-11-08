@@ -76,7 +76,10 @@ function deliverRenew(order) {
   const days = plan.billing === 'period' ? (Number(plan.period_days) || 365) : 365;
   const base = lic.end_at ? Math.max(Date.parse(lic.end_at), Date.now()) : Date.now();
   const endAt = new Date(base + days * 86400000).toISOString();
-  db.prepare(`UPDATE licenses SET end_at = ?, plan_id = ?, plan_code = ?, status = 'active' WHERE id = ?`)
+  // 过期降级的痕迹必须一起清掉：留着 downgraded_from，客户端续费后仍会提示
+  // 「订阅到期已降级」，而且 entitlementVersion 把它算进哈希，版本号也对不上。
+  db.prepare(`UPDATE licenses SET end_at = ?, plan_id = ?, plan_code = ?, status = 'active',
+    downgraded_from = '', downgraded_at = '' WHERE id = ?`)
     .run(endAt, plan.id, plan.code, lic.id);
   return {
     type: 'license_renew', license_key: lic.license_key, license_id: lic.id,
@@ -128,7 +131,7 @@ function deliverUpgrade(order) {
 
   const appId = planAppId || Number(order.app_id) || Number(lic.app_id) || null;
   db.prepare(`UPDATE licenses SET plan_id = ?, plan_code = ?, max_devices = ?, end_at = ?,
-    type = ?, status = 'active', app_id = ? WHERE id = ?`)
+    type = ?, status = 'active', app_id = ?, downgraded_from = '', downgraded_at = '' WHERE id = ?`)
     .run(plan.id, plan.code, Number(plan.max_devices) || 1, endAt,
       plan.billing === 'period' ? 'subscription' : 'permanent', appId, lic.id);
   return {

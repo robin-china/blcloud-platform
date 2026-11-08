@@ -335,6 +335,76 @@ GET /api/open/v1/app/version?product=LabelGo&version=1.0.20&platform=win32&arch=
 
 > 解绑是**即时生效**的：后台或用户端一解绑，这台机器手上的旧令牌下次请求就会被拒，不用等令牌自然过期。
 
+### 5.3.1 删码 / 降档响应契约（LabelGo，2026-11-08）
+
+**总原则：`verify` / `heartbeat` 的每一个响应都必须带 `license` 字段。**
+字段缺失会被客户端当作「老后台、没给结论」而沿用上一次的权益快照 —— 后台删了码，
+界面却还显示「在线授权」，就是这么来的。有效时是完整对象，无结论之外的所有情况一律 `null`。
+
+| 场景 | HTTP | 响应体 | 客户端动作 |
+|---|---|---|---|
+| 授权被删 / 吊销 / 停用 / 到期 | verify `403`、心跳 `200` | `valid:false` + `license:null` + `reason`/`code` 标准码 + `entitlement_changed:true` | 立即清本地权益快照 → 免费版 |
+| 授权仍在但降到免费档 | `200` | `valid:true` + **完整 license**（含 entitlement） | 解析新 entitlement，标签库配额回 5 |
+| 账号一张授权都没有 | `200` | `valid:true` + `license:null` | 明确按免费版渲染 |
+| 服务端部署故障 | `5xx` | — | 走 7 天离线宽限，**不要降级** |
+
+失败响应（`reason` / `code` 同值，`message` / `reason_text` 是可显示的中文）：
+
+```json
+{
+  "valid": false,
+  "license": null,
+  "reason": "LICENSE_NOT_FOUND",
+  "code": "LICENSE_NOT_FOUND",
+  "message": "授权不存在",
+  "entitlement": null,
+  "entitlement_version": "",
+  "entitlement_changed": true,
+  "server_time": "..."
+}
+```
+
+标准码：`LICENSE_NOT_FOUND`（删码）、`LICENSE_REVOKED`（吊销）、`LICENSE_EXPIRED`（到期）、
+`LICENSE_INACTIVE`（停用）、`LICENSE_UNASSIGNED`（卡密未绑定）、`SESSION_REVOKED`（解绑）、
+`PRODUCT_MISMATCH`、`MACHINE_NOT_BOUND`。
+
+降档 / 免费档一定下发完整权益，**不能只给 `license_key`**（客户端会回退显示「在线授权」，
+档位歧义）：
+
+```json
+{
+  "valid": true,
+  "license": {
+    "license_key": "LIC-…",
+    "downgraded_from": "member",
+    "entitlement": {
+      "plan_code": "free",
+      "plan_name": "免费版",
+      "plan_display_name": "在线免费版",
+      "billing": "free",
+      "is_free": true,
+      "features": ["labelgo.basic"],
+      "limits": { "labelgo.library": 5 }
+    },
+    "entitlement_version": "a1b2c3d4e5f6"
+  },
+  "entitlement": { "...": "同上，冗余一份便于客户端直读" },
+  "entitlement_version": "a1b2c3d4e5f6"
+}
+```
+
+- `plan_name` 对 `billing=free` 的档位**固定为「免费版」**（后台自定义名放 `plan_display_name`），
+  功能判定仍应走 `entitlement.features` 的能力码，不要解析档位名或比较 tier。
+- 心跳额外带 `entitlement_version` / `entitlement_changed`：客户端上报上次版本即可增量感知，
+  不上报也没关系，5 分钟一拍的心跳会整体解析 `license.entitlement`。
+- 服务端故障只用 `5xx`（断网 / `5xx` / `404` / `405` / `408` / `429` 走 7 天离线宽限）。
+  **绝不能用 403 表达部署问题** —— 403 会被当成「授权没了」，把付费客户降成免费版。
+- 续费 / 重新激活是同一个授权码原地升回：`plan_code`、`features`、`limits` 全部回到付费档，
+  `downgraded_from` 清空；客户端本地模板与数据源不受影响，无需重新初始化。
+
+**验收**：删码 → 点「刷新授权」显示免费版；不点刷新等一拍心跳也自动降；
+续费 / 重新激活原地升回，模板与数据源不丢。服务端自测见 `tools/test-license-verdict.js`（58 项）。
+
 ### 5.4 我的硬件与 TB 凭据
 
 `GET /user/devices`
@@ -344,9 +414,8 @@ GET /api/open/v1/app/version?product=LabelGo&version=1.0.20&platform=win32&arch=
   "tb": {
     "url": "https://tb.example.com",
     "enabled": true,
-    "username": "oabc@tb.cn",
-    "password": "oabc",
-    "status": "active"
+    "status": "active",
+    "note": "设备直连使用每台设备的 tb_token（MQTT 用户名）；账户级访问请使用 blcloud API 密钥"
   },
   "list": [
     {
