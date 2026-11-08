@@ -110,11 +110,14 @@ function oauthAuthorizeUrl(redirectUri, state, scope = 'snsapi_base') {
 async function oauthAccessToken(code) {
   const cfg = getConfig('wechat');
   if (!cfg.appid || !cfg.appsecret) throw new Error('未配置服务号 AppID / AppSecret');
-  const url = `${API}/snsapi/oauth2/access_token?appid=${encodeURIComponent(cfg.appid)}`
+  // 路径是 /sns/ 不是 /snsapi/（snsapi 只是 scope 名前缀）。
+  // 2026-11-08 线上踩过：写成 /snsapi/oauth2/access_token 微信直接 404 且空 body，
+  // 表面上看就是「Unexpected end of JSON input」这种毫无线索的错
+  const url = `${API}/sns/oauth2/access_token?appid=${encodeURIComponent(cfg.appid)}`
     + `&secret=${encodeURIComponent(cfg.appsecret)}`
     + `&code=${encodeURIComponent(code)}`
     + '&grant_type=authorization_code';
-  const { data } = await wxFetch(url);
+  const { res, data } = await wxFetch(url);
   if (data.errcode) {
     // 40029 = code 无效/已用过（用户刷新回调页就会踩到）；40163 = code 已被使用
     const extra = {
@@ -131,14 +134,14 @@ async function oauthAccessToken(code) {
     // token 类字段的值截断脱敏，errcode/errmsg/scope/unionid 原样保留。
     const redacted = JSON.stringify(data, (k, v) =>
       (/token/i.test(k) && typeof v === 'string' ? `${v.slice(0, 6)}…` : v));
-    throw new Error(`微信授权响应未包含 openid，无法确认用户身份：${(redacted || '空响应').slice(0, 300)}`);
+    throw new Error(`微信授权响应未包含 openid（HTTP ${res.status}），无法确认用户身份：${(redacted || '空响应').slice(0, 300)}`);
   }
   return data;
 }
 
-/** snsapi_userinfo 拉昵称头像（静默授权拿不到，只能拿 openid） */
+/** snsapi_userinfo 拉昵称头像（静默授权拿不到，只能拿 openid）。路径是 /sns/userinfo */
 async function oauthUserInfo(accessToken, openid) {
-  const url = `${API}/snsapi/userinfo?access_token=${encodeURIComponent(accessToken)}`
+  const url = `${API}/sns/userinfo?access_token=${encodeURIComponent(accessToken)}`
     + `&openid=${encodeURIComponent(openid)}&lang=zh_CN`;
   const { data } = await wxFetch(url);
   if (data.errcode) throw new Error(explainWxError(data.errcode, data.errmsg));

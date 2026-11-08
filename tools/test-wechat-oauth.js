@@ -29,11 +29,12 @@ const B = '/platform';
 const realFetch = global.fetch;
 let oauthTokenCalled = 0;
 const lastWxHeaders = [];
+const lastWxUrls = [];
 const R = (obj) => ({ ok: true, status: 200, text: async () => JSON.stringify(obj) });
 global.fetch = async (url, opts) => {
   const u = String(url);
-  if (u.includes('api.weixin.qq.com')) lastWxHeaders.push((opts && opts.headers) || {});
-  if (u.includes('/snsapi/oauth2/access_token')) {
+  if (u.includes('api.weixin.qq.com')) { lastWxHeaders.push((opts && opts.headers) || {}); lastWxUrls.push(u); }
+  if (u.includes('/sns/oauth2/access_token')) {
     oauthTokenCalled += 1;
     if (u.includes('code=badcode')) return R({ errcode: 40029, errmsg: 'invalid code' });
     // 微信既不报错也不给 openid 的异常响应（2026-11-08 线上真实发生过）
@@ -44,7 +45,7 @@ global.fetch = async (url, opts) => {
   if (u.includes('/cgi-bin/user/info')) {
     return R({ nickname: '微信昵称', headimgurl: 'https://wx.example/a.png', unionid: 'uni-001' });
   }
-  if (u.includes('/snsapi/userinfo')) {
+  if (u.includes('/sns/userinfo')) {
     return R({ nickname: '静默之外的昵称', headimgurl: 'https://wx.example/u.png' });
   }
   return realFetch(url, opts);
@@ -108,6 +109,8 @@ function stateOf(location) {
   check('302 回用户中心', r.statusCode === 302 && /\/platform\/user\/\?t=ho_/.test(back), back);
   check('落到 state 里指定的页面（#/licenses）', back.endsWith('#/licenses'), back.split('#')[1]);
   check('微信接口被真实调用一次', oauthTokenCalled === 1, oauthTokenCalled);
+  // 回归守护：授权接口路径是 /sns/…，写成 /snsapi/… 微信会 404 且空 body（2026-11-08 线上踩过）
+  check('换 token 走的是 /sns/ 路径', lastWxUrls.some((u) => u.includes('/sns/oauth2/access_token')), lastWxUrls.join(' | '));
   // 回归守护：Node 内置 fetch 自动补的请求头会让微信返回空 body（Unexpected end of JSON input），
   // 服务端必须显式写死这些头（详见 docs/踩坑记录.md「微信 API 请求头」条目）
   const h = lastWxHeaders.find((x) => x['Accept-Language']);
