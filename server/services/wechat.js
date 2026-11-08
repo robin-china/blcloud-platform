@@ -124,6 +124,15 @@ async function oauthAccessToken(code) {
     }[Number(data.errcode)];
     throw new Error(extra ? `微信 ${data.errcode}：${extra}` : explainWxError(data.errcode, data.errmsg));
   }
+  if (!data || !data.openid) {
+    // 没报 errcode 却没拿到 openid：没法登录，也必须把微信的原话留进诊断日志，
+    // 否则下游只会看到一句莫名其妙的 TypeError（2026-11-08 线上踩过：openid 缺失
+    // 一直到建号兜底 `openid.slice(-4)` 才炸，完全看不出是微信响应的问题）。
+    // token 类字段的值截断脱敏，errcode/errmsg/scope/unionid 原样保留。
+    const redacted = JSON.stringify(data, (k, v) =>
+      (/token/i.test(k) && typeof v === 'string' ? `${v.slice(0, 6)}…` : v));
+    throw new Error(`微信授权响应未包含 openid，无法确认用户身份：${(redacted || '空响应').slice(0, 300)}`);
+  }
   return data;
 }
 

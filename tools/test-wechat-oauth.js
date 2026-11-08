@@ -36,6 +36,8 @@ global.fetch = async (url, opts) => {
   if (u.includes('/snsapi/oauth2/access_token')) {
     oauthTokenCalled += 1;
     if (u.includes('code=badcode')) return R({ errcode: 40029, errmsg: 'invalid code' });
+    // 微信既不报错也不给 openid 的异常响应（2026-11-08 线上真实发生过）
+    if (u.includes('code=noopenid')) return R({ access_token: 'AT-NOOID', expires_in: 7200, scope: 'snsapi_base' });
     return R({ access_token: 'AT-OAUTH', openid: 'wx-openid-001', scope: 'snsapi_base', unionid: 'uni-001' });
   }
   if (u.includes('/cgi-bin/token')) return R({ access_token: 'AT-BASE', expires_in: 7200 });
@@ -136,6 +138,12 @@ function stateOf(location) {
   console.log('\n[6] 失败分支');
   r = await app.inject({ method: 'GET', url: `${B}/api/wechat/oauth/callback?code=badcode&state=${encodeURIComponent(st2)}` });
   check('code 无效 → wxerr=fail', /wxerr=fail/.test(r.headers.location || ''), r.headers.location);
+  r = await app.inject({ method: 'GET', url: `${B}/api/wechat/oauth/callback?code=noopenid&state=${encodeURIComponent(st2)}` });
+  check('响应缺 openid → wxerr=fail（不能建出残缺用户）', /wxerr=fail/.test(r.headers.location || ''), r.headers.location);
+  check('缺 openid 用户没被建出来', !db.prepare('SELECT id FROM users WHERE openid IS NULL OR openid = \'undefined\'').get(), '');
+  const diag = (await app.inject({ method: 'GET', url: `${B}/api/admin/wechat/diag`, headers: H })).json();
+  const evs = diag.events || diag;
+  check('诊断里留下微信原始响应（脱敏）', JSON.stringify(evs).includes('未包含 openid'), JSON.stringify(evs).slice(0, 200));
   r = await app.inject({ method: 'GET', url: `${B}/api/wechat/oauth/callback?state=${encodeURIComponent(st2)}` });
   check('用户取消（无 code）→ wxerr=cancel', /wxerr=cancel/.test(r.headers.location || ''), r.headers.location);
 

@@ -44,7 +44,7 @@ async function ensureUser(openid, profile = {}) {
     ? wxAvatar.value
     : profileLib.defaultAvatar(openid);
   const info = db.prepare('INSERT INTO users (openid, unionid, nickname, avatar, phone, points, status, created_at, last_login_at) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(openid, profile.unionid || '', profileLib.cleanText(profile.nickname, 24) || `用户${openid.slice(-4)}`,
+    .run(openid, profile.unionid || '', profileLib.cleanText(profile.nickname, 24) || `用户${String(openid || '').slice(-4)}`,
       initialAvatar, null, 0, 'active', now(), now());
   user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   const cfg = getConfig('tb');
@@ -237,8 +237,11 @@ module.exports = async function wechatRoutes(app) {
       reply.header('Cache-Control', 'no-store');
       return reply.redirect(publicUrl(req, `/user/?t=${ticket}#/${st.to}`));
     } catch (e) {
-      wxdiag.push('error', 'oauth', `网页授权失败：${e.message}`);
-      console.error('[wechat] 网页授权失败:', e.message);
+      // 只有 e.message 排不了错（2026-11-08：'Cannot read properties of undefined (reading
+      // 'slice')' 完全看不出炸在哪），把堆栈首行带上文件行号一起留进诊断
+      const at = String(e.stack || '').split('\n').slice(1, 3).map((l) => l.trim()).join(' <- ');
+      wxdiag.push('error', 'oauth', `网页授权失败：${e.message}${at ? `｜${at.slice(0, 300)}` : ''}`);
+      console.error('[wechat] 网页授权失败:', e.message, '\n', e.stack);
       return back('fail');
     }
   });
