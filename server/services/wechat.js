@@ -3,6 +3,35 @@ const { getConfig } = require('../lib/config');
 
 const API = 'https://api.weixin.qq.com';
 
+/**
+ * 微信 API 专用 fetch。不能裸调 fetch：
+ * Node 内置 fetch 会自动补 accept-language: * / sec-fetch-mode: cors 等请求头，
+ * 微信接口收到这些头会直接返回空 body，res.json() 就抛
+ * 「Unexpected end of JSON input」（微信支付 v3 实测过同一个坑，见 docs/踩坑记录.md）。
+ * 这里把可能被微信校验的头全部显式写死，并用 text() + 手动 parse，
+ * 空/非 JSON 响应报出 HTTP 状态码和原文片段，而不是难懂的类型错误。
+ */
+async function wxFetch(url, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      Accept: 'application/json',
+      'Accept-Language': 'zh-CN',
+      'User-Agent': 'blcloud-admin/1.0',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`微信接口返回了非 JSON 内容（HTTP ${res.status}）：${(text || '空响应').slice(0, 200)}`);
+  }
+  return { res, data };
+}
+
 let tokenCache = { token: '', expiresAt: 0 };
 
 /** 把微信 errcode 翻译成能直接照做的话，避免只知道「失败」却不知下一步 */
@@ -28,8 +57,7 @@ async function getAccessToken(force = false) {
   const cfg = getConfig('wechat');
   if (!cfg.appid || !cfg.appsecret) throw new Error('未配置服务号 AppID / AppSecret');
   if (!force && tokenCache.token && tokenCache.expiresAt > Date.now() + 60000) return tokenCache.token;
-  const res = await fetch(`${API}/cgi-bin/token?grant_type=client_credential&appid=${cfg.appid}&secret=${cfg.appsecret}`);
-  const data = await res.json();
+  const { data } = await wxFetch(`${API}/cgi-bin/token?grant_type=client_credential&appid=${cfg.appid}&secret=${cfg.appsecret}`);
   if (data.errcode) throw new Error(explainWxError(data.errcode, data.errmsg));
   tokenCache = { token: data.access_token, expiresAt: Date.now() + (data.expires_in || 7200) * 1000 };
   return tokenCache.token;
@@ -37,24 +65,21 @@ async function getAccessToken(force = false) {
 
 async function createQrScene(scene, expireSeconds = 300) {
   const token = await getAccessToken();
-  const res = await fetch(`${API}/cgi-bin/qrcode/create?access_token=${token}`, {
+  const { data } = await wxFetch(`${API}/cgi-bin/qrcode/create?access_token=${token}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       expire_seconds: expireSeconds,
       action_name: 'QR_STR_SCENE',
       action_info: { scene: { scene_str: String(scene) } },
     }),
   });
-  const data = await res.json();
   if (data.errcode) throw new Error(explainWxError(data.errcode, data.errmsg));
   return { ticket: data.ticket, url: data.url, qrcodeUrl: `https://mp.weixin.qq.com/cgi-bin/showqrcode?ticket=${encodeURIComponent(data.ticket)}` };
 }
 
 async function getUserInfo(openid) {
   const token = await getAccessToken();
-  const res = await fetch(`${API}/cgi-bin/user/info?access_token=${token}&openid=${openid}&lang=zh_CN`);
-  const data = await res.json();
+  const { data } = await wxFetch(`${API}/cgi-bin/user/info?access_token=${token}&openid=${openid}&lang=zh_CN`);
   if (data.errcode) throw new Error(`获取用户信息失败 ${data.errcode}: ${data.errmsg}`);
   return data;
 }
@@ -89,8 +114,7 @@ async function oauthAccessToken(code) {
     + `&secret=${encodeURIComponent(cfg.appsecret)}`
     + `&code=${encodeURIComponent(code)}`
     + '&grant_type=authorization_code';
-  const res = await fetch(url);
-  const data = await res.json();
+  const { data } = await wxFetch(url);
   if (data.errcode) {
     // 40029 = code 无效/已用过（用户刷新回调页就会踩到）；40163 = code 已被使用
     const extra = {
@@ -107,20 +131,18 @@ async function oauthAccessToken(code) {
 async function oauthUserInfo(accessToken, openid) {
   const url = `${API}/snsapi/userinfo?access_token=${encodeURIComponent(accessToken)}`
     + `&openid=${encodeURIComponent(openid)}&lang=zh_CN`;
-  const res = await fetch(url);
-  const data = await res.json();
+  const { data } = await wxFetch(url);
   if (data.errcode) throw new Error(explainWxError(data.errcode, data.errmsg));
   return data;
 }
 
 async function sendTemplateMessage(openid, templateId, data, url = '') {
   const token = await getAccessToken();
-  const res = await fetch(`${API}/cgi-bin/message/template/send?access_token=${token}`, {
+  const { data: result } = await wxFetch(`${API}/cgi-bin/message/template/send?access_token=${token}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ touser: openid, template_id: templateId, url, data }),
   });
-  return res.json();
+  return result;
 }
 
 function checkSignature(signature, timestamp, nonce) {

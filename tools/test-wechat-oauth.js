@@ -28,19 +28,22 @@ const B = '/platform';
 /* 微信接口桩：app.inject 不走 fetch，所以这里只影响服务端对微信的调用 */
 const realFetch = global.fetch;
 let oauthTokenCalled = 0;
+const lastWxHeaders = [];
+const R = (obj) => ({ ok: true, status: 200, text: async () => JSON.stringify(obj) });
 global.fetch = async (url, opts) => {
   const u = String(url);
+  if (u.includes('api.weixin.qq.com')) lastWxHeaders.push((opts && opts.headers) || {});
   if (u.includes('/snsapi/oauth2/access_token')) {
     oauthTokenCalled += 1;
-    if (u.includes('code=badcode')) return { json: async () => ({ errcode: 40029, errmsg: 'invalid code' }) };
-    return { json: async () => ({ access_token: 'AT-OAUTH', openid: 'wx-openid-001', scope: 'snsapi_base', unionid: 'uni-001' }) };
+    if (u.includes('code=badcode')) return R({ errcode: 40029, errmsg: 'invalid code' });
+    return R({ access_token: 'AT-OAUTH', openid: 'wx-openid-001', scope: 'snsapi_base', unionid: 'uni-001' });
   }
-  if (u.includes('/cgi-bin/token')) return { json: async () => ({ access_token: 'AT-BASE', expires_in: 7200 }) };
+  if (u.includes('/cgi-bin/token')) return R({ access_token: 'AT-BASE', expires_in: 7200 });
   if (u.includes('/cgi-bin/user/info')) {
-    return { json: async () => ({ nickname: '微信昵称', headimgurl: 'https://wx.example/a.png', unionid: 'uni-001' }) };
+    return R({ nickname: '微信昵称', headimgurl: 'https://wx.example/a.png', unionid: 'uni-001' });
   }
   if (u.includes('/snsapi/userinfo')) {
-    return { json: async () => ({ nickname: '静默之外的昵称', headimgurl: 'https://wx.example/u.png' }) };
+    return R({ nickname: '静默之外的昵称', headimgurl: 'https://wx.example/u.png' });
   }
   return realFetch(url, opts);
 };
@@ -103,6 +106,11 @@ function stateOf(location) {
   check('302 回用户中心', r.statusCode === 302 && /\/platform\/user\/\?t=ho_/.test(back), back);
   check('落到 state 里指定的页面（#/licenses）', back.endsWith('#/licenses'), back.split('#')[1]);
   check('微信接口被真实调用一次', oauthTokenCalled === 1, oauthTokenCalled);
+  // 回归守护：Node 内置 fetch 自动补的请求头会让微信返回空 body（Unexpected end of JSON input），
+  // 服务端必须显式写死这些头（详见 docs/踩坑记录.md「微信 API 请求头」条目）
+  const h = lastWxHeaders.find((x) => x['Accept-Language']);
+  check('对微信的请求显式写死了 Accept-Language（防空响应回归）', !!h && h['Accept-Language'] === 'zh-CN', h);
+  check('对微信的请求显式写死了 User-Agent', !!h && !!h['User-Agent'], h);
 
   const ticket = new URL(back).searchParams.get('t');
   const user = db.prepare("SELECT * FROM users WHERE openid = 'wx-openid-001'").get();
