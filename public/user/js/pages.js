@@ -88,6 +88,9 @@ window.PageProduct = {
             <button class="btn" v-if="product.type==='software' && product.download_url" @click="download">下载安装包</button>
           </div>
         </div>
+        <!-- 版本差异：与「我的空间」卡片按钮引用同一份 HTML 内容（products.compare_url，
+             缺省用 /assets/compare/default.html），管理员改一份文件两处同步生效 -->
+        <version-compare v-if="product.type==='software'" :url="product.compare_url" mode="inline"></version-compare>
       </div>
     </div>
 
@@ -249,7 +252,13 @@ window.PageSpace = {
               </div>
               <div class="kv">
                 <div class="k">授权码</div>
-                <div class="mono" :title="a.license ? a.license.license_key : ''">{{ a.license ? a.license.license_key : '—' }}</div>
+                <div class="mono" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"
+                  :title="a.license ? a.license.license_key : ''">
+                  <span>{{ maskKey(a) }}</span>
+                  <button v-if="a.license" class="btn sm" style="padding:1px 8px" @click="toggleKey(a)">
+                    {{ revealedKeys[a.app_id] ? '隐藏' : '显示' }}
+                  </button>
+                </div>
                 <div class="k">有效期</div><div :title="expireText(a)">{{ expireText(a) }}</div>
                 <div class="k">设备</div>
                 <div>{{ a.license ? a.license.bound_devices + ' / ' + a.license.max_devices : '—' }}</div>
@@ -261,6 +270,7 @@ window.PageSpace = {
                 <button class="btn sm" v-if="a.license && a.renew" @click="openRenew(a)">续费</button>
                 <button class="btn sm" @click="download(a)">下载</button>
                 <button class="btn sm" v-if="a.license" @click="copy(a.license.license_key)">复制授权码</button>
+                <version-compare :url="a.product && a.product.compare_url"></version-compare>
               </div>
               <div v-if="a.plan && a.upgrades && !a.upgrades.length" class="note">
                 当前已是该产品最高档位
@@ -455,6 +465,17 @@ window.PageSpace = {
         });
       }
     }
+    // 概览卡片默认脱敏授权码（防共享屏幕/截图/肩窥泄露），点「显示」才展开；
+    // 「复制授权码」仍复制完整码 —— 抄码激活去「我的授权」页或直接复制都行
+    const revealedKeys = reactive({});
+    function maskKey(a) {
+      const k = a.license && a.license.license_key;
+      if (!k) return '—';
+      if (revealedKeys[a.app_id]) return k;
+      if (/^LIC-/.test(k)) return `LIC-****-****-${k.slice(-4)}`;
+      return `****${k.slice(-4)}`;
+    }
+    function toggleKey(a) { revealedKeys[a.app_id] = !revealedKeys[a.app_id]; }
     function copy(text) {
       if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(text)
@@ -469,7 +490,7 @@ window.PageSpace = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
     onMounted(async () => {
-      if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
+      if (!(await U.authReady())) { location.hash = '#/login'; return; }
       await Promise.all([load(), loadPayChannels()]);
     });
     return {
@@ -477,6 +498,7 @@ window.PageSpace = {
       planDialog, planMode, curApp, payResult, planError, submitting,
       openUpgrade, openRenew, closePlan, submit, simulatePay, checkPaid,
       expireText, qrSrc, download, copy, signin, thumb: productIcon,
+      revealedKeys, maskKey, toggleKey,
     };
   },
 };
@@ -512,7 +534,7 @@ window.PageMyLicenses = {
     <div class="card">
       <div class="card-head">
         <h3>我的授权</h3>
-        <span style="color:var(--text-3);font-size:12.5px">换电脑或重装系统后，先解绑旧机器再激活，不占名额</span>
+        <span style="color:var(--text-3);font-size:12.5px">换电脑或重装系统后，先解绑旧机器再激活，不占名额；授权码是您激活软件的凭证，请勿分享给他人</span>
       </div>
       <div class="card-body tight">
         <div class="table-wrap">
@@ -768,7 +790,7 @@ window.PageMyLicenses = {
     }
 
     onMounted(async () => {
-      if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
+      if (!(await U.authReady())) { location.hash = '#/login'; return; }
       await load();
     });
 
@@ -780,8 +802,7 @@ window.PageMyLicenses = {
   },
 };
 
-window.PageMyDevices = {
-  template: `
+window.PageMyDevices = {  template: `
   <div>
     <div class="card" style="margin-bottom:16px">
       <div class="card-head"><h3>绑定硬件</h3></div>
@@ -828,7 +849,7 @@ window.PageMyDevices = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
     onMounted(async () => {
-      if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
+      if (!(await U.authReady())) { location.hash = '#/login'; return; }
       load();
     });
     return { list, sn, fmt, bind };
@@ -909,7 +930,7 @@ window.PageMyOrders = {
       }).filter(Boolean).join('，');
     }
     onMounted(async () => {
-      if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
+      if (!(await U.authReady())) { location.hash = '#/login'; return; }
       load();
       try {
         const s = await U.api.get('/api/portal/site');
@@ -1051,7 +1072,7 @@ window.PageAccount = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
     onMounted(async () => {
-      if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
+      if (!(await U.authReady())) { location.hash = '#/login'; return; }
       try {
         const me = await U.api.get('/api/portal/me');
         nickname.value = me.user.nickname || '';

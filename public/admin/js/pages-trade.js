@@ -159,9 +159,30 @@ window.PageOrders = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
 
-    async function deliver(o) {
-      await U.api.post(`/api/orders/${o.id}/deliver`);
-      U.toast('授权已补发', 'success');
+    // 补发授权：服务端有幂等保护（已发过的单默认 409），这里确认后带 force 重发。
+    // 以前既没 catch 也没 load()：接口一报错就是「点了完全没反应」，
+    // 成功了列表也不刷新，管理员看不到任何变化 —— 全是零反馈。
+    async function deliver(o, force) {
+      try {
+        const r = await U.api.post(`/api/orders/${o.id}/deliver`, { force: !!force });
+        if (!r.delivered || !r.delivered.length) {
+          U.toast('订单已标记补发，但未发放任何内容（商品可能已被删除），请核对商品与授权', 'error');
+        } else {
+          U.toast(`已发放：${deliverText({ deliver_result: JSON.stringify(r.delivered) })}`, 'success');
+        }
+        load();
+      } catch (e) {
+        if (e.data && e.data.code === 'ALREADY_DELIVERED') {
+          const ok = await U.confirm(
+            `订单 ${o.order_no} 已发放过：${deliverText(o) || '（内容为空）'}\n\n`
+            + '再发一次会重复发码 / 重复加额度 / 叠加续期，确定继续？',
+            { title: '重复发货确认', okText: '仍然重发' },
+          );
+          if (ok) return deliver(o, true);
+          return;
+        }
+        U.toast(U.failMsg(e, '补发失败'), 'error');
+      }
     }
 
     async function refund(o) {
@@ -187,6 +208,10 @@ window.PageOrders = {
       return arr.map((c) => {
         if (c.type === 'api_quota') return `API 额度 ${c.quota} 次（余额 ${c.after}）`;
         if (c.type === 'license') return `授权码 ${c.license_key}`;
+        // 续费/升级单不发新码（沿用原授权），漏掉这两个分支时订单在后台
+        // 永远显示「未发放任何内容」，管理员会反复点补发 → 每次叠加一年
+        if (c.type === 'license_renew') return `授权 ${c.license_key} 续期 ${c.days} 天`;
+        if (c.type === 'license_upgrade') return `授权 ${c.license_key} 升级为 ${c.product}`;
         if (c.type === 'device') return `设备 ${c.sn}`;
         return '';
       }).filter(Boolean).join('，');

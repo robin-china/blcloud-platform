@@ -58,6 +58,9 @@ module.exports = async function adminRoutes(app) {
     return {
       token: signAdmin(admin),
       must_change_password: Number(admin.must_change_password || 0) === 1,
+      // 生产环境后端会硬拦受限令牌（requireAdmin），前端据此不给「稍后提醒」出口；
+      // 测试/本地开发不拦，弹窗可跳过，否则本地联调每次都要改密码
+      mcp_enforced: process.env.NODE_ENV === 'production',
       admin: { id: admin.id, username: admin.username, name: admin.name, role: admin.role },
     };
   });
@@ -79,7 +82,10 @@ module.exports = async function adminRoutes(app) {
     db.prepare('UPDATE admins SET password_hash = ?, must_change_password = 0 WHERE id = ?')
       .run(hashPassword(String(newPassword || '')), admin.id);
     logAdmin(req, '修改密码');
-    return { ok: true };
+    // 重新签发完整令牌：登录时发的可能是受限令牌（mcp），改完密码必须换掉，
+    // 否则这个账号接下来所有管理接口仍被 403 挡着
+    const fresh = db.prepare('SELECT * FROM admins WHERE id = ?').get(admin.id);
+    return { ok: true, token: signAdmin(fresh) };
   });
 
   app.get('/api/admin/list', async (req, reply) => {
@@ -91,6 +97,8 @@ module.exports = async function adminRoutes(app) {
     if (!(await requireAdmin(req, reply))) return;
     const { username, password, name, role } = req.body || {};
     if (!username || !password) return reply.code(400).send({ error: '用户名和密码必填' });
+    // 新建账号也守同样的强度线：不然从这里造出弱口令，登录时又要强制整改
+    if (String(password).length < 8) return reply.code(400).send({ error: '密码至少 8 位' });
     const exists = db.prepare('SELECT id FROM admins WHERE username = ?').get(username);
     if (exists) return reply.code(400).send({ error: '用户名已存在' });
     db.prepare('INSERT INTO admins (username, password_hash, name, role, status, created_at) VALUES (?,?,?,?,?,?)')
@@ -103,7 +111,12 @@ module.exports = async function adminRoutes(app) {
     if (!(await requireAdmin(req, reply))) return;
     const id = Number(req.params.id);
     const { name, role, status, password } = req.body || {};
-    if (password) db.prepare('UPDATE admins SET password_hash = ? WHERE id = ?').run(hashPassword(String(password)), id);
+    if (password) {
+      if (String(password).length < 8) return reply.code(400).send({ error: '密码至少 8 位' });
+      // 重置密码后必须清掉强制整改标记，否则旧标记会让新密码账号也被 403 卡住
+      db.prepare('UPDATE admins SET password_hash = ?, must_change_password = 0 WHERE id = ?')
+        .run(hashPassword(String(password)), id);
+    }
     db.prepare('UPDATE admins SET name = COALESCE(?, name), role = COALESCE(?, role), status = COALESCE(?, status) WHERE id = ?')
       .run(name || null, role || null, status || null, id);
     return { ok: true };
@@ -128,8 +141,15 @@ module.exports = async function adminRoutes(app) {
   app.post('/api/settings', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     const patch = req.body || {};
+    // 生产环境禁改演示开关：dev_simulate / pay_simulate 打开就是「任意 openid
+    // 登录 + 0 元支付」后门。lib/config.js 的 devMode() 生产下已无条件返回 false，
+    // 这里再拦一道写入，避免配置表里留着误导性的「已开启」状态。
+    const denyKeys = process.env.NODE_ENV === 'production' ? ['dev_simulate', 'pay_simulate'] : [];
     for (const [k, v] of Object.entries(patch)) {
       if (k.startsWith('cfg.')) continue;
+      if (denyKeys.includes(k)) {
+        return reply.code(400).send({ error: `生产环境不允许修改 ${k}（演示后门开关）` });
+      }
       setSetting(k, v);
     }
     logAdmin(req, '更新站点设置');
@@ -164,7 +184,13 @@ module.exports = async function adminRoutes(app) {
     if (!(await requireAdmin(req, reply))) return;
     const data = await req.file();
     if (!data) return reply.code(400).send({ error: '未收到文件' });
-    const ext = path.extname(data.filename || '').toLowerCase() || '.png';
+    // 扩展名白名单（图标/图片上传）：svg 会被浏览器当页面渲染（存储型 XSS），
+    // html/js 同理，一律不收。上游用不上但传了也只报错，不会落盘
+    const ext = path.extname(data.filename || '').toLowerCase();
+    const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
+    if (!ALLOWED_EXT.has(ext)) {
+      return reply.code(400).send({ error: `不支持的文件类型「${ext || '未知'}」，仅支持 jpg / jpeg / png / webp / gif` });
+    }
     const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
     const target = path.join(UPLOAD_DIR, name);
     await new Promise((resolve, reject) => {

@@ -50,12 +50,40 @@ module.exports = async function orderRoutes(app) {
     const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(Number(req.params.id));
     if (!order) return reply.code(404).send({ error: '订单不存在' });
     if (order.status !== 'paid') return reply.code(400).send({ error: '仅已支付订单可发货' });
-    const delivered = deliverOrder(order);
+
+    // 幂等保护：已发放过的订单默认拒绝再次发货 —— deliverOrder 不是幂等的，
+    // 重复调用会再发一张授权码 / 再充一次额度 / 再加一次销量，续费单还会
+    // 在原有效期上再叠一年。确认重发必须显式带 force=1。
+    let existing = [];
+    try { existing = JSON.parse(order.deliver_result || '[]'); } catch { existing = []; }
+    if (!Array.isArray(existing)) existing = [];
+    const force = (req.body || {}).force === true || String((req.body || {}).force || '') === '1';
+    if (existing.length && !force) {
+      return reply.code(409).send({
+        error: '该订单已发放过内容，重复发货会重复发码 / 重复加额度 / 叠加续期。确认要重发请带 force=1。',
+        code: 'ALREADY_DELIVERED',
+        delivered: existing,
+      });
+    }
+
+    let delivered;
+    try {
+      delivered = deliverOrder(order);
+    } catch (e) {
+      // 升级/续费/套餐单有 8 处业务性 throw（档位被删、授权吊销/易主等）。
+      // 以前直接 500，而前端按钮没有 catch —— 管理员看到的就是「点了没反应」。
+      paydiag.push('error', 'deliver', `管理员手动发货失败：订单 ${order.order_no}，${e.message}`);
+      return reply.code(400).send({ error: `发货失败：${e.message}` });
+    }
     // 与自动发货一致：结果写回订单，管理员事后能核对到底发了什么
     db.prepare('UPDATE orders SET deliver_result = ? WHERE id = ?')
       .run(JSON.stringify(delivered || []), order.id);
-    paydiag.push('ok', 'deliver', `管理员手动发货：订单 ${order.order_no}，${
-      (delivered || []).length ? JSON.stringify(delivered) : '未发放任何东西'}`);
+    const summary = (delivered || []).length
+      ? JSON.stringify(delivered)
+      : '未发放任何东西（订单内商品可能已被删除，请核对）';
+    paydiag.push('ok', 'deliver', `管理员手动发货：订单 ${order.order_no}，${summary}`);
+    // 授权/发货操作必须留审计（同发放授权、批量发码的约定）
+    logAdmin(req, '手动补发', `订单 ${order.order_no}：${(delivered || []).length} 项${force ? '（force 重发）' : ''}`);
     return { ok: true, delivered };
   });
 
@@ -118,6 +146,55 @@ module.exports = async function orderRoutes(app) {
     db.prepare(`UPDATE client_sessions SET status = 'revoked'
       WHERE license_id IN (SELECT id FROM licenses WHERE order_id = ?)`).run(order.id);
     db.prepare('UPDATE licenses SET status = ? WHERE order_id = ?').run('revoked', order.id);
+
+    /**
+     * 按 deliver_result 反向回收：发货发了什么，退款就要收什么。
+     * 以前只吊销授权 —— 额度包的 API 额度还留在账户里继续用（付了钱退了款还
+     * 白拿额度），积分抵扣也不退，属净资损。硬件设备涉及 TB 外部系统，
+     * 机器可能已经发到用户手里，不自动删，标记后人工核对。
+     */
+    let quotaBack = 0;
+    let devicesFlagged = 0;
+    try {
+      const delivered = JSON.parse(order.deliver_result || '[]');
+      for (const c of Array.isArray(delivered) ? delivered : []) {
+        if (c.type === 'api_quota') {
+          const q = Number(c.quota) || 0;
+          if (q > 0) {
+            const u = db.prepare('SELECT blcloud_quota FROM users WHERE id = ?').get(order.user_id);
+            const balance = Math.max(0, Number((u && u.blcloud_quota) || 0) - q);
+            db.prepare('UPDATE users SET blcloud_quota = ? WHERE id = ?').run(balance, order.user_id);
+            quotaBack += q;
+          }
+        } else if (c.type === 'device' && c.sn) {
+          // 设备退款不自动删行：TB 侧设备与已发硬件由人工处理，这里打上标记
+          const info = db.prepare(`UPDATE devices SET name = name || '（已退款，待收回）'
+            WHERE sn = ? AND user_id = ? AND name NOT LIKE '%（已退款，待收回）%'`).run(c.sn, order.user_id);
+          devicesFlagged += info.changes;
+        }
+      }
+    } catch { /* deliver_result 解析失败不影响退款主流程 */ }
+
+    // 抵扣的积分退回（与删除订单同一逻辑：钱退了，抵的积分不能白扣）
+    const pointsBack = Math.round(Number(order.discount || 0) * 100);
+    if (pointsBack > 0) {
+      const u = db.prepare('SELECT points FROM users WHERE id = ?').get(order.user_id);
+      if (u) {
+        const balance = Number(u.points || 0) + pointsBack;
+        db.prepare('UPDATE users SET points = ? WHERE id = ?').run(balance, order.user_id);
+        db.prepare('INSERT INTO points_logs (user_id, change, balance, reason, created_at) VALUES (?,?,?,?,?)')
+          .run(order.user_id, pointsBack, balance, `订单 ${order.order_no} 退款退回抵扣积分`, now());
+      }
+    }
+    // 销量回退：卖出去又退了，total_sales 不能继续算
+    try {
+      for (const it of safeJson(order.items, [])) {
+        if (it.product_id) {
+          db.prepare('UPDATE products SET total_sales = MAX(0, total_sales - ?) WHERE id = ?')
+            .run(Number(it.qty) || 1, it.product_id);
+        }
+      }
+    } catch { /* items 解析失败忽略 */ }
     // 佣金冲正：付款→代理商提现→用户退款 这条链路不堵住就是净亏钱
     const reversed = commission.reverseForOrder(order.id);
     // 消费返的积分也要收回来（此前退款只改状态，积分白送）
@@ -131,7 +208,11 @@ module.exports = async function orderRoutes(app) {
           .run(order.user_id, -gained, balance, `订单 ${order.order_no} 退款收回积分`, now());
       }
     }
-    return { ok: true, reversed_commissions: reversed };
+    logAdmin(req, '订单退款', `订单 ${order.order_no}，¥${order.pay_amount}`
+      + `${quotaBack ? `，收回 API 额度 ${quotaBack} 次` : ''}`
+      + `${pointsBack ? `，退回抵扣积分 ${pointsBack}` : ''}`
+      + `${devicesFlagged ? `，标记待收回设备 ${devicesFlagged} 台` : ''}`);
+    return { ok: true, reversed_commissions: reversed, quota_back: quotaBack, points_back: pointsBack, devices_flagged: devicesFlagged };
   });
 
   // 删除未付款订单（软删除，见 lib/orderdel.js）：只清列表，不销毁记录，

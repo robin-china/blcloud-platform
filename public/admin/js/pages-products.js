@@ -120,6 +120,17 @@ window.PageProducts = {
             </div>
           </div>
           <div class="field"><label>下载地址</label><input class="input" v-model="form.download_url" placeholder="安装包 URL" /></div>
+          <div class="field" v-if="form.type==='software'">
+            <label>版本差异页面 URL</label>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input class="input" style="flex:1;min-width:220px" v-model="form.compare_url"
+                placeholder="assets/compare/default.html" />
+              <a v-if="form.compare_url" class="btn sm" :href="previewUrl" target="_blank">预览</a>
+            </div>
+            <div class="hint">用户端产品详情与「我的空间」卡片会引用这份 HTML 展示版本/档位差异。
+              留空用默认页 <b>assets/compare/default.html</b>（可直接编辑该文件定制）；
+              想每个产品一份，复制成 assets/compare/产品名.html 再填进来。</div>
+          </div>
           <div class="field"><label>产品简介</label><textarea class="input" v-model="form.description"></textarea></div>
           <div class="field"><label>功能亮点（每行一条）</label><textarea class="input" v-model="featureText" placeholder="远程控制&#10;自动灌溉&#10;数据看板"></textarea></div>
           <div class="field-row">
@@ -164,7 +175,7 @@ window.PageProducts = {
       Object.assign(form, {
         type: 'software', name: '', subtitle: '', category: '', price: 0, original_price: 0,
         stock: 0, version: '1.0.0', icon: '', download_url: '', description: '', status: 'off',
-        sort: 0, is_official: 1, quota: 0, features: [],
+        sort: 0, is_official: 1, quota: 0, compare_url: '', features: [],
       });
       featureText.value = '';
     }
@@ -241,10 +252,18 @@ window.PageProducts = {
 
     function typeName(t) { return PRODUCT_TYPES[t] || t; }
 
+    // 版本差异内容预览：相对路径补部署前缀，绝对地址原样
+    const previewUrl = computed(() => {
+      const u = String(form.compare_url || '').trim();
+      if (!u) return '';
+      if (/^https?:\/\//i.test(u)) return u;
+      return U.basePath + (u.startsWith('/') ? u : '/' + u);
+    });
+
     onMounted(load);
     return {
       list, total, page, pages, q, type, status, editing, form, featureText, fmt, icon,
-      load, openCreate, openEdit, save, toggle, remove, uploadIcon, typeName,
+      load, openCreate, openEdit, save, toggle, remove, uploadIcon, typeName, previewUrl,
     };
   },
 };

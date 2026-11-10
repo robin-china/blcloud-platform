@@ -5,12 +5,24 @@ const { logAdmin } = require('../lib/adminlog');
 
 const FIELDS = `type, name, subtitle, description, category, price, original_price, icon, images,
   features, version, download_url, file_size, stock, is_official, status, sort`;
-// quota = 额度包商品发放的调用次数（db/index.js 的 ensureColumn 保证旧库也有这列）
-const FIELDS_WITH_QUOTA = `${FIELDS}, quota`;
+// quota = 额度包商品发放的调用次数；compare_url = 版本差异内容地址（详情内嵌 + 空间卡片共用）
+// （均由 db/index.js 的 ensureColumn 保证旧库也有这两列）
+const FIELDS_WITH_EXTRA = `${FIELDS}, quota, compare_url`;
 
 function shape(row) {
   if (!row) return row;
   return { ...row, images: safeJson(row.images, []), features: safeJson(row.features, []) };
+}
+
+/**
+ * 版本差异内容地址消毒：只放行站内相对路径与 http(s) 绝对地址。
+ * javascript: / data: 这类伪协议一律清空 —— 这个值最终会进 iframe 的 src。
+ */
+function sanitizeCompareUrl(u) {
+  const s = String(u == null ? '' : u).trim();
+  if (!s) return '';
+  if (/^(javascript|data|vbscript|file):/i.test(s)) return '';
+  return s;
 }
 
 module.exports = async function productRoutes(app) {
@@ -44,8 +56,8 @@ module.exports = async function productRoutes(app) {
     if (!(await requireAdmin(req, reply))) return;
     const b = req.body || {};
     const ts = now();
-    const info = db.prepare(`INSERT INTO products (${FIELDS_WITH_QUOTA}, total_downloads, total_installs, active_users, total_sales, created_at, updated_at)
-      VALUES (@type,@name,@subtitle,@description,@category,@price,@original_price,@icon,@images,@features,@version,@download_url,@file_size,@stock,@is_official,@status,@sort,@quota,0,0,0,0,@ts,@ts)`)
+    const info = db.prepare(`INSERT INTO products (${FIELDS_WITH_EXTRA}, total_downloads, total_installs, active_users, total_sales, created_at, updated_at)
+      VALUES (@type,@name,@subtitle,@description,@category,@price,@original_price,@icon,@images,@features,@version,@download_url,@file_size,@stock,@is_official,@status,@sort,@quota,@compare_url,0,0,0,0,@ts,@ts)`)
       .run({
         type: b.type || 'software', name: b.name || '未命名产品', subtitle: b.subtitle || '',
         description: b.description || '', category: b.category || '', price: Number(b.price) || 0,
@@ -53,7 +65,9 @@ module.exports = async function productRoutes(app) {
         images: JSON.stringify(b.images || []), features: JSON.stringify(b.features || []),
         version: b.version || '1.0.0', download_url: b.download_url || '', file_size: b.file_size || '',
         stock: Number(b.stock) || 0, is_official: b.is_official == null ? 1 : Number(b.is_official),
-        status: b.status || 'off', sort: Number(b.sort) || 0, ts,
+        status: b.status || 'off', sort: Number(b.sort) || 0,
+        // 版本差异内容地址：站内相对路径（assets/compare/xxx.html）或 https 外链；非法伪协议直接丢弃
+        compare_url: sanitizeCompareUrl(b.compare_url), ts,
       });
     return { id: info.lastInsertRowid };
   });
@@ -68,14 +82,16 @@ module.exports = async function productRoutes(app) {
     db.prepare(`UPDATE products SET type=@type, name=@name, subtitle=@subtitle, description=@description,
       category=@category, price=@price, original_price=@original_price, icon=@icon, images=@images,
       features=@features, version=@version, download_url=@download_url, file_size=@file_size,
-      stock=@stock, is_official=@is_official, status=@status, sort=@sort, quota=@quota, updated_at=@ts WHERE id=@id`)
+      stock=@stock, is_official=@is_official, status=@status, sort=@sort, quota=@quota,
+      compare_url=@compare_url, updated_at=@ts WHERE id=@id`)
       .run({
         id, type: next.type, name: next.name, subtitle: next.subtitle || '', description: next.description || '',
         category: next.category || '', price: Number(next.price) || 0, original_price: Number(next.original_price) || 0,
         icon: next.icon || '', quota: Number(next.quota) || 0, images: JSON.stringify(b.images || safeJson(next.images, [])),
         features: JSON.stringify(b.features || safeJson(next.features, [])), version: next.version || '1.0.0',
         download_url: next.download_url || '', file_size: next.file_size || '', stock: Number(next.stock) || 0,
-        is_official: Number(next.is_official), status: next.status || 'off', sort: Number(next.sort) || 0, ts: now(),
+        is_official: Number(next.is_official), status: next.status || 'off', sort: Number(next.sort) || 0,
+        compare_url: sanitizeCompareUrl(next.compare_url), ts: now(),
       });
     return { ok: true };
   });
@@ -124,6 +140,13 @@ module.exports = async function productRoutes(app) {
         ? db.prepare("UPDATE licenses SET status = 'revoked', remark = ? WHERE product_id = ? AND status <> 'revoked'")
           .run(`商品「${product.name}」已删除，授权随之作废`, id).changes
         : 0;
+      // 吊销授权必须同时作废客户端会话，否则名额释放了、旧令牌还能继续用（单张
+      // revoke / 解绑 / 退款都同步踢会话，这里以前漏了）
+      if (revoked) {
+        db.prepare(`UPDATE client_sessions SET status = 'revoked'
+          WHERE status = 'active' AND license_id IN
+          (SELECT id FROM licenses WHERE product_id = ?)`).run(id);
+      }
       // 档位与开放应用是配置：解除引用即可，不跟着删（档位还可能被历史授权引用）
       const detachedApps = db.prepare('UPDATE open_apps SET product_id = NULL WHERE product_id = ?').run(id).changes;
       db.prepare('DELETE FROM product_versions WHERE product_id = ?').run(id);

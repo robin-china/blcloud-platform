@@ -63,7 +63,13 @@ module.exports = async function payRoutes(app) {
       if (!alipay.verifyNotify(params)) throw new Error('验签失败');
       if (params.trade_status === 'TRADE_SUCCESS' || params.trade_status === 'TRADE_FINISHED') {
         // 支付宝金额单位为元
-        markPaid(params.out_trade_no, params.trade_no, 'alipay', JSON.stringify(params), Number(params.total_amount || 0));
+        const r = markPaid(params.out_trade_no, params.trade_no, 'alipay', JSON.stringify(params), Number(params.total_amount || 0));
+        // 与微信分支对齐：金额不符只记账不发货，但必须进支付诊断，否则排障时看不到
+        if (r && r.mismatch) {
+          paydiag.push('error', 'notify', `回调金额不符，拒绝发货：订单 ${params.out_trade_no}，应收 ¥${r.expected}，实收 ¥${r.actual}`);
+        } else {
+          paydiag.push('ok', 'notify', `支付成功：订单 ${params.out_trade_no}，支付宝单号 ${params.trade_no}`);
+        }
       }
     } catch (e) {
       app.log.warn(`支付宝回调处理失败: ${e.message}`);

@@ -41,8 +41,12 @@ window.PageLogin = {
           <div class="field"><label>确认新密码</label><input class="input" type="password" v-model="pwd.confirm" @keyup.enter="changePwd" /></div>
         </div>
         <div class="modal-foot">
-          <button class="btn" @click="skipPwd">稍后提醒</button>
-          <button class="btn primary" :disabled="pwdLoading" @click="changePwd">{{ pwdLoading ? '提交中...' : '确认修改' }}</button>
+          <!-- 生产环境后端会把受限令牌拦成 403（所有管理接口只放行改密），
+               跳过没有意义；本地/测试不拦，可以稍后处理 -->
+          <button v-if="!mcpEnforced" class="btn" @click="skipPwd">稍后提醒</button>
+          <button class="btn primary" :disabled="pwdLoading" @click="changePwd">
+            {{ pwdLoading ? '提交中...' : (mcpEnforced ? '确认修改并进入后台' : '确认修改') }}
+          </button>
         </div>
       </div>
     </div>
@@ -55,6 +59,7 @@ window.PageLogin = {
     const loading = Vue.ref(false);
     const forcePwd = Vue.ref(false);
     const pwdLoading = Vue.ref(false);
+    const mcpEnforced = Vue.ref(false);
     const pwd = Vue.reactive({ old: '', next: '', confirm: '' });
 
     function done(res) {
@@ -70,6 +75,7 @@ window.PageLogin = {
         U.api.setToken('admin', res.token);
         if (res.must_change_password) {
           pwd.old = form.password;
+          mcpEnforced.value = !!res.mcp_enforced;
           forcePwd.value = true;
           U.toast('请先修改初始密码', 'warning');
           return;
@@ -95,10 +101,11 @@ window.PageLogin = {
       if (pwd.next !== pwd.confirm) return U.toast('两次输入的新密码不一致', 'error');
       pwdLoading.value = true;
       try {
-        await U.api.post('/api/admin/password', { oldPassword: pwd.old, newPassword: pwd.next });
+        // 改密成功后服务端会重新签发完整令牌（旧的是受限令牌，只能调这一个接口）
+        const res = await U.api.post('/api/admin/password', { oldPassword: pwd.old, newPassword: pwd.next });
         forcePwd.value = false;
         U.toast('密码已更新', 'success');
-        done({ token: U.api.getToken('admin') });
+        done(res.token ? res : { token: U.api.getToken('admin') });
       } catch (e) {
         U.toast(e.message, 'error');
       } finally {
@@ -106,7 +113,7 @@ window.PageLogin = {
       }
     }
 
-    return { form, loading, submit, forcePwd, pwd, pwdLoading, changePwd, skipPwd };
+    return { form, loading, submit, forcePwd, pwd, pwdLoading, changePwd, skipPwd, mcpEnforced };
   },
 };
 })();

@@ -55,6 +55,9 @@ function stubU(win, calls) {
   const money = (n) => '¥' + Number(n || 0).toFixed(2);
   win.U = {
     basePath: '/platform',
+    // 页面守卫统一 await U.authReady()：已登录场景直接放行
+    authReady: async () => true,
+    setAuthReady() {},
     toast(msg) { calls.toasts.push(msg); },
     confirm: async () => true,
     icons: {},
@@ -136,9 +139,11 @@ async function renderUser() {
       /#app\s*\{\s*display:\s*none;?\s*\}/.test(head));
     check(`${f}：有挂载后才显示的 .ready 规则`, /#app\.ready\s*\{\s*display:\s*block/.test(head));
     check(`${f}：body 里有加载态遮罩`, /<div id="boot"[^>]*>/.test(html));
-    check(`${f}：挂载后才加 ready 并移除遮罩`,
-      /mount\('#app'\)[\s\S]{0,200}classList\.add\('ready'\)[\s\S]{0,200}boot\.remove\(\)/.test(html));
-    check(`${f}：有超时兜底（脚本报错也不会永远卡「加载中」）`, /setTimeout\([\s\S]{0,400}加载超时/.test(html));
+    // 登录态是异步校验的：遮罩要等 app:ready（mount 前注册监听，reveal 里加 ready + 撤遮罩）
+    check(`${f}：mount 前注册 app:ready 监听`, /addEventListener\('app:ready',\s*reveal[\s\S]{0,40}\{ once: true \}/.test(html));
+    check(`${f}：reveal 里加 ready 并移除遮罩`,
+      /function reveal\(\)[\s\S]{0,300}classList\.add\('ready'\)[\s\S]{0,200}boot\.remove\(\)/.test(html));
+    check(`${f}：有超时兜底（慢网/脚本报错也不会永远卡「加载中」）`, /setTimeout\(reveal,\s*\d+\)/.test(html));
   }
 
   console.log(`\n结果：${pass} 通过，${fail} 失败\n`);

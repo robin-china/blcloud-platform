@@ -43,13 +43,33 @@
     const text = await res.text();
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
     if (res.status === 401) {
-      setToken(scope, '');
-      if (scope === 'admin' && location.hash !== '#/login') location.hash = '#/login';
-      if (scope === 'user' && location.hash !== '#/login') location.hash = '#/login';
+      /**
+       * 401 不等于「网页登录态失效」。
+       *  - 登录接口自己返回 401（账号或密码错）：本来就在登录页，不能清令牌、更不能跳走；
+       *  - 开放接口业务 401 带 code（APP_SIGN_INVALID / SESSION_REVOKED / KEY_INVALID…）：
+       *    与后台/用户中心令牌无关，清掉会把已登录的人踢下线；
+       *  - 只有 requireAdmin/requireUser 的 401（只有 error、没有 code）才是真的过期。
+       *
+       * 另外一个线上坑：这里以前直接 `location.hash = '#/login'`。
+       * 管理后台根本没有 #/login 路由（登录页由 `v-if="!state.token"` 控制），
+       * 改 hash 只会让 syncHash 把 route 设成 'login' → 主内容区整个空白，
+       * 看起来就像「明明登录了却要我登录」。现在统一派事件，交给各端 app 决定怎么呈现。
+       */
+      const business401 = !!(data && data.code);
+      const loginCall = /\/login($|\?)/.test(String(url));
+      if (!business401 && !loginCall) {
+        setToken(scope, '');
+        try {
+          window.dispatchEvent(new CustomEvent('app:unauthorized', {
+            detail: { scope, url, message: (data && (data.error || data.message)) || '登录已过期' },
+          }));
+        } catch { /* 老浏览器没有 CustomEvent 时忽略，不影响主流程 */ }
+      }
     }
     if (!res.ok) {
       const err = new Error(data?.error || data?.message || `请求失败 ${res.status}`);
       err.data = data;
+      err.status = res.status;
       throw err;
     }
     return data;
@@ -149,8 +169,31 @@
 
   /** 统一的失败提示：删除/提交类操作失败时必须让人看见原因，不能静默 */
   function failMsg(e, fallback = '操作失败') {
+    if (e && e.status === 401) return '登录已过期，请重新登录';
     const m = (e && (e.message || e.error)) || fallback;
     return /请求失败 401/.test(m) ? '登录已过期，请重新登录' : m;
+  }
+
+  /**
+   * 登录态就绪信号。
+   *
+   * 根组件校验登录态是异步的（handoff 换票 → site → me），而各子页面 onMounted 是
+   * 同步读 localStorage —— 票据还没换成 token 时守卫会抢先跳 #/login，
+   * 已登录用户就被顶到登录页；更糟的是 claimHandoff 随后 replaceState 会把
+   * 已变成 #/login 的地址固化，刷新也回不到目标页。
+   *
+   * 页面守卫统一改成：`if (!(await U.authReady())) { location.hash = '#/login'; return; }`
+   * 根组件完成校验后调 U.setAuthReady(!!token) 唤醒所有等待者。
+   */
+  let authState = null;
+  const authWaiters = [];
+  function authReady() {
+    if (authState !== null) return Promise.resolve(authState);
+    return new Promise((resolve) => authWaiters.push(resolve));
+  }
+  function setAuthReady(loggedIn) {
+    authState = !!loggedIn;
+    authWaiters.splice(0).forEach((r) => { try { r(authState); } catch { /* 忽略 */ } });
   }
 
   const fmt = {
@@ -328,6 +371,6 @@
 
   window.U = {
     api, toast, confirm: confirmBox, failMsg, fmt, lineChart, barChart, donut, applySiteSettings,
-    icons: ICONS, svgIcon, avatar, avatarPresets, basePath: BASE,
+    icons: ICONS, svgIcon, avatar, avatarPresets, basePath: BASE, authReady, setAuthReady,
   };
 })();

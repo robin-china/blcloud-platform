@@ -111,6 +111,9 @@ ensureColumn('admins', 'must_change_password', 'must_change_password INTEGER DEF
 // 额度包商品发放多少「次」必须能显式配置：早先是从商品描述里正则猜「N 万次」，
 // 描述写不出这个数字时就会按默认值发，配错了用户买到的额度与页面标称不符
 ensureColumn('products', 'quota', 'quota INTEGER DEFAULT 0');
+// 版本差异内容地址：产品详情内嵌与「我的空间」卡片按钮共用同一份 HTML（缺省
+// /assets/compare/default.html）。空值 = 用默认页；支持站内相对路径或 https 外链
+ensureColumn('products', 'compare_url', "compare_url TEXT DEFAULT ''");
 // 发货结果落到订单上：付了钱到底发了什么（授权码 / 额度），必须用户和管理员都看得到
 ensureColumn('orders', 'deliver_result', 'deliver_result TEXT DEFAULT \'\'');
 // 物联账户开通失败的原因存下来：否则管理员只能看到一个「待激活」，不知道卡在哪一步

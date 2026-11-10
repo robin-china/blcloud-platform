@@ -105,24 +105,32 @@
     const comp = window['Page' + name];
     if (comp) AdminApp.app.component('page-' + kebab(name), comp);
   }
-  // 挂载成功才撤遮罩：这时模板里的 {{ }} 已经全部编译掉了，不会闪
-  try {
-    AdminApp.app.mount('#app');
-    document.getElementById('app').classList.add('ready');
+
+  // 撤首屏遮罩。必须在 mount 之前注册：登录态校验（/api/admin/me）是异步的，
+  // 管理员 token 过期时晚撤一拍，登录页就不会先闪一下再出现。
+  function reveal() {
+    const el = document.getElementById('app');
+    if (el) el.classList.add('ready');
     const boot = document.getElementById('boot');
     if (boot) boot.remove();
+  }
+  window.addEventListener('app:ready', reveal, { once: true });
+  // 兜底①：接口慢时最多等 6 秒先显示页面，不能永远「加载中」
+  const bootTimer = setTimeout(reveal, 6000);
+  window.addEventListener('app:ready', () => clearTimeout(bootTimer), { once: true });
+
+  try {
+    AdminApp.app.mount('#app');
   } catch (err) {
     console.error(err);
+    // 挂载失败也必须让 #app 可见（初始 display:none），否则只剩遮罩什么都看不到
+    const el = document.getElementById('app');
+    if (el) el.classList.add('ready');
     const boot = document.getElementById('boot');
     if (boot) { boot.className = 'fail'; boot.textContent = '页面加载失败，点击刷新重试'; boot.onclick = () => location.reload(); }
   }
-  // 兜底：某个脚本报错导致走不到挂载，也不能永远停在「加载中」
-  setTimeout(() => {
-    const el = document.getElementById('app');
-    if (!el || el.classList.contains('ready')) return;
-    const boot = document.getElementById('boot');
-    if (boot) { boot.className = 'fail'; boot.textContent = '加载超时，点击刷新重试'; boot.onclick = () => location.reload(); }
-  }, 10000);
+  // 兜底②：脚本异常走不到挂载也强制可见（reveal 幂等）
+  setTimeout(reveal, 10000);
 </script>
 </body>
 </html>

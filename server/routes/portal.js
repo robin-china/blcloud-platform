@@ -135,7 +135,7 @@ module.exports = async function portalRoutes(app) {
     const where = type ? 'WHERE type = ? AND status = ?' : 'WHERE status = ?';
     const args = type ? [type, 'on'] : ['on'];
     const list = db.prepare(`SELECT id, type, name, subtitle, description, category, price, original_price,
-      icon, images, features, version, file_size, stock, total_downloads, total_installs, active_users, total_sales
+      icon, images, features, version, file_size, compare_url, stock, total_downloads, total_installs, active_users, total_sales
       FROM products ${where} ORDER BY sort DESC, id DESC`).all(...args);
     return { list: list.map((p) => ({ ...p, images: safeJson(p.images, []), features: safeJson(p.features, []) })) };
   });
@@ -172,12 +172,34 @@ module.exports = async function portalRoutes(app) {
     return devMode() ? { ok: true, devCode: code } : { ok: true };
   });
 
+  // 短信验证码失败锁定：6 位码 5 分钟内可被暴力撞出来。单实例部署（SQLite 禁
+  // cluster），内存计数够用；同一手机号验证失败 5 次锁 10 分钟
+  const smsFail = new Map();
+  function smsLocked(phone) {
+    const e = smsFail.get(String(phone || ''));
+    return !!(e && e.lockedUntil > Date.now());
+  }
+  function recordSmsFail(phone) {
+    const p = String(phone || '');
+    const e = smsFail.get(p) || { count: 0, lockedUntil: 0 };
+    e.count += 1;
+    if (e.count >= 5) { e.lockedUntil = Date.now() + 10 * 60 * 1000; e.count = 0; }
+    smsFail.set(p, e);
+  }
+
   app.post('/api/portal/phone/bind', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
     const { phone, code } = req.body || {};
+    if (smsLocked(phone)) {
+      return reply.code(429).send({ error: '验证失败次数过多，请 10 分钟后重试' });
+    }
     const row = db.prepare('SELECT * FROM sms_codes WHERE phone = ? AND used = 0 ORDER BY id DESC LIMIT 1').get(String(phone || ''));
-    if (!row || row.code !== String(code || '')) return reply.code(400).send({ error: '验证码错误' });
+    if (!row || row.code !== String(code || '')) {
+      recordSmsFail(phone);
+      return reply.code(400).send({ error: '验证码错误' });
+    }
     if (new Date(row.expires_at).getTime() < Date.now()) return reply.code(400).send({ error: '验证码已过期' });
+    smsFail.delete(String(phone || ''));
     db.prepare('UPDATE sms_codes SET used = 1 WHERE id = ?').run(row.id);
     db.prepare('UPDATE users SET phone = ? WHERE id = ?').run(String(phone), req.user.sub);
     return { ok: true };
@@ -374,7 +396,7 @@ module.exports = async function portalRoutes(app) {
     const appRows = db.prepare(`SELECT a.id, a.name, a.app_key, a.product_id, a.version,
         a.download_url, a.release_note,
         p.name AS product_name, p.subtitle AS product_subtitle, p.icon AS product_icon,
-        p.type AS product_type
+        p.type AS product_type, p.compare_url AS product_compare_url
       FROM open_apps a JOIN products p ON p.id = a.product_id
       WHERE a.status = 'active' AND p.status = 'on'
       ORDER BY a.id ASC`).all();
@@ -411,6 +433,8 @@ module.exports = async function portalRoutes(app) {
         product: {
           id: a.product_id, name: a.product_name, subtitle: a.product_subtitle || '',
           icon: a.product_icon || '', type: a.product_type || '',
+          // 版本差异内容地址：卡片上的「版本差异」按钮与产品详情页共用同一份 HTML
+          compare_url: a.product_compare_url || '',
         },
         license: lic ? {
           id: lic.id, license_key: lic.license_key, status: lic.status,
@@ -439,7 +463,7 @@ module.exports = async function portalRoutes(app) {
       licenses: db.prepare(`SELECT id, license_key, product_id, plan_id, plan_code, status, end_at, app_id
         FROM licenses WHERE user_id = ? ORDER BY id DESC`).all(uid),
       devices: db.prepare('SELECT id, sn, name, status FROM devices WHERE user_id = ? ORDER BY id DESC').all(uid),
-      orders: db.prepare('SELECT id, order_no, status, pay_amount FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(uid),
+      orders: db.prepare('SELECT id, order_no, status, pay_amount FROM orders WHERE user_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 50').all(uid),
     };
   });
 

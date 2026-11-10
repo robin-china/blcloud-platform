@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS products (
   total_installs INTEGER DEFAULT 0,
   active_users INTEGER DEFAULT 0,
   total_sales INTEGER DEFAULT 0,
+  -- 额度包商品发放的 API 调用次数（运行时 ensureColumn 同步保证旧库也有）
+  quota INTEGER DEFAULT 0,
+  -- 版本差异内容（产品详情内嵌 + 我的空间卡片按钮共用，缺省 /assets/compare/default.html）
+  compare_url TEXT DEFAULT '',
   is_official INTEGER DEFAULT 1,
   status TEXT DEFAULT 'off',
   sort INTEGER DEFAULT 0,

@@ -53,7 +53,13 @@
         <span>{{ state.user.nickname }}</span>
         <button class="btn sm" @click="logout">退出</button>
       </div>
-      <a v-else class="btn primary sm" href="#/login">登录</a>
+      <!-- authReady 之前不渲染「登录」按钮：登录态是异步校验的，提前渲染会让
+           已登录用户先看到「请登录」，等 /api/portal/me 回来才切换 -->
+      <a v-else-if="state.authReady" class="btn primary sm" href="#/login">登录</a>
+      <div v-else class="user-chip" style="opacity:.55;pointer-events:none">
+        <div class="avatar" style="width:28px;height:28px;font-size:12px">…</div>
+        <span style="color:var(--text-3)">载入中</span>
+      </div>
     </div>
   </header>
 
@@ -80,6 +86,8 @@
 <!-- 内置卡通头像：必须早于 api.js（U.avatar 会读它）与页面脚本 -->
 <script src="../assets/avatars.js"></script>
 <script src="../assets/api.js"></script>
+<!-- 版本差异组件（「我的空间」弹层 + 产品详情内嵌共用同一份 HTML 内容） -->
+<script src="../assets/compare.js"></script>
 <script src="js/app.js"></script>
 <script src="js/pages.js"></script>
 <script src="js/pages-earnings.js"></script>
@@ -91,24 +99,34 @@
     const comp = window['Page' + name];
     if (comp) UserApp.app.component('page-' + kebab(name), comp);
   }
-  // 挂载成功才撤遮罩：这时模板里的 {{ }} 已经全部编译掉了，不会闪
-  try {
-    UserApp.app.mount('#app');
-    document.getElementById('app').classList.add('ready');
+  if (window.VersionCompare) UserApp.app.component('version-compare', window.VersionCompare);
+
+  // 揭开页面（撤首屏遮罩）。必须在 mount 之前注册监听：
+  // 挂载 ≠ 可以给用户看，登录态校验（handoff 换票 → site → me）是异步的，
+  // 挂载完立刻撤遮罩，已登录用户会先看到顶栏「登录」按钮和页面里的「请先登录」。
+  function reveal() {
+    const el = document.getElementById('app');
+    if (el) el.classList.add('ready');
     const boot = document.getElementById('boot');
     if (boot) boot.remove();
+  }
+  window.addEventListener('app:ready', reveal, { once: true });
+  // 兜底①：接口很慢时最多等 8 秒就先显示页面（登录态守卫有自己的兜底），不能永远「加载中」
+  const bootTimer = setTimeout(reveal, 8000);
+  window.addEventListener('app:ready', () => clearTimeout(bootTimer), { once: true });
+
+  try {
+    UserApp.app.mount('#app');
   } catch (err) {
     console.error(err);
+    // 挂载失败也必须让 #app 可见（它初始 display:none），否则用户只剩一层遮罩什么都看不到
+    const el = document.getElementById('app');
+    if (el) el.classList.add('ready');
     const boot = document.getElementById('boot');
     if (boot) { boot.className = 'fail'; boot.textContent = '页面加载失败，点击刷新重试'; boot.onclick = () => location.reload(); }
   }
-  // 兜底：某个脚本报错导致走不到挂载，也不能永远停在「加载中」
-  setTimeout(() => {
-    const el = document.getElementById('app');
-    if (!el || el.classList.contains('ready')) return;
-    const boot = document.getElementById('boot');
-    if (boot) { boot.className = 'fail'; boot.textContent = '加载超时，点击刷新重试'; boot.onclick = () => location.reload(); }
-  }, 10000);
+  // 兜底②：某个脚本报错导致走不到挂载，也不能永远停在「加载中」（reveal 幂等，可重复调用）
+  setTimeout(reveal, 10000);
 </script>
 </body>
 </html>

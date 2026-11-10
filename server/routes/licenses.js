@@ -329,6 +329,10 @@ module.exports = async function licenseRoutes(app) {
     const lic = db.prepare('SELECT license_key FROM licenses WHERE id = ?').get(Number(req.params.id));
     db.prepare('DELETE FROM licenses WHERE id = ?').run(Number(req.params.id));
     db.prepare('DELETE FROM license_devices WHERE license_id = ?').run(Number(req.params.id));
+    // 删除授权也必须作废客户端会话（同吊销/解绑/退款的约定），
+    // 否则机器上拿着老 token 还能继续白嫖到自然过期
+    db.prepare('UPDATE client_sessions SET status = ? WHERE license_id = ?')
+      .run('revoked', Number(req.params.id));
     logAdmin(req, '删除授权', lic ? lic.license_key : `#${req.params.id}`);
     return { ok: true };
   });

@@ -81,14 +81,16 @@ function setSetting(key, value) {
 
 /**
  * 演示/联调后门总开关。
- * 显式设置 dev_simulate=1/0 优先；未设置时，仅非生产环境（NODE_ENV!=production）允许。
- * 生产部署请设 NODE_ENV=production，或在后台「用户与支付规则」中显式关闭。
+ * 生产环境（NODE_ENV=production）下无条件关闭：dev_simulate 配置也不允许打开 ——
+ * settings 表可被写（后台 /api/settings），如果配置能覆盖，生产等于留着一个
+ * 「任意 openid 冒充登录 + 0 元支付」的开关。非生产环境保持显式设置优先。
  */
 function devMode() {
+  if (process.env.NODE_ENV === 'production') return false;
   const v = getSetting('dev_simulate', '');
   if (v === '1') return true;
   if (v === '0') return false;
-  return process.env.NODE_ENV !== 'production';
+  return true;
 }
 
 function allSettings() {

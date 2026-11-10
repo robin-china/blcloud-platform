@@ -427,3 +427,7 @@ table.table tbody tr:hover { background: var(--surface-2); }
   .topbar .sub { display: none; }
   .content { padding: 14px 12px 32px; }
 }
+
+/* 版本差异 iframe（version-compare 组件）：详情页内嵌与弹层共用 */
+.compare-frame { width: 100%; height: 520px; border: 0; border-radius: 8px; background: #fff; display: block; }
+@media (max-width: 640px) { .compare-frame { height: 420px; } }

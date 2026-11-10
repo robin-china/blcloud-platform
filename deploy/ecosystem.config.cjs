@@ -15,8 +15,10 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: 3000,
         HOST: '0.0.0.0',
-        // 子路径部署时取消注释，并同步配置 deploy/nginx-subpath.conf
-        // 改完必须 pm2 restart blcloud-admin --update-env 才生效
+        // 子路径部署（www.bliot.cn/platform/）时取消注释，并同步配置 deploy/nginx-subpath.conf
+        // ⚠️ 生效命令实测（PM2 7.0.4）：pm2 restart blcloud-admin --update-env 不会读入
+        // 这里新增的 env —— 必须 pm2 delete blcloud-admin && pm2 start deploy/ecosystem.config.cjs && pm2 save
+        // （改回已有变量值时 --update-env 才有效）
         // BASE_PATH: 'platform',   // → www.bliot.cn/platform/admin/
         TRUST_PROXY: '1',
         // 客户端更新包目录（默认 /opt/blcloud/data/updates，一般不用改）。

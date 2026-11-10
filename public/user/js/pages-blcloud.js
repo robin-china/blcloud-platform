@@ -258,7 +258,7 @@ curl "{{ origin }}/api/blcloud/v1/devices/{设备ID}/telemetry?keys=temperature,
     }
 
     onMounted(async () => {
-      if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
+      if (!(await U.authReady())) { location.hash = '#/login'; return; }
       load();
     });
 

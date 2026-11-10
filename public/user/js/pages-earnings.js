@@ -141,7 +141,7 @@ window.PageEarnings = {
       reversed: '已冲正', paid: '已打款', rejected: '已驳回' }[s] || s);
 
     async function load() {
-      if (!localStorage.getItem('user_token')) { location.hash = '#/login'; return; }
+      if (!(await U.authReady())) { location.hash = '#/login'; return; }
       data.value = await U.api.get('/api/portal/earnings');
       try { agentInfo.value = await U.api.get('/api/portal/agent'); } catch (e) { agentInfo.value = {}; }
     }

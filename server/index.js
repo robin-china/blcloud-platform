@@ -68,7 +68,15 @@ function build() {
     return reply.redirect(`${urlNoQ}/${q}`, 301);
   });
 
-  app.register(fastifyStatic, { root: UPLOAD_DIR, prefix: `${BASE}/uploads/`, decorateReply: false });
+  app.register(fastifyStatic, {
+    root: UPLOAD_DIR, prefix: `${BASE}/uploads/`, decorateReply: false,
+    setHeaders(res, filePath) {
+      // 上传目录兜底：nginx 方案 B 会拦 .html/.svg，但方案 A / 本地开发直出。
+      // 这里强制 nosniff，并把可执行/可渲染类型一律当二进制 —— 混进 x.html 也渲染不了
+      res.header('X-Content-Type-Options', 'nosniff');
+      if (/\.(html?|svg|js)$/i.test(filePath)) res.header('Content-Type', 'application/octet-stream');
+    },
+  });
 
   // 客户端更新包：禁止列目录（index/list 全关）、包按文件名里的版本号长缓存、清单不缓存。
   // Content-Type 一律 octet-stream —— 上传目录里若混进 html/svg，被浏览器当页面渲染就是存储型 XSS。

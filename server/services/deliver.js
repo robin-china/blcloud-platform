@@ -2,6 +2,7 @@ const db = require('../db');
 const { now, safeJson, genLicenseKey } = require('../lib/util');
 const plans = require('../lib/plans');
 const tb = require('./tb');
+const tbdiag = require('../lib/tbdiag');
 const blcloud = require('../lib/blcloud');
 
 /**
@@ -194,7 +195,15 @@ function deliverOrder(order) {
                 .run(d.deviceId, d.token || '', dev.lastInsertRowid);
             }
           })
-          .catch(() => {});
+          .catch((e) => {
+            // TB 建档失败不能再静默吞：设备行已经创建了（用户能看到硬件），但没有
+            // tb_device_id/tb_token 永远连不上数据。这里把设备标记为离线，并在
+            // 物联诊断里留痕，管理员能看出这台设备需要人工补建档。
+            try {
+              db.prepare('UPDATE devices SET status = ? WHERE id = ?').run('offline', dev.lastInsertRowid);
+              tbdiag.push('error', 'device', `订单 ${order.order_no} 发货设备 ${sn} TB 建档失败：${(e && e.message) || '未知错误'}`);
+            } catch { /* 记录失败不影响发货主流程 */ }
+          });
         created.push({ type: 'device', sn, product: product.name });
       }
     }

@@ -101,6 +101,19 @@ function markPaid(orderNo, tradeNo, channel, raw = '', paidAmount = null) {
     .run('paid', tradeNo || '', channel || order.channel, now(), order.id);
   if (order.deleted_at) {
     paydiag.push('warn', 'pay', `订单 ${orderNo} 曾被${order.deleted_by === 'admin' ? '管理员' : '用户'}删除，收到支付回调后已自动恢复`);
+    // 复活必须把删除时退回的抵扣积分重新扣掉：删除单退了积分、回调又按抵扣后
+    // 金额收款，等于用户保留了抵扣的积分还按折后价买了单 —— 可套利。
+    const back = Math.round(Number(order.discount || 0) * 100);
+    if (back > 0) {
+      const u = db.prepare('SELECT points FROM users WHERE id = ?').get(order.user_id);
+      if (u) {
+        const balance = Math.max(0, Number(u.points || 0) - back);
+        db.prepare('UPDATE users SET points = ? WHERE id = ?').run(balance, order.user_id);
+        db.prepare('INSERT INTO points_logs (user_id, change, balance, reason, created_at) VALUES (?,?,?,?,?)')
+          .run(order.user_id, -back, balance, `订单 ${orderNo} 支付恢复，重新扣除抵扣积分`, now());
+        paydiag.push('info', 'pay', `订单 ${orderNo} 恢复时重新扣回抵扣积分 ${back}`);
+      }
+    }
   }
   db.prepare('INSERT INTO payments (order_no, channel, trade_no, amount, status, raw, created_at) VALUES (?,?,?,?,?,?,?)')
     .run(orderNo, channel || order.channel, tradeNo || '', order.pay_amount, 'success', String(raw).slice(0, 4000), now());

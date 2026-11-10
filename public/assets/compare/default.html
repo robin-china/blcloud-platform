@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>版本差异</title>
+<!--
+  ╭──────────────────────────────────────────────────────────────╮
+  │ 版本差异默认内容页（产品详情 / 「我的空间」卡片按钮共用）          │
+  │                                                              │
+  │ · 后台 → 产品管理 → 编辑产品 → 「版本差异页面 URL」可指向       │
+  │   任何一份这样的 HTML（站内相对路径或 https 链接均可）；          │
+  │ · 不填就用本文件。直接编辑本文件即可全站生效，无需发版；          │
+  │ · 本页在 iframe 沙箱中加载（不允许脚本），只放纯静态展示内容；    │
+  │ · 表格列 = 档位，行 = 功能项；✓ / — 表示有无，文字可写具体数值。 │
+  ╰──────────────────────────────────────────────────────────────╯
+-->
+<style>
+  :root {
+    --text-1: #1b2130; --text-2: #4b5263; --text-3: #8a93a6;
+    --border: #e6e9f0; --brand: #2563eb; --brand-soft: #eff6ff;
+    --ok: #16a34a; --no: #c3c9d6; --bg: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 18px 16px 26px; background: var(--bg); color: var(--text-1);
+    font: 14px/1.65 "PingFang SC", "Microsoft YaHei", -apple-system, "Segoe UI", sans-serif;
+  }
+  h2 { margin: 0 0 4px; font-size: 18px; }
+  .lead { color: var(--text-3); font-size: 12.5px; margin: 0 0 16px; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; }
+  th, td { padding: 11px 14px; text-align: center; border-bottom: 1px solid var(--border); }
+  th { background: #f8fafc; font-size: 13px; white-space: nowrap; }
+  th.feature, td.feature { text-align: left; color: var(--text-2); width: 34%; }
+  th.pro { color: var(--brand); background: var(--brand-soft); }
+  tr:last-child td { border-bottom: 0; }
+  tr.section td { background: #f8fafc; color: var(--text-3); font-size: 12px; letter-spacing: .06em; text-align: left; }
+  .yes { color: var(--ok); font-weight: 600; }
+  .no { color: var(--no); }
+  .price { display: block; font-size: 15px; color: var(--text-1); }
+  .price small { color: var(--text-3); font-weight: 400; }
+  .rec { display: inline-block; margin-top: 3px; padding: 1px 8px; border-radius: 999px;
+    background: var(--brand); color: #fff; font-size: 11px; }
+  .note { margin: 14px 0 0; color: var(--text-3); font-size: 12.5px; }
+  @media (max-width: 640px) {
+    body { padding: 12px 10px 20px; }
+    th, td { padding: 8px 10px; }
+  }
+</style>
+</head>
+<body>
+  <h2>版本差异</h2>
+  <p class="lead">各档位功能对比 · 同一授权码内升级档位不换码、无需重新激活</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th class="feature">功能</th>
+          <th>免费版<span class="price">¥0</span></th>
+          <th class="pro">专业版<span class="price">¥xxx / 年</span><span class="rec">推荐</span></th>
+          <th>企业版<span class="price">¥xxxx / 年</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="section"><td colspan="4">基础能力</td></tr>
+        <tr><td class="feature">标签设计与打印</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td class="feature">标签模板库</td><td>基础模板</td><td>完整模板库</td><td>完整模板库</td></tr>
+        <tr><td class="feature">Excel / 数据库批量导入</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td class="feature">单次导入数据行数</td><td>100 行</td><td>不限</td><td>不限</td></tr>
+
+        <tr class="section"><td colspan="4">进阶能力</td></tr>
+        <tr><td class="feature">批量打印队列</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td class="feature">条码 / 二维码高级样式</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td class="feature">打印机型号支持</td><td>常见型号</td><td>全型号</td><td>全型号</td></tr>
+        <tr><td class="feature">离线使用（宽限期）</td><td>需联网</td><td>7 天</td><td>30 天</td></tr>
+
+        <tr class="section"><td colspan="4">授权与协作</td></tr>
+        <tr><td class="feature">绑定设备数</td><td>1 台</td><td>2 台</td><td>5 台</td></tr>
+        <tr><td class="feature">API 接口调用额度</td><td class="no">—</td><td>10 万次</td><td>100 万次</td></tr>
+        <tr><td class="feature">技术支持</td><td>社区</td><td>工单（工作日）</td><td>专属支持 / SLA</td></tr>
+        <tr><td class="feature">功能定制开发</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note">注：以上为示例内容，请编辑本文件（public/assets/compare/default.html）替换为实际档位与功能；
+  想要每个产品一份差异页，可复制为 compare/产品名.html 后在后台产品表单的「版本差异页面 URL」里引用。</p>
+</body>
+</html>

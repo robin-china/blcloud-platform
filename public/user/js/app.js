@@ -22,6 +22,8 @@ const userApp = createApp({
       route: 'shop',
       param: '',
       settings: {},
+      // 登录态校验中：true 之前顶栏不渲染「登录」按钮（已登录用户先看到它就是误导）
+      authReady: false,
       // 服务端是否具备微信网页授权能力（前端据此决定微信内要不要自动登录）
       site: { wechat_oauth: false, wechat_oauth_scope: '' },
       menu: USER_MENU,
@@ -70,8 +72,16 @@ const userApp = createApp({
         const res = await U.api.get('/api/portal/me');
         state.user = res.user;
       } catch (e) {
-        state.token = '';
-        state.user = null;
+        // 只有服务端明确 401（登录态真失效）才清；网络抖动 / 5xx / 404 一律保留，
+        // 否则已登录用户会被误判成未登录：顶栏变「登录」、页面守卫弹「请先登录」，
+        // 刷新一下又好了 —— 线上典型「已登录还提示要登录」就是这里。
+        if (e && e.status === 401) {
+          U.api.setToken('user', '');
+          state.token = '';
+          state.user = null;
+        } else {
+          console.warn('[me] 获取用户资料失败，保留登录态：', e && e.message);
+        }
       }
       refreshMenu();
     }
@@ -80,6 +90,7 @@ const userApp = createApp({
       U.api.setToken('user', '');
       state.token = '';
       state.user = null;
+      U.setAuthReady(false);
       refreshMenu();
       go('shop');
     }
@@ -159,8 +170,30 @@ const userApp = createApp({
     async function onLogged() {
       state.token = localStorage.getItem('user_token') || '';
       await loadMe();
+      U.setAuthReady(!!state.token);
       go('space');
     }
+
+    /**
+     * api.js 在「真登录态过期 401」时会清 localStorage 并派发本事件（带 code 的业务
+     * 401 与登录接口自身 401 都不会触发）。这里同步 Vue state，否则顶栏仍显示已登录、
+     * 后续每个请求都不带令牌 → 数据一片空白，必须手动刷新才恢复。
+     */
+    const PRIVATE_ROUTES = ['space', 'licenses', 'devices', 'orders', 'account', 'earnings', 'blcloud'];
+    function onUnauthorized(e) {
+      const d = (e && e.detail) || {};
+      if (d.scope !== 'user') return;
+      U.api.setToken('user', '');
+      state.token = '';
+      state.user = null;
+      state.authReady = true;
+      U.setAuthReady(false);
+      refreshMenu();
+      // 正在浏览公开内容（商城/产品页）时不硬跳，只提醒，避免打断逛街
+      if (PRIVATE_ROUTES.includes(state.route)) go('login');
+      else U.toast(d.message || '登录已过期，请重新登录', 'error');
+    }
+    window.addEventListener('app:unauthorized', onUnauthorized);
 
     Vue.provide('state', state);
     Vue.provide('settings', computed(() => state.settings));
@@ -172,9 +205,17 @@ const userApp = createApp({
       window.addEventListener('hashchange', syncHash);
       captureAgentRef();
       // 先换票再拉资料：否则第一屏会是「未登录」，换完才跳回来闪一下
-      await claimHandoff();
-      await loadSite();
-      await loadMe();
+      try {
+        await claimHandoff();
+        await loadSite();
+        await loadMe();
+      } finally {
+        // 登录态尘埃落定：撤首屏遮罩（index.html 监听 app:ready）、
+        // 唤醒各页面守卫（U.authReady）并固定结果，之后的守卫立即返回
+        state.authReady = true;
+        U.setAuthReady(!!state.token);
+        try { window.dispatchEvent(new CustomEvent('app:ready')); } catch { /* 忽略 */ }
+      }
       // 票据/本地登录态都没有、又在微信里打开 → 直接走免扫码登录
       tryWechatOAuth();
     });

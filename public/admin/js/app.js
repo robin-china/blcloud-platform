@@ -78,7 +78,15 @@
           const res = await U.api.get('/api/admin/me');
           state.admin = res.admin;
         } catch (e) {
-          state.token = '';
+          // 只认 401（真过期）；网络抖动 / 5xx 保留登录态，否则
+          // `v-if="!state.token"` 会把登录页顶上来，刷新一下又好了
+          if (e && e.status === 401) {
+            U.api.setToken('admin', '');
+            state.token = '';
+            state.admin = null;
+          } else {
+            console.warn('[me] 获取管理员资料失败，保留登录态：', e && e.message);
+          }
         }
       }
 
@@ -104,16 +112,42 @@
         state.token = token;
         await loadMe();
         await loadSettings();
+        state.booted = true;
       }
+
+      /**
+       * api.js 在「真登录态过期 401」时清 localStorage 并派发本事件（业务 401 / 登录
+       * 接口自身 401 不触发）。这里同步 Vue state：`v-if="!state.token"` 立即切到
+       * 登录页。旧版直接改 location.hash='#/login' 是错的 —— 后台没有 #/login 路由，
+       * syncHash 只会把 route 设成 'login'，主内容区整片空白。
+       */
+      function onUnauthorized(e) {
+        const d = (e && e.detail) || {};
+        if (d.scope !== 'admin') return;
+        state.token = '';
+        state.admin = null;
+        if (!PRIVATE_NOTE_SHOWN) {
+          PRIVATE_NOTE_SHOWN = true;
+          U.toast(d.message || '登录已过期，请重新登录', 'error');
+        }
+      }
+      let PRIVATE_NOTE_SHOWN = false;
+      window.addEventListener('app:unauthorized', onUnauthorized);
 
       onMounted(async () => {
         syncHash();
         window.addEventListener('hashchange', syncHash);
-        if (state.token) {
-          await loadMe();
-          await loadSettings();
+        try {
+          if (state.token) {
+            await loadMe();
+            await loadSettings();
+          }
+        } finally {
+          state.booted = true;
+          // 首屏遮罩等登录态校验结束再撤（index.html 监听），避免已登录管理员
+          // 先看到登录页闪一下
+          try { window.dispatchEvent(new CustomEvent('app:ready')); } catch { /* 忽略 */ }
         }
-        state.booted = true;
       });
 
       return { state, current, icon, go, logout, onLogged, loadSettings, loadMe };
