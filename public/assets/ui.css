@@ -428,6 +428,22 @@ table.table tbody tr:hover { background: var(--surface-2); }
   .content { padding: 14px 12px 32px; }
 }
 
-/* 版本差异 iframe（version-compare 组件）：详情页内嵌与弹层共用 */
-.compare-frame { width: 100%; height: 520px; border: 0; border-radius: 8px; background: #fff; display: block; }
-@media (max-width: 640px) { .compare-frame { height: 420px; } }
+/* 版本差异（version-compare 组件）：产品详情内嵌 + 「我的空间」卡片按钮弹层共用同一份 HTML */
+.vc-root { display: inline-flex; }
+/* 产品详情 .product-detail 是两列 grid（封面 180~240px | 内容）。不跨列的话这块会被塞进
+   封面那一列，宽度只剩两百来像素，看上去就是个「很小的框框」。 */
+.vc-root.is-inline { display: block; width: 100%; grid-column: 1 / -1; }
+.vc-inline { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.vc-inline-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.vc-inline-head h3 { font-size: 15px; }
+.compare-frame {
+  width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 10px;
+  background: #fff; display: block;
+}
+/* 弹层里去掉内边距、把高度给足，否则对比表挤在 500px 里要来回滚 */
+.vc-modal-body { padding: 0; }
+.vc-modal-body .compare-frame { height: min(74vh, 720px); border: 0; border-radius: 0; }
+@media (max-width: 640px) {
+  .compare-frame { height: 420px; }
+  .vc-modal-body .compare-frame { height: 68vh; }
+}

@@ -15,6 +15,7 @@ const adminProducts = read('public/admin/js/pages-products.js');
 const userIndex = read('public/user/index.html');
 const apiJs = read('public/assets/api.js');
 const avatarJs = read('public/assets/avatars.js');
+const compareJs = read('public/assets/compare.js');
 
 let pass = 0;
 let fail = 0;
@@ -41,7 +42,11 @@ check('空态占满整行', /\.prod-grid > \.empty \{[^}]*grid-column:\s*1 \/ -1
 check('卡片内 kv 改成紧凑自动列', /\.prod-card \.kv \{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\)/s.test(css));
 check('卡片内 kv 值超长省略', /\.prod-card \.kv > div \{[^}]*text-overflow:\s*ellipsis/s.test(css));
 check('我的空间卡片 kv 不再写死 110px 字号内联', !/<div class="kv" style="font-size:12\.5px">/.test(pages));
-check('授权码带 title 可看全文', /class="mono" :title="a\.license \? a\.license\.license_key/.test(pages));
+// 「我的空间」卡片里的授权码自 2026-11-10 起默认脱敏（LIC-****-****-尾4位），
+// 但 title 仍挂完整码、旁边有「显示」按钮 —— 断言按新契约写，别再要求明文直出
+check('授权码默认脱敏但 title 保留全文',
+  /class="mono"[\s\S]{0,120}:title="a\.license \? a\.license\.license_key/.test(pages) && /maskKey\(a\)/.test(pages));
+check('授权码可点「显示」看全文', /toggleKey\(a\)/.test(pages));
 check('商品名/副标题带 title', /<h4 :title="p\.name">/.test(pages) && /<h4 :title="a\.product\.name">/.test(pages));
 check('我的空间按钮区推到底部', /class="btn-group actions"/.test(pages));
 
@@ -90,6 +95,18 @@ check('表格容器在窄屏横向滚动（.card-body.tight）',
 check('微信底部工具条安全区（env(safe-area-inset-bottom)）', /safe-area-inset-bottom/.test(mobile));
 check('后台侧栏在 768px 以下变成顶部横条',
   /@media \(max-width:\s*768px\)[\s\S]*\.layout\s*\{[^}]*flex-direction:\s*column/.test(css));
+
+console.log('\n版本差异（version-compare）：详情页内嵌必须撑满整宽');
+// 2026-11-10：.product-detail 是两列 grid（封面 180~240px | 内容），版本差异块作为第三个
+// 子元素会掉进封面列，宽度只剩两百来像素，用户看到的就是「很小的框框」。必须跨列。
+check('inline 模式根元素跨过 product-detail 的两列 grid', /\.vc-root\.is-inline\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s.test(css));
+check('inline 模式根元素是 block + 100% 宽（不是 inline-flex 收缩）', /\.vc-root\.is-inline\s*\{[^}]*display:\s*block/s.test(css) && /\.vc-root\.is-inline\s*\{[^}]*width:\s*100%/s.test(css));
+check('按钮形态（我的空间卡片）仍是 inline-flex', /\.vc-root\s*\{[^}]*display:\s*inline-flex/s.test(css));
+check('inline 模式不再套 .card（避免卡片套卡片显得又小又挤）', !/mode === 'inline'[\s\S]{0,200}class="card"/.test(compareJs));
+check('组件根元素带 is-inline 开关', /class="vc-root"/.test(compareJs) && /'is-inline':\s*mode === 'inline'/.test(compareJs));
+check('iframe 高度给足（≥520px）', /\.compare-frame\s*\{[^}]*height:\s*(5[2-9]\d|[6-9]\d\d)px/s.test(css));
+check('弹层内边距清零、iframe 占满高度', /\.vc-modal-body\s*\{[^}]*padding:\s*0/s.test(css) && /\.vc-modal-body \.compare-frame\s*\{[^}]*min\(/s.test(css));
+check('iframe 沙箱不带 allow-scripts（挡 XSS）', /sandbox="[^"]*allow-same-origin[^"]*"/.test(compareJs) && !/sandbox="[^"]*allow-scripts/.test(compareJs));
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
 if (fail > 0) process.exitCode = 1;

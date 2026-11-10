@@ -37,29 +37,31 @@
       btnClass: { type: String, default: 'btn sm' },
     },
     template: `
-      <span v-if="finalUrl" style="display:inline-flex">
+      <div v-if="finalUrl" class="vc-root" :class="{ 'is-inline': mode === 'inline' }">
         <button v-if="mode !== 'inline'" :class="btnClass" @click="open">{{ title }}</button>
-        <div v-if="mode === 'inline'" class="card" style="margin-top:16px;width:100%">
-          <div class="card-head">
+
+        <!-- inline：直接嵌进产品详情。不要再套一层 .card —— 详情页本身就在 .card
+             里，卡片套卡片会显得又小又挤；宽度由 .vc-root.is-inline 撑满并跨列 -->
+        <div v-if="mode === 'inline'" class="vc-inline">
+          <div class="vc-inline-head">
             <h3>{{ title }}</h3>
             <a :href="finalUrl" target="_blank" rel="noopener" class="btn sm">在新窗口打开</a>
           </div>
-          <div class="card-body">
-            <iframe :src="finalUrl" class="compare-frame" sandbox="allow-same-origin allow-popups" loading="lazy" title="版本差异"></iframe>
-          </div>
+          <iframe :src="finalUrl" class="compare-frame" sandbox="allow-same-origin allow-popups" loading="lazy" title="版本差异"></iframe>
         </div>
+
         <div v-if="mode !== 'inline' && show" class="mask" @click.self="close">
           <div class="modal wide">
             <div class="modal-head">
               <h3>{{ title }}</h3>
               <button class="close-x" @click="close">&times;</button>
             </div>
-            <div class="modal-body">
+            <div class="modal-body vc-modal-body">
               <iframe :src="finalUrl" class="compare-frame" sandbox="allow-same-origin allow-popups" title="版本差异"></iframe>
             </div>
           </div>
         </div>
-      </span>
+      </div>
     `,
     setup(props) {
       const show = ref(false);
