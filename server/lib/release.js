@@ -313,6 +313,11 @@ function deltaOut(baseUrl, rec) {
     .sort((a, b) => cmpVersion(b.from, a.from));
 }
 
+/** 发布时间统一成契约里的 ISO 8601 秒级 UTC（库里 now() 带毫秒，去掉不影响语义） */
+function publishedAtOut(v) {
+  return String(v || '').replace(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d{3}Z$/, '$1Z');
+}
+
 /**
  * 生成清单。baseUrl 由调用方按当前请求拼（换域名/换子路径都不用改库）。
  * 无更新时只回 { latest: 当前版本 }，不带 full/delta —— 客户端按 latest 比对即可。
@@ -351,7 +356,7 @@ function manifest(opts, baseUrl) {
     mandatory,
     minVersion,
     changelog: rec.changelog || '',
-    publishedAt: rec.published_at || '',
+    publishedAt: publishedAtOut(rec.published_at),
     full: {
       url: fileUrl(baseUrl, rec.full_url || rec.full_path),
       sha256: String(rec.full_sha256 || '').toLowerCase(),
@@ -416,7 +421,7 @@ function latestBodyFor(product, base) {
     mandatory: !!rec.mandatory,
     minVersion: rec.min_version || '0.0.0',
     changelog: rec.changelog || '',
-    publishedAt: rec.published_at || '',
+    publishedAt: publishedAtOut(rec.published_at),
     full: {
       url: fileUrl(base, rec.full_url || rec.full_path),
       sha256: String(rec.full_sha256 || '').toLowerCase(),

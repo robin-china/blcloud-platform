@@ -121,6 +121,8 @@ function sha(buf) {
   check('mandatory=false', m.mandatory === false, m.mandatory);
   check('minVersion=1.0.0', m.minVersion === '1.0.0', m.minVersion);
   check('changelog 保留换行', String(m.changelog).includes('\n'));
+  check('publishedAt 为契约格式的 ISO 8601 秒级 UTC',
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(m.publishedAt), m.publishedAt);
   check('full.url 绝对地址且带子路径', m.full.url === `http://localhost:80/platform/updates/1.0.21/LabelGo-1.0.21-full.zip`, m.full.url);
   check('full.sha256 小写十六进制', /^[0-9a-f]{64}$/.test(m.full.sha256) && m.full.sha256 === sha(full21));
   check('full.size 字节数', m.full.size === full21.length, m.full.size);
@@ -144,12 +146,22 @@ function sha(buf) {
   check('Accept-Ranges: bytes', r.headers['accept-ranges'] === 'bytes', r.headers['accept-ranges']);
   check('长缓存 immutable', /immutable/.test(r.headers['cache-control'] || ''), r.headers['cache-control']);
   check('Content-Type octet-stream', /application\/octet-stream/.test(r.headers['content-type'] || ''), r.headers['content-type']);
+  const headSample = {
+    HTTP: r.statusCode,
+    'Content-Type': r.headers['content-type'],
+    'Content-Length': r.headers['content-length'],
+    'Accept-Ranges': r.headers['accept-ranges'],
+    'Cache-Control': r.headers['cache-control'],
+  };
 
   r = await app.inject({ method: 'GET', url: fileUrlPath, headers: { range: 'bytes=0-1023' } });
   check('Range 请求返回 206', r.statusCode === 206, r.statusCode);
   check('Range 长度 1024', r.rawPayload.length === 1024, r.rawPayload.length);
   check('Range 内容正确', r.rawPayload.equals(full21.subarray(0, 1024)));
   check('Content-Range 正确', r.headers['content-range'] === `bytes 0-1023/${full21.length}`, r.headers['content-range']);
+  const rangeSample = {
+    HTTP: r.statusCode, 'Content-Range': r.headers['content-range'], bytes: r.rawPayload.length,
+  };
 
   r = await app.inject({ method: 'GET', url: fileUrlPath });
   check('完整下载字节数一致', r.rawPayload.length === full21.length);
@@ -168,6 +180,8 @@ function sha(buf) {
   const latestBody = JSON.parse(fs.readFileSync(latestFile, 'utf8'));
   check('latest=1.0.21', latestBody.latest === '1.0.21');
   check('url 是绝对地址', /^http:\/\/.+\/platform\/updates\/1\.0\.21\//.test(latestBody.full.url), latestBody.full.url);
+  check('兜底清单 publishedAt 与接口同格式',
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(latestBody.publishedAt), latestBody.publishedAt);
   r = await app.inject({ method: 'GET', url: `${B}/updates/latest.json` });
   check('latest.json 可访问且 no-cache',
     r.statusCode === 200 && r.headers['cache-control'] === 'no-cache' && r.json().latest === '1.0.21',
@@ -320,6 +334,19 @@ function sha(buf) {
   // 后台筛选动作
   ups = await app.inject({ method: 'GET', url: `${B}/api/releases/updates?product=TestPad&action=fail`, headers: AUTH });
   check('按动作筛选只看失败', ups.json().list.every((x) => x.action === 'fail') && ups.json().list.length >= 1, ups.json().list.length);
+
+  // 契约验收响应体：真实跑出来的 body，可直接整段回传软件方对齐字段
+  console.log('\n========== 契约验收响应体 ==========');
+  console.log('[1 有更新 · GET /api/open/v1/app/version?version=1.0.20]');
+  console.log(JSON.stringify(m, null, 2));
+  console.log('[2 已是最新 · version=1.0.21] ' + JSON.stringify(latest));
+  console.log('[3 静态包 HEAD] ' + JSON.stringify(headSample));
+  console.log('[4 断点续传 Range] ' + JSON.stringify(rangeSample));
+  console.log('[5 latest.json 兜底] ' + JSON.stringify({
+    latest: latestBody.latest, mandatory: latestBody.mandatory, minVersion: latestBody.minVersion,
+    publishedAt: latestBody.publishedAt, full: latestBody.full, delta: latestBody.delta,
+  }));
+  console.log('====================================');
 
   console.log(`\n结果：${pass} 通过，${fail} 失败\n`);
   await app.close();
