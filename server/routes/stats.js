@@ -86,7 +86,7 @@ module.exports = async function statsRoutes(app) {
     const devTotal = db.prepare('SELECT COUNT(*) AS c FROM blcloud_usage').get().c;
     const devFailToday = db.prepare('SELECT COUNT(*) AS c FROM blcloud_usage WHERE date = ? AND ok = 0').get(t).c;
 
-    const updates = { check: 0, success: 0, fail: 0 };
+    const updates = { check: 0, success: 0, fail: 0, rollback: 0 };
     for (const r of db.prepare('SELECT action, COUNT(*) AS c FROM app_update_log WHERE date(created_at) = ? GROUP BY action').all(t)) {
       if (updates[r.action] !== undefined) updates[r.action] = r.c;
     }

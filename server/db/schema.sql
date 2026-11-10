@@ -501,6 +501,13 @@ CREATE TABLE IF NOT EXISTS app_update_log (
   ip TEXT DEFAULT '',
   user_agent TEXT DEFAULT '',
   note TEXT DEFAULT '',
+  -- 升级结果上报细分字段（2026-11-10 契约 v2）
+  result_code INTEGER DEFAULT 0,
+  stage TEXT DEFAULT '',
+  duration_ms INTEGER DEFAULT 0,
+  elevated INTEGER DEFAULT 0,
+  os_info TEXT DEFAULT '',
+  client_at TEXT DEFAULT '',
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_app_update_log_pick ON app_update_log(product, created_at);

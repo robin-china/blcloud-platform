@@ -186,28 +186,58 @@ module.exports = async function openRoutes(app) {
   /* 客户端升级结果上报（不鉴权，和清单接口一致）
    * 客户端下载并安装完新版本后调用一次，后台才有「谁真的升级成功/失败」的记录。
    * 只写流水，不改任何业务状态，所以即使被刷也只是一张表变大；前端后台可随时清理。
+   *
+   * 契约 v2（2026-11-10，与 LabelGo 客户端逐字段对齐）：
+   *   POST /api/open/v1/app/update-report   不需要任何签名头
+   *   {
+   *     "machine_code": "硬盘序列号哈希",      // 必填（兼容旧字段 machine）
+   *     "from_version": "1.0.49",            // 兼容 from
+   *     "to_version":   "1.0.50",            // 兼容 to / target
+   *     "result": "success | fail | rollback",  // 兼容旧 status/action
+   *     "code": 0,                           // 失败码：0 成功；3 已提权仍不可写；
+   *                                          // 4 旧进程结束不掉；5 覆盖失败；
+   *                                          // 6 新版本未起来；7 UAC 被取消；
+   *                                          // 8 launch_failed（三兜底全挂）
+   *     "stage": "download|extract|precheck|elevate|close|copy|launch|alive",
+   *     "duration_ms": 23400,
+   *     "elevated": true,
+   *     "os": "10.0.19045",
+   *     "at": "2026-11-10T14:14:24Z"         // 客户端时间（离线补报时以它为准）
+   *   }
+   *   响应 { ok:true, id, action, deduped }；deduped=true 表示覆盖了旧结果（重试场景）
+   *   去重口径：同一 machine_code + from_version + to_version 只保留最新一条结果（覆盖不累加），
+   *   客户端本地重试 7 天、回滚后重升都不会把失败数灌水。
+   *   404/失败不影响任何升级流程 —— 客户端直接忽略本接口的一切响应。
    */
   app.post('/api/open/v1/app/update-report', async (req, reply) => {
     const b = req.body || {};
     const product = String(b.product || '').trim().slice(0, 64);
     if (!product) return reply.code(400).send({ error: '缺少 product' });
-    const status = String(b.status || b.action || 'success').toLowerCase();
-    const action = status === 'fail' || status === 'failed' || status === 'error' ? 'fail' : 'success';
+    const status = String(b.result || b.status || b.action || 'success').toLowerCase();
+    const action = status === 'fail' || status === 'failed' || status === 'error' ? 'fail'
+      : status === 'rollback' || status === 'rolled_back' || status === 'rolledback' ? 'rollback'
+      : 'success';
     try {
-      const rec = release.logUpdate({
+      const { row, deduped } = release.logUpdate({
         product,
         channel: b.channel,
         platform: b.platform,
         arch: b.arch,
-        machine: b.machine,
-        from: b.from || b.from_version || b.version,
-        to: b.to || b.to_version || b.target || '',
+        machine: b.machine_code || b.machine,
+        from: b.from_version || b.from || b.version,
+        to: b.to_version || b.to || b.target || '',
         action,
+        result_code: b.code,
+        stage: b.stage,
+        duration_ms: b.duration_ms,
+        elevated: b.elevated,
+        os_info: b.os,
+        client_at: b.at,
         note: b.note || b.error || b.message || '',
         ip: req.ip,
         ua: (req.headers || {})['user-agent'],
       });
-      return { ok: true, id: rec.id, action };
+      return { ok: true, id: row.id, action, deduped };
     } catch (e) {
       return reply.code(400).send({ error: e.message });
     }

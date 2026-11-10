@@ -529,21 +529,61 @@ function logCheck(rec, opts, req) {
   });
 }
 
-/** 客户端上报升级结果（成功/失败），也允许后台手工补录 */
+/* 客户端上报升级结果（成功/失败/回滚），也允许后台手工补录。
+ *
+ * 契约 v2（2026-11-10，与软件端 LabelGo 对齐后定稿）：
+ *   - action 取值 success / fail / rollback（旧调用只传 fail/success 的行为不变）；
+ *   - 新增细分：result_code（整数失败码）/ stage（失败阶段）/
+ *     duration_ms / elevated / os_info / client_at；
+ *   - 去重口径是「覆盖不累加」：同一台机器同一组 from→to 的结果上报只保留
+ *     最新一条 —— 客户端上报失败会本地重试 7 天，回滚后重升还会再报，
+ *     若累加，后台失败次数会被重试灌水，成功率统计就没意义了。
+ *     machine 为空（老客户端没带）时退化为普通流水。
+ */
 function logUpdate(input) {
-  return insertUpdate({
+  const row = {
     product: clip(input.product, 64),
     channel: clip(input.channel, 16) || 'stable',
     platform: clip(input.platform, 16),
     arch: clip(input.arch, 16),
     machine: clip(input.machine, 64),
-    from: clip(input.from, 32),
-    to: clip(input.to, 32),
-    action: input.action === 'fail' ? 'fail' : (input.action === 'check' ? 'check' : 'success'),
+    from_version: clip(input.from, 32),
+    to_version: clip(input.to, 32),
+    action: ['fail', 'rollback'].includes(input.action) ? input.action
+      : (input.action === 'check' ? 'check' : 'success'),
     ip: clip(input.ip, 64),
-    ua: clip(input.ua, 200),
+    user_agent: clip(input.ua, 200),
     note: clip(input.note, 300),
-  });
+    result_code: Number.isFinite(Number(input.result_code)) ? Math.trunc(Number(input.result_code)) : 0,
+    stage: clip(input.stage, 32),
+    duration_ms: Math.max(0, Math.trunc(Number(input.duration_ms) || 0)),
+    elevated: input.elevated ? 1 : 0,
+    os_info: clip(input.os_info, 64),
+    client_at: clip(input.client_at, 40),
+  };
+  if (!row.product) throw new Error('缺少 product');
+
+  // 结果上报幂等（覆盖）：只对非 check 的结果生效；清单命中流水不受影响
+  if (row.action !== 'check' && row.machine) {
+    const dup = db.prepare(`SELECT id FROM app_update_log
+      WHERE product=? AND machine=? AND from_version=? AND to_version=? AND action<>'check'
+      ORDER BY id DESC LIMIT 1`).get(row.product, row.machine, row.from_version, row.to_version);
+    if (dup) {
+      db.prepare(`UPDATE app_update_log SET action=@action, ip=@ip, user_agent=@user_agent,
+        note=@note, result_code=@result_code, stage=@stage, duration_ms=@duration_ms,
+        elevated=@elevated, os_info=@os_info, client_at=@client_at, created_at=@created_at
+        WHERE id=@id`).run({ ...row, id: dup.id, created_at: now() });
+      return { row: db.prepare('SELECT * FROM app_update_log WHERE id=?').get(dup.id), deduped: true };
+    }
+  }
+
+  const info = db.prepare(`INSERT INTO app_update_log
+    (product, channel, platform, arch, machine, from_version, to_version, action, ip, user_agent, note,
+     result_code, stage, duration_ms, elevated, os_info, client_at, created_at)
+    VALUES (@product,@channel,@platform,@arch,@machine,@from_version,@to_version,@action,@ip,@user_agent,@note,
+     @result_code,@stage,@duration_ms,@elevated,@os_info,@client_at,@created_at)`)
+    .run({ ...row, created_at: now() });
+  return { row: db.prepare('SELECT * FROM app_update_log WHERE id=?').get(info.lastInsertRowid), deduped: false };
 }
 
 function insertUpdate(e) {
@@ -591,6 +631,7 @@ function listUpdates({ product, action, limit = 200 } = {}) {
       check: counts.check || 0,
       success: counts.success || 0,
       fail: counts.fail || 0,
+      rollback: counts.rollback || 0,
       machines,
     },
   };

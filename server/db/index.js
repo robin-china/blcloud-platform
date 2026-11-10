@@ -150,6 +150,17 @@ ensureColumn('users', 'agent_code', "agent_code TEXT DEFAULT ''");
 ensureColumn('licenses', 'app_id', 'app_id INTEGER');
 ensureColumn('orders', 'app_id', 'app_id INTEGER');
 ensureColumn('users', 'profile_custom', 'profile_custom INTEGER DEFAULT 0');
+// 升级结果上报的细分字段（2026-11-10 契约 v2，软件端 LabelGo 按「以后台为准」实现）：
+// result_code 客户端失败码（0=成功，3~7 客户端既有枚举，8=launch_failed 三兜底全挂）；
+// stage 失败阶段（download/extract/precheck/elevate/close/copy/launch/alive）；
+// duration_ms 升级全程耗时；elevated 是否 UAC 提权成功；os_info 客户端 OS 版本；
+// client_at 客户端时间戳（离线补报时服务端时间不可信）。
+ensureColumn('app_update_log', 'result_code', 'result_code INTEGER DEFAULT 0');
+ensureColumn('app_update_log', 'stage', "stage TEXT DEFAULT ''");
+ensureColumn('app_update_log', 'duration_ms', 'duration_ms INTEGER DEFAULT 0');
+ensureColumn('app_update_log', 'elevated', 'elevated INTEGER DEFAULT 0');
+ensureColumn('app_update_log', 'os_info', "os_info TEXT DEFAULT ''");
+ensureColumn('app_update_log', 'client_at', "client_at TEXT DEFAULT ''");
 // 数量配额（标签库 30 / Excel 100 行这类量化权益，随票据签名下发）
 ensureColumn('plans', 'limits', "limits TEXT DEFAULT '{}'");
 // 应用的功能码白名单：登记后套餐表单变勾选、未知 token 保存直接报错

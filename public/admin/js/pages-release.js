@@ -139,11 +139,13 @@ window.PageRelease = {
           <span class="tag" style="color:#0a7"><b>升级成功 {{ upSummary.success }}</b></span>
           <span class="tag danger" v-if="upSummary.fail">升级失败 {{ upSummary.fail }}</span>
           <span class="tag" v-else>升级失败 0</span>
+          <span class="tag" style="color:#b45309" v-if="upSummary.rollback">回滚 {{ upSummary.rollback }}</span>
         </div>
         <div style="display:flex;gap:8px;padding:10px 16px 12px;flex-wrap:wrap">
           <button class="btn sm" :class="!upAction ? 'primary' : ''" @click="setUpAction('')">全部</button>
           <button class="btn sm" :class="upAction === 'success' ? 'primary' : ''" @click="setUpAction('success')">成功</button>
           <button class="btn sm" :class="upAction === 'fail' ? 'primary' : ''" @click="setUpAction('fail')">失败</button>
+          <button class="btn sm" :class="upAction === 'rollback' ? 'primary' : ''" @click="setUpAction('rollback')">回滚</button>
           <button class="btn sm" :class="upAction === 'check' ? 'primary' : ''" @click="setUpAction('check')">清单命中</button>
         </div>
         <table class="table">
@@ -158,11 +160,22 @@ window.PageRelease = {
               <td>{{ u.from_version || '?' }} → <b>{{ u.to_version || '?' }}</b></td>
               <td>
                 <span v-if="u.action === 'success'" class="tag" style="color:#0a7">成功</span>
+                <span v-else-if="u.action === 'rollback'" class="tag" style="color:#b45309">回滚</span>
                 <span v-else-if="u.action === 'fail'" class="tag danger">失败</span>
                 <span v-else class="tag">命中</span>
+                <!-- 失败/回滚时的细分：code:stage 耗时 —— 排障时一眼看出卡在哪一步 -->
+                <div class="hint" style="margin:0" v-if="u.action !== 'success' && u.action !== 'check' && (u.result_code || u.stage)">
+                  code {{ u.result_code }}<template v-if="u.stage"> · {{ u.stage }}</template>
+                </div>
               </td>
               <td class="hint" style="margin:0">{{ u.ip || '-' }}</td>
-              <td class="hint" style="margin:0">{{ u.note || '-' }}</td>
+              <td class="hint" style="margin:0">
+                {{ u.note || '-' }}
+                <div v-if="u.duration_ms" class="hint" style="margin:0">耗时 {{ Math.round(u.duration_ms / 1000) }}s</div>
+                <div v-if="u.os_info || u.elevated" class="hint" style="margin:0">
+                  {{ u.os_info || '' }}{{ u.elevated ? ' · 已提权' : '' }}
+                </div>
+              </td>
             </tr>
             <tr v-if="!updates.length"><td colspan="7"><div class="empty">还没有升级记录（客户端查到新版、或升级后回调上报时会出现）</div></td></tr>
           </tbody>
@@ -221,7 +234,7 @@ window.PageRelease = {
     const busy = ref(false);
     const updates = ref([]);
     const upAction = ref('');
-    const upSummary = reactive({ check: 0, success: 0, fail: 0, machines: 0 });
+    const upSummary = reactive({ check: 0, success: 0, fail: 0, rollback: 0, machines: 0 });
     const probing = ref(false);
     const probeOut = ref('');
     const fullFile = ref(null);
