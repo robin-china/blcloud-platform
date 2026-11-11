@@ -23,8 +23,32 @@ function truthy(v) {
   return v === true || v === 1 || v === '1' || v === 'true' || v === 'on';
 }
 
+function latestOf(versions) {
+  const list = (versions || []).filter(Boolean);
+  if (!list.length) return '';
+  let top = list[0];
+  for (const v of list) if (release.cmpVersion(v, top) > 0) top = v;
+  return top;
+}
+
 function isPkgName(name) {
   return release.PKG_EXT.includes(path.extname(String(name || '')).toLowerCase());
+}
+
+/* 「已知产品」= 发过包的产品 + 手工登记过的产品线。
+ * 只靠 app_release 推断的话，还没发包的新产品（比如 LabelGo-Offline）
+ * 在后台就完全看不见，发布时得靠人记住名字再手打一遍。 */
+function knownProducts() {
+  try {
+    const raw = JSON.parse(getSetting('release_products', '[]') || '[]');
+    return Array.isArray(raw) ? raw.filter((x) => typeof x === 'string' && x.trim()) : [];
+  } catch { return []; }
+}
+
+function saveKnown(list) {
+  const uniq = [...new Set((list || []).filter(Boolean).map((x) => String(x).trim()).filter(Boolean))].slice(0, 50);
+  setSetting('release_products', JSON.stringify(uniq));
+  return uniq;
 }
 
 module.exports = async function releaseRoutes(app) {
@@ -42,7 +66,6 @@ module.exports = async function releaseRoutes(app) {
       file_exists: fs.existsSync(release.ROOT),
     };
   });
-
   app.post('/api/releases/config', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     const b = req.body || {};
@@ -55,6 +78,9 @@ module.exports = async function releaseRoutes(app) {
     }
     if (b.default_product) setSetting('release_default_product', String(b.default_product).trim());
     if (b.default_channel) setSetting('release_default_channel', String(b.default_channel).trim());
+    // 登记新产品线：还没发包也要能在列表里看到（否则发布时只能靠人记住名字）
+    if (b.add_product) saveKnown([...knownProducts(), String(b.add_product)]);
+    if (Array.isArray(b.products)) saveKnown(b.products);
     logAdmin(req, '修改更新包设置', `站点地址 ${getSetting('release_site_url', '') || '（跟随请求）'}`);
     const latest = release.writeLatest(baseFrom(req));
     return { ok: true, latest };
@@ -87,9 +113,28 @@ module.exports = async function releaseRoutes(app) {
       };
     };
     const list = rows.map(withFiles);
+    // 产品维度是后台这一页的主轴：列表、升级记录、模拟查询都按产品切，
+    // 所以这里把「每个产品有哪些版本、最新是哪个」一次算给前端，
+    // 前端切产品只做本地过滤，不用再打请求。
+    const actual = [...new Set(all.map((r) => r.product))];
+    const products = [...new Set([...knownProducts(), ...actual])];
+    const meta = products.map((name) => {
+      const mine = all.filter((r) => r.product === name);
+      const enabled = mine.filter((r) => r.enabled);
+      return {
+        product: name,
+        versions: mine.length,
+        latest: latestOf(enabled.map((r) => r.version)),
+        channels: [...new Set(mine.map((r) => r.channel))].filter(Boolean),
+        platforms: [...new Set(mine.map((r) => `${r.platform}/${r.arch}`))].filter(Boolean),
+        bytes: mine.reduce((s, r) => s + Number(r.full_size || 0), 0),
+        published: !!mine.length,
+      };
+    });
     return {
       list,
-      products: [...new Set(all.map((r) => r.product))],
+      products,
+      product_meta: meta,
       total_size: list.reduce((s, r) => s + Number(r.full_size || 0), 0),
       total_all_size: all.reduce((s, r) => s + Number(r.full_size || 0), 0),
       site_url: getSetting('release_site_url', '') || '',
@@ -106,6 +151,22 @@ module.exports = async function releaseRoutes(app) {
       action: q.action || undefined,
       limit: q.limit || 200,
     });
+  });
+
+  /* 清理升级记录：按产品 / 按天数。
+   * 留存策略（数据留存页）是全局按天滚动；这里是「这个产品的记录我不想留了」的即时入口。 */
+  app.post('/api/releases/updates/purge', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const b = req.body || {};
+    const days = Math.max(0, Math.floor(Number(b.days) || 0));
+    const confirm = String(b.confirm || '').trim();
+    if (confirm !== '清除' && confirm.toUpperCase() !== 'DELETE') {
+      return reply.code(400).send({ error: '请输入「清除」二字确认' });
+    }
+    const res = release.purgeUpdates({ product: b.product ? String(b.product) : '', days });
+    logAdmin(req, 'release.purge_updates',
+      `${b.product || '全部产品'} 升级记录清理 ${res.deleted} 行${days ? `（早于 ${days} 天前）` : '（全部）'}`);
+    return { ok: true, ...res };
   });
 
   /* ---------------- 发布（multipart） ---------------- */

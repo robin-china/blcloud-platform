@@ -726,6 +726,30 @@ function listUpdates({ product, action, limit = 200 } = {}) {
   };
 }
 
+/**
+ * 清理升级记录（按产品 / 按天数）。
+ * days=0 表示清空该产品全部记录；只删流水，不动 app_release 与任何业务状态。
+ */
+function purgeUpdates({ product = '', days = 0 } = {}) {
+  const where = [];
+  const args = [];
+  if (product) { where.push('product=?'); args.push(product); }
+  if (days > 0) {
+    where.push('created_at < ?');
+    args.push(new Date(Date.now() - days * 86400000).toISOString());
+  }
+  const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const before = db.prepare(`SELECT COUNT(*) AS c FROM app_update_log ${whereSql}`).get(...args).c;
+  let deleted = 0;
+  for (let i = 0; i < 400; i += 1) {
+    const info = db.prepare(`DELETE FROM app_update_log WHERE id IN (
+      SELECT id FROM app_update_log ${whereSql} LIMIT 5000)`).run(...args);
+    deleted += info.changes;
+    if (info.changes < 5000) break;
+  }
+  return { product: product || '', days, before, deleted };
+}
+
 /* ---------------- 维护 ---------------- */
 
 function verify(id) {
@@ -816,6 +840,7 @@ module.exports = {
   logCheck,
   logUpdate,
   listUpdates,
+  purgeUpdates,
   siteBase,
   defaultTarget,
   verify,

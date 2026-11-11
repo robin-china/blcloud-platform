@@ -39,6 +39,11 @@ const GROUPS = [
     implies: ['transactions', 'licenses', 'agents', 'devices'],
   },
   {
+    key: 'flows', name: '升级与鉴权流水',
+    desc: '客户端升级记录、开放接口鉴权流水（纯流水，不影响任何业务状态）',
+    tables: ['app_update_log', 'open_auth_log'],
+  },
+  {
     key: 'logs', name: '日志与会话',
     desc: '后台操作日志、登录尝试、扫码会话、短信码、一次性票据',
     tables: ['admin_logs', 'login_attempts', 'api_nonces', 'wechat_sessions', 'sms_codes', 'handoff_tickets'],
@@ -67,7 +72,7 @@ const ORDER = [
   'agent_commissions', 'withdrawals', 'points_logs', 'payments', 'orders',
   'devices', 'api_usage', 'api_keys', 'blcloud_usage', 'blcloud_keys', 'users',
   'wechat_sessions', 'sms_codes', 'handoff_tickets', 'api_nonces', 'login_attempts',
-  'admin_logs', 'stats_daily', 'product_versions', 'products', 'open_apps',
+  'admin_logs', 'app_update_log', 'open_auth_log', 'stats_daily', 'product_versions', 'products', 'open_apps',
 ];
 
 function conn() {

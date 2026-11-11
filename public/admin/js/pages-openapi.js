@@ -161,6 +161,15 @@ window.PageOpenapi = {
       <div class="drawer">
         <div class="modal-head"><h3>{{ sessions.appName }} · 客户端会话</h3><button class="close-x" @click="sessions.show=false">&times;</button></div>
         <div class="modal-body">
+          <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:10px">
+            <span class="hint" style="margin:0">
+              共 {{ sessions.list.length }} 条 · 生效 {{ sessions.online }} 条（只显示最近 200 条）
+            </span>
+            <div style="display:flex;gap:8px">
+              <button class="btn sm" @click="cleanupSessions">清理失效会话</button>
+              <button class="btn sm" @click="viewSessions({ id: sessions.appId, name: sessions.appName })">刷新</button>
+            </div>
+          </div>
           <div class="row-list">
             <div class="row-item" v-for="s in sessions.list" :key="s.id">
               <div>
@@ -213,7 +222,7 @@ window.PageOpenapi = {
       'labelgo.erp_conn = ERP 对接',
     ].join('\n');
     const secretBox = reactive({ show: false, app_key: '', app_secret: '' });
-    const sessions = reactive({ show: false, appId: 0, appName: '', list: [] });
+    const sessions = reactive({ show: false, appId: 0, appName: '', list: [], online: 0 });
 
     async function load() {
       const res = await U.api.get('/api/open-apps');
@@ -344,8 +353,19 @@ window.PageOpenapi = {
       try {
         const res = await U.api.get('/api/open-apps/' + a.id + '/sessions');
         sessions.list = res.list || [];
+        sessions.online = sessions.list.filter((s) => s.status === 'active' && s.expires_at > new Date().toISOString()).length;
       } catch (e) { U.toast(e.message, 'error'); }
     }
+    async function cleanupSessions() {
+      if (!(await U.confirm('清理这个应用的失效会话？\n只删已失效/已过期的记录，在线客户端不受影响。'))) return;
+      try {
+        const r = await U.api.post('/api/open-apps/' + sessions.appId + '/sessions/cleanup', {});
+        U.toast(r.deleted ? ('已清理 ' + r.deleted + ' 条失效会话') : '没有失效会话', r.deleted ? 'success' : 'info');
+        await viewSessions({ id: sessions.appId, name: sessions.appName });
+        await loadAll();
+      } catch (e) { U.toast(U.failMsg(e, '清理失败'), 'error'); }
+    }
+
     async function revoke(s) {
       try {
         await U.api.post('/api/open-apps/sessions/' + s.id + '/revoke', {});
@@ -359,7 +379,7 @@ window.PageOpenapi = {
     return {
       list, products, summary, editing, form, secretBox, sessions, fmt, baseUrl,
       schemaText, fillLabelgoPreset, authTotals, authRows,
-      openCreate, edit, save, toggle, rotate, toggleLegacy, resetSecret, remove, viewSessions, revoke, loadAll, loadAuthModes,
+      openCreate, edit, save, toggle, rotate, toggleLegacy, resetSecret, remove, viewSessions, revoke, cleanupSessions, loadAll, loadAuthModes,
     };
   },
 };

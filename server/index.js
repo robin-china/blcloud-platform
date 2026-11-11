@@ -114,7 +114,8 @@ function build() {
   // 所有业务路由统一挂到 BASE 前缀下
   const opts = BASE ? { prefix: BASE } : {};
   for (const name of ['admin', 'products', 'plans', 'users', 'licenses', 'orders', 'stats',
-    'pay', 'wechat', 'portal', 'open', 'openapps', 'agents', 'blcloud', 'blcloud-admin', 'backup', 'releases']) {
+    'pay', 'wechat', 'portal', 'open', 'openapps', 'agents', 'blcloud', 'blcloud-admin', 'backup', 'releases',
+    'retention']) {
     app.register(require(`./routes/${name}`), opts);
   }
 
@@ -165,6 +166,20 @@ async function start() {
     try { reminders.scan(); } catch (e) { app.log.warn(`到期提醒扫描失败: ${e.message}`); }
   }, 6 * 60 * 60 * 1000);
   timer.unref();
+  // 数据留存：流水表（鉴权流水、升级记录、失效会话…）按保留天数滚动清理。
+  // 不跑这个，open_auth_log 这种「每请求一行」的表一年下来能把库拖慢一倍，
+  // 而界面上又只有「清空整表」一条路 —— 等于逼管理员要么不管，要么毁数据。
+  const retention = require('./lib/retention');
+  const prune = () => {
+    try {
+      const r = retention.run([], { by: 'system' });
+      if (r.total) app.log.info(`数据留存清理 ${r.total} 行：${Object.entries(r.deleted).map(([t, n]) => `${t} ${n}`).join('、')}`);
+    } catch (e) { app.log.warn(`数据留存清理失败: ${e.message}`); }
+  };
+  // 启动先跑一次（覆盖「停机几天没清」的情况），之后每 6 小时一次
+  prune();
+  const retentionTimer = setInterval(prune, 6 * 60 * 60 * 1000);
+  retentionTimer.unref();
   try {
     await app.listen({ port, host });
     console.log(`\n  管理后台: http://localhost:${port}/admin/`);

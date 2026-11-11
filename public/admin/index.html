@@ -66,6 +66,7 @@
         <page-plans v-if="state.route === 'plans'"></page-plans>
         <page-storefront v-if="state.route === 'storefront'"></page-storefront>
         <page-release v-if="state.route === 'release'"></page-release>
+        <page-retention v-if="state.route === 'retention'"></page-retention>
         <page-licenses v-if="state.route === 'licenses'"></page-licenses>
         <page-orders v-if="state.route === 'orders'"></page-orders>
         <page-revenue v-if="state.route === 'revenue'"></page-revenue>
@@ -97,9 +98,10 @@
   <script src="js/pages-openapi.js"></script>
   <script src="js/pages-backup.js"></script>
 <script src="js/pages-release.js"></script>
+<script src="js/pages-retention.js"></script>
   <script src="js/pages-blcloud.js"></script>
 <script>
-  const PAGES = ['Login', 'Dashboard', 'Products', 'Plans', 'Storefront', 'Licenses', 'Orders', 'Revenue', 'ApiUsage', 'Users', 'Agents', 'AdminBlcloud', 'Settings', 'Integration', 'Openapi', 'Backup', 'Release', 'Admins'];
+  const PAGES = ['Login', 'Dashboard', 'Products', 'Plans', 'Storefront', 'Licenses', 'Orders', 'Revenue', 'ApiUsage', 'Users', 'Agents', 'AdminBlcloud', 'Settings', 'Integration', 'Openapi', 'Backup', 'Release', 'Retention', 'Admins'];
   const kebab = (s) => s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
   for (const name of PAGES) {
     const comp = window['Page' + name];

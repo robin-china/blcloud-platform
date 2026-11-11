@@ -122,6 +122,20 @@ module.exports = async function openAppRoutes(app) {
     return { list };
   });
 
+  /* 清理失效会话：status<>'active' 或已过期的行。
+   * 会话表每次激活/登录都会新增一行，不清理的话「会话」抽屉里全是几年前的死记录，
+   * 真正要看的那台在线机器反而翻不到。在线会话一律保留。 */
+  app.post('/api/open-apps/:id/sessions/cleanup', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const id = Number(req.params.id);
+    const row = db.prepare('SELECT name FROM open_apps WHERE id = ?').get(id);
+    if (!row) return reply.code(404).send({ error: '应用不存在' });
+    const info = db.prepare(`DELETE FROM client_sessions
+      WHERE app_id = ? AND (status <> 'active' OR expires_at < ?)`).run(id, now());
+    if (info.changes) logAdmin(req, 'openapp.cleanup_sessions', `${row.name}：清理失效会话 ${info.changes} 条`);
+    return { ok: true, deleted: info.changes };
+  });
+
   app.post('/api/open-apps/sessions/:id/revoke', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     db.prepare('UPDATE client_sessions SET status = ? WHERE id = ?').run('revoked', Number(req.params.id));

@@ -62,6 +62,37 @@ check('无图标时统一用 .ph 占位', /class="ph"/.test(pages) && /\.prod-ca
 check('后台上架卡片也用 .ph 占位', /v-else class="ph"/.test(adminProducts));
 check('后台商品表格/预览用 thumb-sm 类', (adminProducts.match(/class="thumb-sm"/g) || []).length >= 2);
 
+const adminIndex = read('public/admin/index.html');
+const releasePage = read('public/admin/js/pages-release.js');
+const retentionPage = read('public/admin/js/pages-retention.js');
+const openapiPage = read('public/admin/js/pages-openapi.js');
+
+console.log('\n客户端更新页：按产品分组，不再全产品混排');
+check('左侧产品侧栏存在', /class="rel-rail"/.test(releasePage) && /rel-item/.test(releasePage));
+check('点击产品只切换当前产品', /function selectProduct\(name\)/.test(releasePage));
+check('版本列表/升级记录标题带产品名', /版本列表 · \{\{ active/.test(releasePage) && /升级记录 · \{\{ active/.test(releasePage));
+check('不再有「全部 + 每产品」chips 混排', !/setFilter\(''\)/.test(releasePage));
+check('升级记录按产品请求', /product: active\.value/.test(releasePage));
+check('选中产品记忆到 localStorage', /admin_release_product/.test(releasePage));
+check('发布表单产品锁定为当前产品', /fd\.append\('product', active\.value\)/.test(releasePage));
+check('可登记未发布的产品线', /add_product/.test(releasePage) && /rel-add/.test(releasePage));
+check('升级记录有清理入口且需确认词', /openPurge/.test(releasePage) && /purgeConfirm !== '清除'/.test(releasePage));
+check('产品侧栏有响应式断点', /@media \(max-width: 900px\)[\s\S]*\.rel-wrap \{ flex-direction: column/.test(css));
+
+console.log('\n数据留存页：流水表可滚动清理');
+check('留存页已注册到后台导航', /key: 'retention', name: '数据留存'/.test(read('public/admin/js/app.js')));
+check('留存页已挂到 index.html', /<page-retention v-if="state.route === 'retention'"><\/page-retention>/.test(adminIndex)
+  && /pages-retention\.js/.test(adminIndex));
+check('每张表显示行数与最早一行', /p\.rows/.test(retentionPage) && /p\.oldest/.test(retentionPage));
+check('保留天数可编辑且 0=不自动清', /v-model\.number="days\[p\.key\]"/.test(retentionPage));
+check('清空需输入确认词', /clearConfirm !== '清除'/.test(retentionPage));
+check('在线会话永不删除（服务端特例）', /status <> 'active' OR expires_at </.test(read('server/lib/retention.js')));
+
+console.log('\n开放接口会话：可清理失效记录');
+check('会话抽屉有清理失效会话按钮', /cleanupSessions/.test(openapiPage));
+check('会话抽屉显示生效条数', /生效 \{\{ sessions\.online \}\}/.test(openapiPage));
+check('服务端只删失效/过期会话', /status <> 'active' OR expires_at </.test(read('server/routes/openapps.js')));
+
 console.log('\n头像：内置卡通可选，不再让用户填地址');
 check('账户中心不再有「头像地址」输入框', !/头像地址/.test(pages));
 check('账户中心有头像选择器网格', /class="avatar-picker"/.test(pages));
