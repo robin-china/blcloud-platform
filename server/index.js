@@ -174,6 +174,19 @@ async function start() {
     } else {
       console.log(`  运行环境: ${process.env.NODE_ENV || 'development'}（演示接口跟随环境开放，生产请设 NODE_ENV=production）\n`);
     }
+
+    // 静态兜底清单自愈：加签这类改动上线后，旧的 latest.json / products.json 不会自动
+    // 重生成，会留下「动态已验签、静态未验签」的旁路。只在缺签名时按库里记录重建一次。
+    try {
+      const r = require('./lib/release').rebuildIfStale();
+      if (r.rebuilt) {
+        console.log(`  更新清单缺签名，已重建：${r.files.join('、')}\n`);
+      } else if (r.reason === 'no-base' && r.files.length) {
+        console.warn(`  ⚠ 更新清单缺签名，但没配置站点地址（PUBLIC_BASE_URL 或后台「站点地址」），已跳过重建：${r.files.join('、')}\n`);
+      }
+    } catch (e) {
+      console.warn('  更新清单自愈失败（不影响启动）：' + e.message + '\n');
+    }
   } catch (e) {
     app.log.error(e);
     process.exit(1);

@@ -394,6 +394,14 @@ module.exports = async function openRoutes(app) {
    * 同样只用于构建期比对与排障，客户端必须内嵌，不能依赖本接口。
    */
   app.get('/api/open/v1/app/keys', async (req, reply) => {
+    // 公钥本身不是秘密（要内嵌进安装包），这里要求 x-app-key 只是防批量爬取与统计来源。
+    // 缺 key 时给明确错误码，别让客户端把「构建期取公钥忘了带头」当成密钥配错。
+    if (!String(req.headers['x-app-key'] || '') && !readClientToken(req)) {
+      return reply.code(401).send({
+        error: '缺少 x-app-key：公开模式即可取公钥（公钥非机密，仅防爬取）',
+        code: 'APP_KEY_REQUIRED',
+      });
+    }
     if (!(await withApp(req, reply))) return;
     return {
       manifest: manifestKey.info(),

@@ -180,6 +180,11 @@ function pub(appRow, useNonce = true) {
   r = await app.inject({ method: 'GET', url: '/api/open/v1/app/keys', headers: pub(appRow) });
   ok('公钥接口一次给三把', r.statusCode === 200 && !!JSON.parse(r.body).manifest && !!JSON.parse(r.body).entitlement && !!JSON.parse(r.body).offline);
 
+  // 公钥非机密，但仍要求带应用标识（防批量爬取）；缺 key 要有明确错误码，
+  // 否则客户端会把「构建期忘带 x-app-key」当成密钥配错
+  r = await app.inject({ method: 'GET', url: '/api/open/v1/app/keys' });
+  ok('公钥接口裸请求 → 401 APP_KEY_REQUIRED', r.statusCode === 401 && JSON.parse(r.body).code === 'APP_KEY_REQUIRED', r.body);
+
   await app.close();
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exitCode = fail ? 1 : 0;

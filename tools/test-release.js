@@ -250,9 +250,11 @@ function sha(buf) {
   r = await app.inject({ method: 'GET', url: `${B}/api/open/v1/app/version` });
   check('不带 product 且无签名 → 401（旧行为不变）', r.statusCode === 401, r.statusCode);
 
-  // 无发布记录的产品：不能报错，客户端按「已是最新」处理
+  // 无发布记录的产品：不能报错；也**不能**回显 current 当 latest（否则等于谎称「已是最新」）
   r = await app.inject({ method: 'GET', url: `${B}/api/open/v1/app/version?product=Nobody&version=2.0.0` });
-  check('没有发布记录 → 200 且无更新', r.statusCode === 200 && r.json().latest === '2.0.0', r.body);
+  const nobody = r.json();
+  check('没有发布记录 → 200 且 no_release', r.statusCode === 200 && nobody.no_release === true && !nobody.update_available, r.body);
+  check('没有发布记录 → latest 不回显当前版本', nobody.latest === '', r.body);
 
 
   console.log('\n[多产品]');

@@ -291,9 +291,9 @@ function candidates({ product, channel, platform, arch }) {
  * 从高到低逐条判断灰度：高版本没命中就退到下一条，而不是直接判定「无更新」——
  * 否则 10% 灰度的 1.0.22 会把另外 90% 卡在 1.0.20，明明 1.0.21 是全量的。
  */
-function pick(opts) {
+function pick(opts, preList) {
   const { current = '', machine = '' } = opts;
-  const list = candidates(opts);
+  const list = preList || candidates(opts);
   if (!current) return list.find((r) => inRollout(machine, r.version, r.rollout)) || null;
   for (const r of list) {
     if (cmpVersion(r.version, current) <= 0) continue;
@@ -352,7 +352,12 @@ function manifest(opts, baseUrl) {
   const current = String(opts.current || '').trim();
   const machine = String(opts.machine || '').trim();
 
-  const rec = pick({ product, channel, platform, arch, current, machine });
+  // 先取一次列表：既用来挑版本，也用来判断「这个产品到底有没有发布过」。
+  // 没有发布记录时绝不能回显 latest=当前版本 —— 那等于告诉客户端「已是最新」，
+  // 而实际上这个产品一个包都没有（LabelGo-Offline 首发前踩过：客户端误以为
+  // 拿到的是在线版最新清单）。
+  const list = candidates({ product, channel, platform, arch });
+  const rec = pick({ product, channel, platform, arch, current, machine }, list);
   const head = {
     product, channel, platform, arch, server_time: now(),
     // 客户端升级后回调这个地址，后台才有「谁真的升了」的记录
@@ -361,12 +366,25 @@ function manifest(opts, baseUrl) {
     auto_update: !manualProducts().includes(product),
   };
 
+  if (!list.length) {
+    return signManifest({
+      ...head,
+      latest: '',
+      current: current || '',
+      update_available: false,
+      // 「没发布过」和「已是最新」必须能区分：前者客户端应提示「该产品暂无可用版本」，
+      // 而不是安安静静什么都不做（离线产品还没发包时最容易误解）
+      no_release: true,
+    });
+  }
+
   if (!rec) {
     return signManifest({
       ...head,
       latest: current || '',
       current: current || '',
       update_available: false,
+      no_release: false,
     });
   }
 
@@ -389,6 +407,7 @@ function manifest(opts, baseUrl) {
     delta: deltaOut(baseUrl, rec),
     current: current || '',
     update_available: true,
+    no_release: false,
     // 灰度命中的比例，排障时一眼看出「为什么这台机器拿到了 / 没拿到」
     rollout: rec.rollout,
   });
@@ -487,11 +506,15 @@ function writeLatest(baseUrl) {
 
   writeJson('products.json', signManifest({
     generated_at: now(),
+    // 离线产品可能还没发过包：显式列出不自动升级的产品，
+    // 客户端才能区分「没这个产品」和「有这个产品但还没发包」
+    manual_products: manualProducts(),
     products: products.filter((p) => bodies[p]).map((p) => ({
       product: p,
       latest: bodies[p].latest,
       channel: bodies[p].channel,
       platform: bodies[p].platform,
+      auto_update: !manualProducts().includes(p),
       manifest_url: fileUrl(base, `${safeToken(p, 'app')}/latest.json`),
     })),
   }));
@@ -511,6 +534,46 @@ function writeLatest(baseUrl) {
 
   lastWriteInfo = { files: written, at: now() };
   return rootBody;
+}
+
+/** 读一份已生成的静态清单，判断有没有签名（读不到 / 解析失败都算缺） */
+function hasSignature(rel) {
+  try {
+    const body = JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
+    return !!(body && body.signature && body.kid);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 找出「缺签名」的兜底清单。
+ * 静态清单是发布那一刻顺手写的，加签这类改动上线后不会自动重生成 ——
+ * 结果就是动态接口已验签、静态兜底还是老格式，留了一条不用验签就能装包的旁路。
+ * fallbackBase 只在调用方明确知道站点地址时传（脚本/后台）；启动自愈不传，
+ * 必须靠环境变量或后台设置，否则会把绝对下载地址写成相对路径。
+ */
+function staleManifests(fallbackBase = '') {
+  const base = siteBase(fallbackBase);
+  const need = [];
+  const products = db.prepare('SELECT DISTINCT product FROM app_release WHERE enabled=1 ORDER BY product')
+    .all().map((r) => r.product);
+  for (const p of products) {
+    const rel = `${safeToken(p, 'app')}/latest.json`;
+    if (!hasSignature(rel)) need.push(rel);
+  }
+  if (products.length && !hasSignature('products.json')) need.push('products.json');
+  if (products.length && !hasSignature('latest.json')) need.push('latest.json');
+  return { base, files: need };
+}
+
+/** 启动自愈：静态清单缺签名就按库里现有记录重建一次（失败不影响启动） */
+function rebuildIfStale() {
+  const s = staleManifests();
+  if (!s.files.length) return { rebuilt: false, files: [], reason: 'fresh' };
+  if (!s.base) return { rebuilt: false, files: s.files, reason: 'no-base' };
+  writeLatest(s.base);
+  return { rebuilt: true, files: getLastWriteInfo().files, reason: 'stale' };
 }
 
 /* ---------------- 升级事件记录 ---------------- */
@@ -745,6 +808,9 @@ module.exports = {
   verifyManifest: (body) => manifestKey.verifyObject(body),
   manualProducts,
   writeLatest,
+  staleManifests,
+  rebuildIfStale,
+  hasSignature,
   latestBodyFor,
   getLastWriteInfo,
   logCheck,

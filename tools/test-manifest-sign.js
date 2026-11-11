@@ -141,6 +141,23 @@ ok('根 latest.json 也加签', !!rootBody.signature && release.verifyManifest(r
 const off = release.manifest({ product: 'LabelGo-Offline', current: '1.0.50' }, 'https://example.com');
 ok('LabelGo-Offline 默认 auto_update=false', off.auto_update === false);
 ok('离线产品清单照样签名', release.verifyManifest(off).ok);
+// 这个产品一条发布记录都没有：不能回显 current 当 latest，
+// 否则客户端看到「已是最新」，实际一个离线包都没有（2026-11-11 复测踩到）
+ok('无发布记录时 no_release=true', off.no_release === true);
+ok('无发布记录时不回显 current 当 latest', off.latest === '');
+ok('无发布记录时不带 full/delta', !off.full && !off.delta);
+// 有发布记录但已是最新：仍然 no_release=false，语义是「产品存在、你已最新」
+ok('已最新时 no_release=false', noUpdate.no_release === false);
+
+/* ---------------- 6. 静态清单自检（防未验签入口） ---------------- */
+const stale = release.staleManifests('https://example.com');
+ok('重建后没有缺签名的清单', stale.files.length === 0 && !!stale.base);
+ok('hasSignature 能识别已签文件', release.hasSignature('LabelGo/latest.json') === true);
+ok('hasSignature 对不存在的文件返回 false', release.hasSignature('Nope/latest.json') === false);
+ok('products.json 列出离线产品（manual_products）',
+  Array.isArray(productsBody.manual_products) && productsBody.manual_products.includes('LabelGo-Offline'));
+const lgEntry = (productsBody.products || []).find((p) => p.product === 'LabelGo');
+ok('products.json 每项带 auto_update', !!lgEntry && lgEntry.auto_update === true);
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exitCode = fail ? 1 : 0;
