@@ -17,7 +17,7 @@
    * 注意：本组件 template 是 JS 字符串（非 in-DOM 模板），自闭合写法安全；
    * 模板里不引用全局变量，全部通过 computed 暴露。
    */
-  const { ref, computed } = Vue;
+  const { ref, computed, watch, onBeforeUnmount } = Vue;
   const DEFAULT_URL = '/assets/compare/default.html';
 
   function normalizeUrl(u) {
@@ -50,19 +50,21 @@
           <iframe :src="finalUrl" class="compare-frame" sandbox="allow-same-origin allow-popups" loading="lazy" title="版本差异"></iframe>
         </div>
 
-        <div v-if="mode !== 'inline' && show" class="mask" @click.self="close">
-          <div class="modal wide">
-            <div class="modal-head">
-              <h3>{{ title }}</h3>
-              <button class="close-x" @click="close">&times;</button>
-            </div>
-            <div class="modal-body vc-modal-body">
-              <iframe :src="finalUrl" class="compare-frame" sandbox="allow-same-origin allow-popups" title="版本差异"></iframe>
+        <teleport to="body">
+          <div v-if="mode !== 'inline' && show" class="mask" @click.self="close">
+            <div class="modal wide">
+              <div class="modal-head">
+                <h3>{{ title }}</h3>
+                <button class="close-x" @click="close">&times;</button>
+              </div>
+              <div class="modal-body vc-modal-body">
+                <iframe :src="finalUrl" class="compare-frame" sandbox="allow-same-origin allow-popups" title="版本差异"></iframe>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
-    `,
+        </teleport>
+      </div>`,
+
     setup(props) {
       const show = ref(false);
       const finalUrl = computed(() => {
@@ -71,6 +73,40 @@
         const base = (window.U && window.U.basePath) || '';
         return base + (u.startsWith('/') ? u : '/' + u);
       });
+
+      // 弹层必须 teleport 到 body：组件在「我的空间」里落在 .prod-card 内部，
+      // 而 .prod-card:hover 有 transform: translateY(-2px)。祖先一旦有 transform，
+      // 子元素的 position:fixed 就改成相对这个祖先定位 —— 鼠标移上去（要点按钮必然
+      // 会 hover）弹层就被塞进卡片里、随 hover 抖动，还会被 overflow:hidden 裁掉。
+      // 这也是「模态框和产品 item 里的容器乱跳」的直接原因。
+      let prevOverflow = '';
+
+      function lockScroll(on) {
+        if (typeof document === 'undefined') return;
+        if (on) {
+          prevOverflow = document.body.style.overflow;
+          document.body.style.overflow = 'hidden';
+        } else {
+          document.body.style.overflow = prevOverflow || '';
+        }
+      }
+
+      function onKey(e) {
+        if (e.key === 'Escape') close();
+      }
+
+      watch(show, (v) => {
+        lockScroll(v);
+        if (typeof window === 'undefined') return;
+        if (v) window.addEventListener('keydown', onKey);
+        else window.removeEventListener('keydown', onKey);
+      });
+
+      onBeforeUnmount(() => {
+        lockScroll(false);
+        if (typeof window !== 'undefined') window.removeEventListener('keydown', onKey);
+      });
+
       function open() { show.value = true; }
       function close() { show.value = false; }
       return { show, finalUrl, open, close };
