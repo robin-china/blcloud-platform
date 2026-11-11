@@ -353,6 +353,73 @@ module.exports = async function licenseRoutes(app) {
     logAdmin(req, '解绑授权设备', `授权#${d.license_id} 机器 ${d.device_sn}`);
     return { ok: true };
   });
+
+  /* ---------------- 停票 / 恢复（单台，下一换票周期生效） ---------------- */
+
+  /**
+   * 只停这一台机器的换票，不动整张授权：
+   * 现场退机、机器被转卖、临时停用都要这个粒度，直接吊销整张码会误伤同客户其他机器。
+   * epoch +1 是关键 —— 已发出去的老票（还没到期）立刻失效，
+   * 客户端下一次换票就拿到 TICKET_STOPPED。
+   */
+  app.post('/api/licenses/:id/ticket/stop', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const id = Number(req.params.id);
+    const machine = String((req.body || {}).machine_code || (req.body || {}).machine_id || '').trim();
+    if (!machine) return reply.code(400).send({ error: '缺少 machine_code' });
+    const lic = db.prepare('SELECT * FROM licenses WHERE id = ?').get(id);
+    if (!lic) return reply.code(404).send({ error: '授权不存在' });
+    const row = db.prepare('SELECT * FROM license_ticket_seq WHERE license_id = ? AND machine_code = ?').get(id, machine);
+    if (row) {
+      db.prepare('UPDATE license_ticket_seq SET stopped_at = ?, stop_reason = ?, epoch = epoch + 1, updated_at = ? WHERE license_id = ? AND machine_code = ?')
+        .run(now(), String((req.body || {}).reason || ''), now(), id, machine);
+    } else {
+      // 还没换过票的机器也要能直接停：先建一行，epoch 从 1 到 2
+      db.prepare(`INSERT INTO license_ticket_seq
+        (license_id, machine_code, seq, epoch, stopped_at, stop_reason, created_at, updated_at)
+        VALUES (?,?,0,2,?,?,?,?)`).run(id, machine, now(), String((req.body || {}).reason || ''), now(), now());
+    }
+    logAdmin(req, '停票', `授权 ${lic.license_key} 机器 ${machine}`);
+    return { ok: true, machine_code: machine };
+  });
+
+  app.post('/api/licenses/:id/ticket/resume', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const id = Number(req.params.id);
+    const machine = String((req.body || {}).machine_code || (req.body || {}).machine_id || '').trim();
+    if (!machine) return reply.code(400).send({ error: '缺少 machine_code' });
+    db.prepare("UPDATE license_ticket_seq SET stopped_at = '', stop_reason = '', updated_at = ? WHERE license_id = ? AND machine_code = ?")
+      .run(now(), id, machine);
+    logAdmin(req, '恢复换票', `授权#${id} 机器 ${machine}`);
+    return { ok: true, machine_code: machine };
+  });
+
+  /* ---------------- 机器台账 ---------------- */
+
+  app.get('/api/ledger', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const q = req.query || {};
+    const where = [];
+    const args = [];
+    if (q.machine) { where.push('machine_code LIKE ?'); args.push(`%${String(q.machine).slice(0, 64)}%`); }
+    if (q.product) { where.push('product = ?'); args.push(String(q.product)); }
+    if (q.license_id) { where.push('license_id = ?'); args.push(Number(q.license_id)); }
+    const limit = Math.min(500, Math.max(1, Number(q.limit) || 100));
+    const sql = `SELECT * FROM machine_ledger ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY last_seen_at DESC LIMIT ${limit}`;
+    return { list: db.prepare(sql).all(...args) };
+  });
+
+  /** 单台机器的台账 + 换票状态（排障用于「为什么这台不给票」） */
+  app.get('/api/ledger/:machine', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const machine = String(req.params.machine || '').slice(0, 128);
+    return {
+      machine,
+      rows: db.prepare('SELECT * FROM machine_ledger WHERE machine_code = ? ORDER BY last_seen_at DESC').all(machine),
+      tickets: db.prepare('SELECT * FROM license_ticket_seq WHERE machine_code = ?').all(machine),
+    };
+  });
 };
 
 module.exports.addDays = addDays;

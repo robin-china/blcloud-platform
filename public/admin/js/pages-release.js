@@ -165,7 +165,7 @@ window.PageRelease = {
                 <span v-else class="tag">命中</span>
                 <!-- 失败/回滚时的细分：code:stage 耗时 —— 排障时一眼看出卡在哪一步 -->
                 <div class="hint" style="margin:0" v-if="u.action !== 'success' && u.action !== 'check' && (u.result_code || u.stage)">
-                  code {{ u.result_code }}<template v-if="u.stage"> · {{ u.stage }}</template>
+                  code {{ u.result_code }}<template v-if="codeText(u.result_code)"> {{ codeText(u.result_code) }}</template><template v-if="u.stage"> · {{ u.stage }}</template>
                 </div>
               </td>
               <td class="hint" style="margin:0">{{ u.ip || '-' }}</td>
@@ -235,6 +235,13 @@ window.PageRelease = {
     const updates = ref([]);
     const upAction = ref('');
     const upSummary = reactive({ check: 0, success: 0, fail: 0, rollback: 0, machines: 0 });
+    // 失败码与客户端约定（docs/客户端更新包接入.md §1.4）：
+    // 1 下载/校验失败、2 解包失败 是发售前保护定稿时补上的
+    const FAIL_CODES = {
+      1: '下载/校验失败', 2: '解包失败', 3: '已提权仍不可写', 4: '旧进程结束不掉',
+      5: '覆盖失败', 6: '新版本未起来', 7: 'UAC 被取消', 8: '启动三兜底全挂',
+    };
+    function codeText(c) { return FAIL_CODES[Number(c)] || ''; }
     const probing = ref(false);
     const probeOut = ref('');
     const fullFile = ref(null);
@@ -461,7 +468,7 @@ window.PageRelease = {
       cfg, rows, products, totalSize, totalAllSize, filter, busy, form, probe, probeOut, probing,
       updates, upAction, upSummary,
       fullFile, deltaFile, checkUrl, latestVersion,
-      bytes, when, short, load, setFilter, loadUpdates, setUpAction,
+      bytes, when, short, load, setFilter, loadUpdates, setUpAction, codeText,
       pickFull, pickDelta, publish, toggle, verify, remove,
       rebuild, saveSite, runProbe, copy,
     };

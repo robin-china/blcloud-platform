@@ -6,8 +6,9 @@ const { logAdmin } = require('../lib/adminlog');
 const FIELDS = `type, name, subtitle, description, category, price, original_price, icon, images,
   features, version, download_url, file_size, stock, is_official, status, sort`;
 // quota = 额度包商品发放的调用次数；compare_url = 版本差异内容地址（详情内嵌 + 空间卡片共用）
-// （均由 db/index.js 的 ensureColumn 保证旧库也有这两列）
-const FIELDS_WITH_EXTRA = `${FIELDS}, quota, compare_url`;
+// sku = 权益维度（在线版 / 离线版），与升级通道（app_release.product）分开
+// （均由 db/index.js 的 ensureColumn 保证旧库也有这些列）
+const FIELDS_WITH_EXTRA = `${FIELDS}, quota, compare_url, sku`;
 
 function shape(row) {
   if (!row) return row;
@@ -57,7 +58,7 @@ module.exports = async function productRoutes(app) {
     const b = req.body || {};
     const ts = now();
     const info = db.prepare(`INSERT INTO products (${FIELDS_WITH_EXTRA}, total_downloads, total_installs, active_users, total_sales, created_at, updated_at)
-      VALUES (@type,@name,@subtitle,@description,@category,@price,@original_price,@icon,@images,@features,@version,@download_url,@file_size,@stock,@is_official,@status,@sort,@quota,@compare_url,0,0,0,0,@ts,@ts)`)
+      VALUES (@type,@name,@subtitle,@description,@category,@price,@original_price,@icon,@images,@features,@version,@download_url,@file_size,@stock,@is_official,@status,@sort,@quota,@compare_url,@sku,0,0,0,0,@ts,@ts)`)
       .run({
         type: b.type || 'software', name: b.name || '未命名产品', subtitle: b.subtitle || '',
         description: b.description || '', category: b.category || '', price: Number(b.price) || 0,
@@ -67,7 +68,8 @@ module.exports = async function productRoutes(app) {
         stock: Number(b.stock) || 0, is_official: b.is_official == null ? 1 : Number(b.is_official),
         status: b.status || 'off', sort: Number(b.sort) || 0,
         // 版本差异内容地址：站内相对路径（assets/compare/xxx.html）或 https 外链；非法伪协议直接丢弃
-        compare_url: sanitizeCompareUrl(b.compare_url), ts,
+        compare_url: sanitizeCompareUrl(b.compare_url),
+        sku: String(b.sku || '').trim().slice(0, 40), ts,
       });
     return { id: info.lastInsertRowid };
   });
@@ -83,7 +85,7 @@ module.exports = async function productRoutes(app) {
       category=@category, price=@price, original_price=@original_price, icon=@icon, images=@images,
       features=@features, version=@version, download_url=@download_url, file_size=@file_size,
       stock=@stock, is_official=@is_official, status=@status, sort=@sort, quota=@quota,
-      compare_url=@compare_url, updated_at=@ts WHERE id=@id`)
+      compare_url=@compare_url, sku=@sku, updated_at=@ts WHERE id=@id`)
       .run({
         id, type: next.type, name: next.name, subtitle: next.subtitle || '', description: next.description || '',
         category: next.category || '', price: Number(next.price) || 0, original_price: Number(next.original_price) || 0,
@@ -92,6 +94,7 @@ module.exports = async function productRoutes(app) {
         download_url: next.download_url || '', file_size: next.file_size || '', stock: Number(next.stock) || 0,
         is_official: Number(next.is_official), status: next.status || 'off', sort: Number(next.sort) || 0,
         compare_url: sanitizeCompareUrl(next.compare_url), ts: now(),
+        sku: String(next.sku || '').trim().slice(0, 40),
       });
     return { ok: true };
   });

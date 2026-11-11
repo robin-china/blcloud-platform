@@ -106,6 +106,27 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 
 ---
 
+### 2.2.1 公开模式（新客户端：不内置共享密钥）
+
+2026-11-11 起，`/api/open/v1/*` 同时接受三种身份，客户端按自己的能力选一种：
+
+| 模式 | 请求头 | 用途 |
+|---|---|---|
+| 公开模式 | `X-App-Key`（写请求再加 `X-Nonce`） | 新客户端登录前调用（激活 / 扫码 / 短信 / 清单） |
+| HMAC 签名 | `X-App-Key` + `X-Timestamp` + `X-Nonce` + `X-Signature` | 旧客户端，双模期保留 |
+| 用户令牌 | `Authorization: Bearer <access_token>` | 登录后调个人数据 |
+
+公开模式的边界不是「没有鉴权」，而是**不再把共享密钥发到客户端**：
+
+- 频控：每 IP 300 次/分钟、每 app+IP 120 次/分钟，超了回 `429 RATE_LIMITED`
+- 写请求必须带 `X-Nonce`（一次性），缺了回 `401 NONCE_REQUIRED`；重放回 `NONCE_REUSED`
+- 每次请求记 `auth_mode`（`public` / `hmac` / `hmac_legacy` / `token`），后台「开放应用」页可看报表
+
+**密钥轮换（后台操作）**：先「轮换密钥」→ 新值生效、旧值进 `app_secret_prev` 继续放行 →
+看 `hmac_legacy` 连续归零 → 「关旧密钥」。关闭后旧值请求统一
+`401 APP_SECRET_RETIRED`（客户端能分辨「该升级」而不是「密钥写错了」）。
+日常不要用「重置密钥」（硬重置会立即作废旧值并踢掉全部会话）。
+
 ## 3. 用户级令牌
 
 登录（激活 / 扫码 / 手机号）成功后返回：
@@ -188,6 +209,11 @@ def sign(app_key, app_secret, method, path, body_obj=None):
 `plan_catalog` **只包含本应用自己那一套档位**（每个软件产品的档位各自独立，`app_id` 标明归属），仅用于展示可购买档位；真正的权益判定必须以离线票据签名里的字段为准。产品还没配套餐时会回退到通用模板档位，此时 `app_id` 为 `null`，授权码本身仍受 `licenses.app_id` 约束，不会因此跨产品通用。
 
 > 服务端不代管离线状态，它只负责把这个数字准确地告诉你。
+
+### 三类验签公钥（构建期内嵌，运行时不要拉）
+
+`GET /app/keys` → `{ manifest, entitlement, offline }`，每项含 `alg` / `kid` / `public_key` / `created_at`。
+仅用于构建期比对与排障；客户端必须把公钥**内置**并固定（pinning），否则等于让中间人决定验签结果。
 
 ### 更新清单（同一路径的第二种用法）
 
@@ -501,12 +527,22 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
   "ticket": "v1.<payload_base64url>.<signature_base64url>",
   "alg": "Ed25519",
   "kid": "9f3a1c7b2d40e851",
+  "seq": 12,
+  "epoch": 1,
+  "entitlement_sig": "base64…",
+  "entitlement_kid": "ent-2026-11",
   "payload": {
-    "v": 1,
+    "v": 2,
     "license_id": 42,
     "license_key": "LIC-XXXXXXXX-XXXXXXXX-XXXXXXXX",
     "user_id": 12,
     "machine_id": "A1B2C3D4E5F6",
+    "machine_code": "A1B2C3D4E5F6",
+    "build_hash": "9f2c…",
+    "seq": 12,
+    "epoch": 1,
+    "product": "LabelGo",
+    "sku": "online-standard",
     "product_id": 0,
     "app_id": 3,
     "plan": "member",
@@ -550,6 +586,48 @@ const ok = crypto.verify(null, Buffer.from(body, 'utf8'),
   crypto.createPublicKey(EMBEDDED_PUBLIC_KEY),
   Buffer.from(sig.replace(/-/g, '+').replace(/_/g, '/'), 'base64'));
 ```
+
+**换票序号（2026-11-11 新增，v2）**
+
+| 字段 | 含义 |
+|---|---|
+| `seq` | 同一 `(license_id, machine_code)` 单调递增；客户端必须持久化「见过的最大 seq」 |
+| `epoch` | 停票时服务端 +1；**epoch 变了老票整批作废**，即使还没到期 |
+| `build_hash` | 请求里带上来，票里原样签回去；用于定位「哪个构建出的问题」 |
+| `machine_code` | 票只签给会话所在机器，换机换票直接 `403 MACHINE_MISMATCH` |
+
+客户端的硬规则（缺一条就等于留了旁路）：
+
+1. 收到的票必须 `payload.seq > 本地记录的最大 seq`，否则视为重放，**丢弃并保持现有权益不变**；
+2. `payload.epoch` 与本地记录不同 → 视为已停票，走降级/提示，不要沿用旧票；
+3. `payload.machine_code` 必须等于本地机器码；
+4. 宽限计时用票里的 `iat`（服务端签发时刻），不要用本地 `Date.now()` 反推。
+
+服务端行为：停票后下一次换票回 `403 TICKET_STOPPED`（带 `stopped_at` / `reason`），
+**已发的票靠 epoch 失效**；恢复换票后 seq 继续从原值递增，不会回到 1。
+
+响应里的两个时间字段别混：
+
+| 字段 | 含义 |
+|---|---|
+| `expires_in` | 票本身的有效期（=`exp - now`），断网能用多久 |
+| `refresh_in` | **建议多久来换一次票**（默认 24h，后台 `ticket_ttl_hours` 可调，且不超过有效期） |
+
+`offline_days` 仍然决定断网可用时长（3 天就真给 3 天），`refresh_in` 只是「该来换票了」的节拍，
+不是有效期上限 —— 用 24h 去 cap 离线宽限等于把后台配的宽限偷偷砍掉。
+
+**权益快照签名 `entitlement_sig`**
+
+`license.entitlement`（以及票响应顶层的 `entitlement`）旁边多两个字段：
+
+| 字段 | 说明 |
+|---|---|
+| `entitlement_sig` | 对 entitlement 对象做 Ed25519（base64），canonical 规则同清单签名（去掉 `entitlement_sig`） |
+| `entitlement_kid` | 形如 `ent-2026-11`，**在签名内容里** |
+
+断网期间保留的旧快照必须验签通过才可用：本地改一个 JSON 就能解锁全部功能，
+这正是「离线宽限」最容易被利用的地方。验签失败 → 按无结论处理（保留上一份**验签通过**的快照）。
+注意：`entitlement_sig` 与 `.lic` 文件签名、清单签名**不是同一把密钥**，公钥分别内嵌。
 
 **有效期语义**
 
@@ -649,6 +727,13 @@ const ok = crypto.verify(null, Buffer.from(body, 'utf8'),
 | 403 | `FORBIDDEN` | 越权操作 | — |
 | 404 | `USER_NOT_FOUND` / `SCENE_NOT_FOUND` | 资源不存在 | — |
 | 409 | `MACHINE_LIMIT` | 超出机器数上限 | 提示先解绑旧机器 |
+| 401 | `APP_SECRET_RETIRED` | **旧应用密钥已被后台关闭**（双模期结束） | 升级客户端到新凭证/公开模式，别当成密钥写错 |
+| 401 | `PUBLIC_AUTH_DISABLED` | 该应用未开启公开模式 | 改用 HMAC 或令牌模式 |
+| 401 | `NONCE_REQUIRED` / `NONCE_REUSED` | 公开模式写请求缺 nonce / nonce 重放 | 每次请求生成新 nonce |
+| 429 | `RATE_LIMITED` | 公开模式频控命中 | 退避重试（指数退避，别死循环） |
+| 403 | `MACHINE_MISMATCH` | 换票机器码与会话不一致 | 重新激活，不要拿别的机器的票 |
+| 403 | `TICKET_STOPPED` | 该机器换票已被后台停用 | 提示联系客服；已发的票按 epoch 失效 |
+| 400 | `MACHINE_REQUIRED` | 换票缺 machine_code | 补上机器码 |
 
 ---
 

@@ -1,16 +1,19 @@
 /* 软件端开放接口 /api/open/v1/*
- * 两类鉴权：
- *  1) 应用级：X-App-Key + X-Timestamp + X-Nonce + X-Signature（HMAC-SHA256），用于激活、登录等无用户态接口
- *  2) 用户级：Authorization: Bearer <access_token>，登录后访问个人数据
+ * 鉴权三种模式（2026-11-11 起，发售前保护 P0-1）：
+ *  1) 应用级 HMAC：X-App-Key + X-Timestamp + X-Nonce + X-Signature（旧客户端，双模期保留）
+ *  2) 公开模式：仅 X-App-Key（+ 写请求必须 X-Nonce），后台频控；新客户端不内置共享密钥
+ *  3) 用户级：Authorization: Bearer <access_token>，登录后访问个人数据
  */
 const db = require('../db');
 const crypto = require('crypto');
 const { now, today, genScene, genCode } = require('../lib/util');
-const { getConfig, basePath, publicUrl } = require('../lib/config');
-const { verifySignature, issueSession, requireClient, getSession, getSessionState, touchSession, revokeSession, readClientToken } = require('../lib/openauth');
+const { getConfig, getSetting, basePath, publicUrl } = require('../lib/config');
+const { resolveApp, issueSession, requireClient, getSession, getSessionState, touchSession, revokeSession, readClientToken } = require('../lib/openauth');
 const wechatService = require('../services/wechat');
 const { ensureUser } = require('../routes/wechat');
 const offlineKey = require('../lib/offlinekey');
+const manifestKey = require('../lib/manifestkey');
+const entitlementKey = require('../lib/entitlementkey');
 const bindSvc = require('../lib/licensebind');
 const plans = require('../lib/plans');
 const profileLib = require('../lib/profile');
@@ -46,15 +49,50 @@ function publicBase(req) {
   return `${proto}://${host}${basePath()}`
 }
 
-/* 应用签名守卫 */
+/* 应用身份守卫：token / 签名（新旧 secret）/ 公开模式，三选一 */
 async function withApp(req, reply) {
-  const r = verifySignature(req);
+  const r = resolveApp(req);
   if (!r.ok) {
-    reply.code(401).send({ error: r.error, code: 'APP_SIGN_INVALID' });
+    const code = r.code || 'APP_SIGN_INVALID';
+    reply.code(code === 'RATE_LIMITED' ? 429 : 401).send({ error: r.error, code });
     return null;
   }
   req.app = r.app;
+  req.authMode = r.mode;
+  if (r.session) req.session = r.session;
   return r.app;
+}
+
+/* 客户端传参兼容：老客户端叫 machine_id，新契约叫 machine_code */
+function machineOf(b) {
+  return String((b && (b.machine_code || b.machine_id || b.machine)) || '').trim();
+}
+
+/* 机器台账：按 (machine_code, license_id) 覆盖去重，只留最近一次状态 */
+function ledgerUpsert(row) {
+  const machine = String(row.machine || '').trim().slice(0, 128);
+  if (!machine) return;
+  const licenseId = Number(row.license_id) || 0;
+  const t = now();
+  try {
+    db.prepare(`INSERT INTO machine_ledger
+      (machine_code, license_id, customer_id, app_id, product, channel, sku, build_hash, version, seq, ticket_epoch, first_seen_at, last_seen_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(machine_code, license_id) DO UPDATE SET
+        customer_id=excluded.customer_id, app_id=excluded.app_id,
+        product=CASE WHEN excluded.product<>'' THEN excluded.product ELSE machine_ledger.product END,
+        channel=CASE WHEN excluded.channel<>'' THEN excluded.channel ELSE machine_ledger.channel END,
+        sku=CASE WHEN excluded.sku<>'' THEN excluded.sku ELSE machine_ledger.sku END,
+        build_hash=CASE WHEN excluded.build_hash<>'' THEN excluded.build_hash ELSE machine_ledger.build_hash END,
+        version=CASE WHEN excluded.version<>'' THEN excluded.version ELSE machine_ledger.version END,
+        seq=MAX(machine_ledger.seq, excluded.seq),
+        ticket_epoch=MAX(machine_ledger.ticket_epoch, excluded.ticket_epoch),
+        last_seen_at=excluded.last_seen_at`)
+      .run(machine, licenseId, Number(row.customer_id) || 0, Number(row.app_id) || 0,
+        String(row.product || ''), String(row.channel || ''), String(row.sku || ''),
+        String(row.build_hash || ''), String(row.version || ''), Number(row.seq) || 0,
+        Number(row.epoch) || 1, t, t);
+  } catch { /* 台账写失败不能影响业务响应 */ }
 }
 
 /* 许可证状态判定 */
@@ -120,9 +158,12 @@ function licenseVerdict(st, extra = {}) {
 }
 
 function licensePayload(lic) {
-  const product = db.prepare('SELECT id, name, type, version, icon FROM products WHERE id = ?').get(lic.product_id);
+  const product = db.prepare('SELECT id, name, type, version, icon, sku FROM products WHERE id = ?').get(lic.product_id);
   const ent = plans.licenseEntitlement(lic);
   const bound = db.prepare('SELECT COUNT(*) AS c FROM license_devices WHERE license_id = ?').get(lic.id).c;
+  // 权益快照签名（第三把独立密钥）：客户端断网时保留的旧快照必须能验签，
+  // 否则「本地改一个 JSON 就能解锁全部功能」。
+  const signedEnt = entitlementKey.signObject(ent);
   return {
     license_key: lic.license_key,
     license_id: lic.id,
@@ -132,6 +173,8 @@ function licensePayload(lic) {
     // 用档位绑定的上架商品名兜底，再回退档位名
     product_name: product ? product.name : (ent.product_name || ent.plan_name || '套餐授权'),
     product_type: product ? product.type : '',
+    // 权益维度（在线版 / 离线版），与升级通道（app_release.product）分开
+    sku: product ? (product.sku || '') : '',
     type: lic.type,
     start_at: lic.start_at,
     end_at: lic.end_at,
@@ -140,6 +183,8 @@ function licensePayload(lic) {
     bound_devices: bound,
     plan: ent.plan_code,
     entitlement: ent,
+    entitlement_sig: signedEnt.signature,
+    entitlement_kid: signedEnt.kid,
     // 权益内容哈希：心跳比对用，客户端不必整包 diff
     entitlement_version: plans.entitlementVersion(lic),
     // 订阅到期被服务端降到 free 档时记录；客户端据此提示「订阅到期已降级」，而不是功能静默消失
@@ -181,6 +226,30 @@ function bindMachine(lic, machineId, opts = {}) {
 }
 
 module.exports = async function openRoutes(app) {
+  /* 鉴权模式流水：双模期判断「旧 HMAC 是否归零」的唯一依据。
+   * 只记 path/mode/状态，不记 body —— body 里可能是授权码或机器码。 */
+  let authLogCount = 0;
+  app.addHook('onResponse', async (req, reply) => {
+    if (!req.authMode) return;
+    try {
+      db.prepare(`INSERT INTO open_auth_log (path, method, auth_mode, app_key, ip, status, created_at)
+        VALUES (?,?,?,?,?,?,?)`).run(
+        String(req.url || '').split('?')[0].slice(0, 120),
+        String(req.method || '').slice(0, 8),
+        String(req.authMode),
+        String((req.app && req.app.app_key) || req.headers['x-app-key'] || '').slice(0, 64),
+        String(req.ip || '').slice(0, 64),
+        Number(reply.statusCode) || 0,
+        now()
+      );
+      // 顺手清理 60 天前的流水（每 500 条触发一次，别在每次请求里跑 DELETE）
+      if (++authLogCount % 500 === 0) {
+        db.prepare('DELETE FROM open_auth_log WHERE created_at < ?')
+          .run(new Date(Date.now() - 60 * 86400000).toISOString());
+      }
+    } catch { /* 日志写失败不能影响响应 */ }
+  });
+
   /* ---------------- 应用信息 ---------------- */
 
   /* 客户端升级结果上报（不鉴权，和清单接口一致）
@@ -236,6 +305,14 @@ module.exports = async function openRoutes(app) {
         note: b.note || b.error || b.message || '',
         ip: req.ip,
         ua: (req.headers || {})['user-agent'],
+      });
+      // 升级回执也补一笔台账：机器 ↔ 产品/渠道/版本，排障时不用两张表对着看
+      ledgerUpsert({
+        machine: b.machine_code || b.machine,
+        product: product,
+        channel: b.channel,
+        version: b.to_version || b.to || b.target || '',
+        build_hash: b.build_hash,
       });
       return { ok: true, id: row.id, action, deduped };
     } catch (e) {
@@ -312,15 +389,28 @@ module.exports = async function openRoutes(app) {
     return offlineKey.publicKey();
   });
 
+  /**
+   * 三类公钥一次取全：清单签名 / 权益快照签名 / 离线票据。
+   * 同样只用于构建期比对与排障，客户端必须内嵌，不能依赖本接口。
+   */
+  app.get('/api/open/v1/app/keys', async (req, reply) => {
+    if (!(await withApp(req, reply))) return;
+    return {
+      manifest: manifestKey.info(),
+      entitlement: entitlementKey.info(),
+      offline: offlineKey.publicKey(),
+    };
+  });
+
   /* ---------------- 激活 ---------------- */
 
   app.post('/api/open/v1/auth/activate', async (req, reply) => {
     if (!(await withApp(req, reply))) return;
     const b = req.body || {};
     const key = String(b.license_key || '').trim();
-    const machineId = String(b.machine_id || b.machine || '').trim();
+    const machineId = machineOf(b);
     if (!key) return reply.code(400).send({ error: '缺少 license_key', code: 'PARAM_MISSING' });
-    if (!machineId) return reply.code(400).send({ error: '缺少 machine_id', code: 'PARAM_MISSING' });
+    if (!machineId) return reply.code(400).send({ error: '缺少 machine_id / machine_code', code: 'PARAM_MISSING' });
 
     let lic = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(key);
     // 过期订阅先降级到 free 档再判状态：老用户拿过期码重新激活，得到的是「已降级」而不是死胡同
@@ -356,6 +446,17 @@ module.exports = async function openRoutes(app) {
       ip: clientIp(req),
     });
     track(user.id, req.app.app_key, 'auth.activate');
+
+    ledgerUpsert({
+      machine: machineId,
+      license_id: lic.id,
+      customer_id: user.id,
+      app_id: req.app.id,
+      product: String(req.app.release_product || ''),
+      channel: String(b.channel || ''),
+      build_hash: String(b.build_hash || ''),
+      version: String(b.version || ''),
+    });
 
     return {
       valid: true,
@@ -678,7 +779,7 @@ module.exports = async function openRoutes(app) {
     let appRow = null;
     let lic = null;
     let sessionLicenseMissing = false;
-    let machineId = String(b.machine_id || b.device_sn || '').trim();
+    let machineId = machineOf(b) || String(b.device_sn || '').trim();
     const tokenSt = getSessionState(String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
     // 令牌被作废（解绑 / 吊销 / 后台踢下线）是授权级结论，按 v2 第 1 条回 200 +
     // valid:false，不能回 401/403 让客户端走「无结论 / 离线宽限」。
@@ -693,6 +794,7 @@ module.exports = async function openRoutes(app) {
 
     if (tokenSess) {
       appRow = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(tokenSess.app_id);
+      req.authMode = 'token';
       if (!machineId) machineId = tokenSess.machine_id || '';
       if (tokenSess.license_id) {
         lic = db.prepare('SELECT * FROM licenses WHERE id = ?').get(tokenSess.license_id);
@@ -707,12 +809,15 @@ module.exports = async function openRoutes(app) {
       }
       touchSession(tokenSess, clientIp(req));
     } else {
-      const r = verifySignature(req);
+      // 无令牌：签名 / 公开模式都放行（公开模式下的业务闸门是 license_key + 机器绑定）
+      const r = resolveApp(req);
       if (!r.ok) {
         // v2 第 5 条：401 一律不降档、保留快照走离线宽限。
         // body 里绝不能出现 valid:false / license:null，否则客户端可能误判成撤回。
-        return reply.code(401).send({ error: r.error, code: 'APP_SIGN_INVALID' });
+        return reply.code(r.code === 'RATE_LIMITED' ? 429 : 401)
+          .send({ error: r.error, code: r.code || 'APP_SIGN_INVALID' });
       }
+      req.authMode = r.mode;
       appRow = r.app;
       if (!b.license_key) {
         return reply.code(400).send({ error: '缺少 license_key', code: 'PARAM_MISSING' });
@@ -753,10 +858,25 @@ module.exports = async function openRoutes(app) {
     const user = db.prepare('SELECT id, nickname, avatar FROM users WHERE id = ?').get(lic.user_id);
     track(lic.user_id, appRow.app_key, 'license.verify');
     const payload = licensePayload(lic);
+    if (machineId) {
+      ledgerUpsert({
+        machine: machineId,
+        license_id: lic.id,
+        customer_id: lic.user_id,
+        app_id: appRow.id,
+        product: String(appRow.release_product || ''),
+        channel: String(b.channel || ''),
+        build_hash: String(b.build_hash || ''),
+        version: String(b.version || ''),
+      });
+    }
     return {
       valid: true,
       license: payload,
       entitlement: payload.entitlement,
+      // 顶层也带一份签名：客户端消费的是顶层 entitlement（不改既有字段结构）
+      entitlement_sig: payload.entitlement_sig,
+      entitlement_kid: payload.entitlement_kid,
       entitlement_version: payload.entitlement_version,
       entitlement_changed: null,
       user: user ? { id: user.id, nickname: user.nickname, avatar: avatars.toDisplay(user.avatar) } : null,
@@ -783,6 +903,7 @@ module.exports = async function openRoutes(app) {
     }
     req.session = st0.session;
     req.app = appRowHb;
+    req.authMode = 'token';
     touchSession(req.session, clientIp(req));
     let lic = req.session.license_id ? db.prepare('SELECT * FROM licenses WHERE id = ?').get(req.session.license_id) : null;
     if (!lic && b.license_key) lic = db.prepare('SELECT * FROM licenses WHERE license_key = ?').get(String(b.license_key).trim());
@@ -825,10 +946,24 @@ module.exports = async function openRoutes(app) {
     // 变了才需要重新解析 license payload，不用每次心跳整包 diff
     const licPayload = licensePayload(lic);
     const reported = String(b.entitlement_version || '');
+    if (req.session.machine_id) {
+      ledgerUpsert({
+        machine: req.session.machine_id,
+        license_id: lic.id,
+        customer_id: lic.user_id,
+        app_id: req.app.id,
+        product: String(req.app.release_product || ''),
+        channel: String(b.channel || ''),
+        build_hash: String(b.build_hash || ''),
+        version: boundVersion,
+      });
+    }
     return {
       valid: true,
       license: licPayload,
       entitlement: licPayload.entitlement,
+      entitlement_sig: licPayload.entitlement_sig,
+      entitlement_kid: licPayload.entitlement_kid,
       entitlement_version: licPayload.entitlement_version,
       // true = 权益变了（升级/降级/改配置），false = 没变，null = 客户端没上报版本
       entitlement_changed: reported ? reported !== licPayload.entitlement_version : null,
@@ -868,6 +1003,14 @@ module.exports = async function openRoutes(app) {
   app.post('/api/open/v1/license/ticket', async (req, reply) => {
     if (!(await requireClient(req, reply))) return;
     touchSession(req.session, clientIp(req));
+    const b = req.body || {};
+    const machineCode = machineOf(b) || String(req.session.machine_id || '').trim();
+    if (!machineCode) return reply.code(400).send({ error: '缺少 machine_code', code: 'MACHINE_REQUIRED' });
+    // 票只签给会话所在的那台机器：拿 A 机的票去 B 机用，第一步就过不去
+    if (req.session.machine_id && machineCode !== req.session.machine_id) {
+      return reply.code(403).send({ error: '机器码与会话不一致，请重新激活', code: 'MACHINE_MISMATCH' });
+    }
+
     const licRaw = req.session.license_id
       ? db.prepare('SELECT * FROM licenses WHERE id = ?').get(req.session.license_id) : null;
     if (!licRaw) return reply.code(404).send({ error: '会话未绑定授权', code: 'LICENSE_NOT_BOUND' });
@@ -877,14 +1020,34 @@ module.exports = async function openRoutes(app) {
     if (!st.valid) return reply.code(403).send(licenseVerdict(st));
 
     const appRow = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(req.session.app_id);
+    const prodRow = lic.product_id ? db.prepare('SELECT sku FROM products WHERE id = ?').get(lic.product_id) : null;
+    const sku = String((prodRow && prodRow.sku) || '');
     const ent = plans.licenseEntitlement(lic);
     // 套餐授权按档位的 offline_days 走；历史（无档位）授权仍用应用级的离线宽限。
-    // 必须直接看有没有解析到档位：entitlement.plan_name 现在永远有值
-    //（无档位时补「标准授权」防止客户端回退显示「在线授权」），不能拿它当判断依据。
     const hasPlan = !!plans.licensePlan(lic);
     const offlineDays = hasPlan ? Number(ent.offline_days || 0) : Number((appRow && appRow.offline_days) || 0);
+
+    // 换票序号：按 (license_id, machine_code) 递增，停票后 epoch+1。
+    // 客户端必须持久化 (seq, epoch)：收到更小的 seq 或不同 epoch 的票 = 重放/已停票，直接拒。
+    const seqRow = db.prepare('SELECT * FROM license_ticket_seq WHERE license_id = ? AND machine_code = ?')
+      .get(lic.id, machineCode);
+    if (seqRow && seqRow.stopped_at) {
+      return reply.code(403).send({
+        error: '该机器的换票已被停用，请联系客服',
+        code: 'TICKET_STOPPED',
+        reason: seqRow.stop_reason || '',
+        stopped_at: seqRow.stopped_at,
+      });
+    }
+    const seq = (Number(seqRow && seqRow.seq) || 0) + 1;
+    const epoch = Number(seqRow && seqRow.epoch) || 1;
+    const buildHash = String(b.build_hash || '').slice(0, 64);
+
     const iat = Date.now();
-    // offline_days = 0 表示必须联网：票据只覆盖本次会话，不额外给离线时长
+    // TTL 是「建议下次换票的间隔」，不是离线有效期：
+    // 离线宽限必须继续按 offline_days 给（客户断网三天还得能用），
+    // 用 24h 去 cap 它等于把后台配的宽限偷偷砍掉。
+    const ttlHours = Math.max(1, Number(getSetting('ticket_ttl_hours', 24)) || 24);
     const graceMs = offlineDays > 0 ? offlineDays * 86400000 : ACCESS_TTL_MS;
     let exp = iat + graceMs;
     if (lic.end_at) exp = Math.min(exp, new Date(lic.end_at).getTime());
@@ -892,14 +1055,25 @@ module.exports = async function openRoutes(app) {
       const se = new Date(req.session.expires_at).getTime();
       if (offlineDays <= 0 && se > iat) exp = Math.min(exp, se);
     }
+    // 客户端按 refresh_in 决定多久来换一次票（心跳/换票共用同一拍）
+    const refreshAt = Math.min(exp, iat + ttlHours * 3600000);
 
     const payload = {
-      v: 1,
+      v: 2,
       license_id: lic.id,
       license_key: lic.license_key,
       user_id: req.session.user_id,
-      machine_id: req.session.machine_id || '',
+      // 兼容旧字段名：老客户端读 machine_id
+      machine_id: machineCode,
+      machine_code: machineCode,
+      build_hash: buildHash,
+      seq,
+      epoch,
       product_id: lic.product_id,
+      // 升级通道产品（LabelGo / LabelGo-Offline）与权益维度 sku 一并下发，
+      // 客户端据此判断「这个包该走哪个通道」
+      product: String((appRow && appRow.release_product) || ''),
+      sku: sku,
       app_id: ent.app_id || null,
       plan: ent.plan_code || lic.type,
       plan_code: ent.plan_code,
@@ -919,14 +1093,50 @@ module.exports = async function openRoutes(app) {
       exp: Math.floor(exp / 1000),
     };
     const signed = offlineKey.issue(payload);
-    db.prepare('UPDATE client_sessions SET last_seen_at = ? WHERE id = ?').run(now(), req.session.id);
+    const t = now();
+    db.prepare(`INSERT INTO license_ticket_seq
+      (license_id, machine_code, seq, epoch, build_hash, last_ticket_id, issued_at, expires_at, stopped_at, stop_reason, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,'','',?,?)
+      ON CONFLICT(license_id, machine_code) DO UPDATE SET
+        seq=excluded.seq, build_hash=excluded.build_hash, last_ticket_id=excluded.last_ticket_id,
+        issued_at=excluded.issued_at, expires_at=excluded.expires_at, updated_at=excluded.updated_at`)
+      .run(lic.id, machineCode, seq, epoch, buildHash, String(signed.ticket).slice(-24), t,
+        new Date(exp).toISOString(), t, t);
+    if (!req.session.machine_id) {
+      db.prepare('UPDATE client_sessions SET machine_id = ? WHERE id = ?').run(machineCode, req.session.id);
+    }
+    db.prepare('UPDATE client_sessions SET last_seen_at = ? WHERE id = ?').run(t, req.session.id);
+
+    ledgerUpsert({
+      machine: machineCode,
+      license_id: lic.id,
+      customer_id: req.session.user_id,
+      app_id: req.session.app_id,
+      product: String((appRow && appRow.release_product) || ''),
+      channel: String(b.channel || ''),
+      sku: sku,
+      build_hash: buildHash,
+      version: String(b.version || ''),
+      seq,
+      epoch,
+    });
+
+    // 权益快照签名与 licensePayload 里的口径完全一致（同一把密钥、同一 canonical）
+    const signedEnt = entitlementKey.signObject(ent);
     return {
       ticket: signed.ticket,
       alg: signed.alg,
       kid: signed.kid,
       payload,
+      seq,
+      epoch,
+      entitlement: ent,
+      entitlement_sig: signedEnt.signature,
+      entitlement_kid: signedEnt.kid,
       public_key: signed.public_key,
       expires_in: Math.max(0, Math.floor((exp - iat) / 1000)),
+      // 建议换票间隔（≤ 有效期）：票能用到 exp，但应在这个时间点主动来换新票
+      refresh_in: Math.max(60, Math.floor((refreshAt - iat) / 1000)),
       server_time: now(),
     };
   });

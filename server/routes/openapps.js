@@ -50,12 +50,13 @@ module.exports = async function openAppRoutes(app) {
     if (!fs) return;
     const appKey = genAppKey();
     const appSecret = genAppSecret();
-    const info = db.prepare(`INSERT INTO open_apps (app_key, app_secret, name, product_id, status, offline_days, feature_schema, version, download_url, release_note, remark, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    const info = db.prepare(`INSERT INTO open_apps (app_key, app_secret, name, product_id, status, offline_days, feature_schema, version, download_url, release_note, remark, release_product, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(appKey, appSecret, name, Number(b.product_id) || null, b.status || 'active',
         Number(b.offline_days) || 0, JSON.stringify(fs.keep ? [] : fs.value),
         String(b.version || ''), String(b.download_url || ''),
-        String(b.release_note || ''), String(b.remark || ''), now());
+        String(b.release_note || ''), String(b.remark || ''),
+        String(b.release_product || ''), now());
     const row = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(info.lastInsertRowid);
     logAdmin(req, 'openapp.create', `新建应用 ${name}（app_key=${appKey}，功能码 ${(fs.keep ? [] : fs.value).length} 个）`);
     return { ...shape(row), app_key: row.app_key, app_secret: row.app_secret };
@@ -71,7 +72,7 @@ module.exports = async function openAppRoutes(app) {
     // 改功能码表只影响之后保存的档位：已售授权里的旧 token 不回改（客户端还认它），
     // 但从档位表单里删掉后就不能再配进新档位
     const schemaJson = fs.keep ? row.feature_schema : JSON.stringify(fs.value);
-    db.prepare(`UPDATE open_apps SET name = ?, product_id = ?, status = ?, offline_days = ?, feature_schema = ?, version = ?, download_url = ?, release_note = ?, remark = ? WHERE id = ?`)
+    db.prepare(`UPDATE open_apps SET name = ?, product_id = ?, status = ?, offline_days = ?, feature_schema = ?, version = ?, download_url = ?, release_note = ?, remark = ?, release_product = ? WHERE id = ?`)
       .run(
         String(b.name || row.name),
         b.product_id === undefined ? row.product_id : (Number(b.product_id) || null),
@@ -82,6 +83,7 @@ module.exports = async function openAppRoutes(app) {
         String(b.download_url ?? row.download_url),
         String(b.release_note ?? row.release_note),
         String(b.remark ?? row.remark),
+        String(b.release_product ?? row.release_product ?? ''),
         row.id
       );
     if (!fs.keep && JSON.stringify(safeJson(schemaJson, [])) !== JSON.stringify(safeJson(row.feature_schema, []))) {
@@ -90,13 +92,17 @@ module.exports = async function openAppRoutes(app) {
     return { ok: true };
   });
 
+  /* 硬重置：旧值直接作废（不等双模窗口）。会同时踢掉所有用户会话，
+   * 只在「密钥已泄露、必须立刻断」的时候用；日常换代走 rotate-secret。 */
   app.post('/api/open-apps/:id/reset-secret', async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     const row = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(Number(req.params.id));
     if (!row) return reply.code(404).send({ error: '应用不存在' });
     const secret = genAppSecret();
-    db.prepare('UPDATE open_apps SET app_secret = ? WHERE id = ?').run(secret, row.id);
+    db.prepare("UPDATE open_apps SET app_secret = ?, app_secret_prev = '', secret_rotated_at = ? WHERE id = ?")
+      .run(secret, now(), row.id);
     db.prepare('UPDATE client_sessions SET status = ? WHERE app_id = ?').run('revoked', row.id);
+    logAdmin(req, 'openapp.reset_secret', `应用 ${row.name} 硬重置密钥（旧值立即作废，会话全部失效）`);
     return { app_secret: secret };
   });
 
@@ -129,5 +135,65 @@ module.exports = async function openAppRoutes(app) {
     const todayCalls = db.prepare('SELECT COALESCE(api_calls,0) AS c FROM stats_daily WHERE date = ?').get(today()).c;
     const machines = db.prepare('SELECT COUNT(*) AS c FROM license_devices').get().c;
     return { apps, online_sessions: online, today_api_calls: todayCalls, bound_machines: machines };
+  });
+
+  /* ---------------- 双模鉴权：模式报表 + 密钥轮换 ---------------- */
+
+  /**
+   * 按天 × 鉴权模式统计。关旧 HMAC 通道前必须看这张表：
+   * hmac_legacy 连续几天为 0，才说明老客户端已经换掉了内置密钥。
+   */
+  app.get('/api/open-apps/auth-modes', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const days = Math.min(90, Math.max(1, Number((req.query || {}).days) || 14));
+    const since = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+    const rows = db.prepare(`SELECT substr(created_at,1,10) AS date, auth_mode, COUNT(*) AS calls,
+        SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS errors
+      FROM open_auth_log WHERE created_at >= ?
+      GROUP BY date, auth_mode ORDER BY date DESC`).all(`${since}T00:00:00.000Z`);
+    const totals = {};
+    for (const r of rows) totals[r.auth_mode] = (totals[r.auth_mode] || 0) + Number(r.calls || 0);
+    return { days, rows, totals };
+  });
+
+  /**
+   * 轮换密钥：新值立即生效，旧值进 app_secret_prev 继续放行（双模期）。
+   * 不吊销已有用户令牌 —— 换的是应用级凭证，不该把所有在线用户踢下线。
+   */
+  app.post('/api/open-apps/:id/rotate-secret', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const row = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(Number(req.params.id));
+    if (!row) return reply.code(404).send({ error: '应用不存在' });
+    const secret = genAppSecret();
+    db.prepare(`UPDATE open_apps SET app_secret_prev = app_secret, app_secret = ?, secret_rotated_at = ?, legacy_hmac = 1
+      WHERE id = ?`).run(secret, now(), row.id);
+    logAdmin(req, 'openapp.rotate_secret', `应用 ${row.name} 轮换密钥（旧值保留，双模期）`);
+    return {
+      app_secret: secret,
+      prev_kept: !!row.app_secret,
+      hint: '旧密钥仍可用。等「鉴权模式」报表里 hmac_legacy 连续归零后，再关闭旧通道。',
+    };
+  });
+
+  /** 关闭/重开旧密钥通道（legacy_hmac）。关闭后旧 secret 请求统一 401 APP_SECRET_RETIRED */
+  app.post('/api/open-apps/:id/legacy', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const row = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(Number(req.params.id));
+    if (!row) return reply.code(404).send({ error: '应用不存在' });
+    const enabled = (req.body || {}).enabled ? 1 : 0;
+    db.prepare('UPDATE open_apps SET legacy_hmac = ? WHERE id = ?').run(enabled, row.id);
+    logAdmin(req, 'openapp.legacy_hmac', `应用 ${row.name} ${enabled ? '开启' : '关闭'}旧密钥通道`);
+    return { ok: true, legacy_hmac: enabled };
+  });
+
+  /** 公开模式开关（仅 x-app-key + 频控 + nonce）；关掉后新客户端必须走签名或令牌 */
+  app.post('/api/open-apps/:id/public-auth', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const row = db.prepare('SELECT * FROM open_apps WHERE id = ?').get(Number(req.params.id));
+    if (!row) return reply.code(404).send({ error: '应用不存在' });
+    const enabled = (req.body || {}).enabled ? 1 : 0;
+    db.prepare('UPDATE open_apps SET public_auth = ? WHERE id = ?').run(enabled, row.id);
+    logAdmin(req, 'openapp.public_auth', `应用 ${row.name} ${enabled ? '开启' : '关闭'}公开模式`);
+    return { ok: true, public_auth: enabled };
   });
 };

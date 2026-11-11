@@ -512,3 +512,61 @@ CREATE TABLE IF NOT EXISTS app_update_log (
 );
 CREATE INDEX IF NOT EXISTS idx_app_update_log_pick ON app_update_log(product, created_at);
 CREATE INDEX IF NOT EXISTS idx_app_update_log_machine ON app_update_log(machine, product);
+
+-- ---------------------------------------------------------------------------
+-- 发售前保护（2026-11-11，与 LabelGo 对接单 v1.0 对齐）
+-- ---------------------------------------------------------------------------
+
+-- 开放接口鉴权模式流水：双模期用来看「旧 HMAC 是否已归零」，
+-- 归零后才能关旧通道。只记模式与状态，不记 body（里面可能有授权码）。
+CREATE TABLE IF NOT EXISTS open_auth_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  path TEXT DEFAULT '',
+  method TEXT DEFAULT '',
+  auth_mode TEXT DEFAULT '',
+  app_key TEXT DEFAULT '',
+  ip TEXT DEFAULT '',
+  status INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_open_auth_log_at ON open_auth_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_open_auth_mode ON open_auth_log(auth_mode, created_at);
+
+-- 换票序号：每台机器 + 每张授权一条。
+-- seq 递增、epoch 在「停票」时 +1 —— 停票后下一张票的 epoch 变了，
+-- 旧票即使没到期也验不过（客户端按 epoch 拒绝），比只靠 exp 更硬。
+CREATE TABLE IF NOT EXISTS license_ticket_seq (
+  license_id INTEGER NOT NULL,
+  machine_code TEXT NOT NULL,
+  seq INTEGER DEFAULT 0,
+  epoch INTEGER DEFAULT 1,
+  build_hash TEXT DEFAULT '',
+  last_ticket_id TEXT DEFAULT '',
+  issued_at TEXT DEFAULT '',
+  expires_at TEXT DEFAULT '',
+  stopped_at TEXT DEFAULT '',
+  stop_reason TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (license_id, machine_code)
+);
+
+-- 机器台账：machine_code ↔ 客户 ↔ 授权 ↔ 构建/版本/渠道/产品 ↔ 换票序号。
+-- 按 (machine_code, license_id) 覆盖去重，一台机器换绑多张码是两行。
+CREATE TABLE IF NOT EXISTS machine_ledger (
+  machine_code TEXT NOT NULL,
+  license_id INTEGER NOT NULL DEFAULT 0,
+  customer_id INTEGER DEFAULT 0,
+  app_id INTEGER DEFAULT 0,
+  product TEXT DEFAULT '',
+  channel TEXT DEFAULT '',
+  sku TEXT DEFAULT '',
+  build_hash TEXT DEFAULT '',
+  version TEXT DEFAULT '',
+  seq INTEGER DEFAULT 0,
+  ticket_epoch INTEGER DEFAULT 1,
+  first_seen_at TEXT DEFAULT '',
+  last_seen_at TEXT DEFAULT '',
+  PRIMARY KEY (machine_code, license_id)
+);
+CREATE INDEX IF NOT EXISTS idx_machine_ledger_last ON machine_ledger(last_seen_at);

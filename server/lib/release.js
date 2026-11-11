@@ -17,6 +17,7 @@ const { Transform } = require('stream');
 const db = require('../db');
 const { now } = require('./util');
 const { getSetting } = require('./config');
+const manifestKey = require('./manifestkey');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const ROOT = process.env.UPDATES_DIR
@@ -319,8 +320,29 @@ function publishedAtOut(v) {
 }
 
 /**
+ * 离线版产品不进自动升级流程：它们只挂全量包，由客户/实施手动安装。
+ * 用设置项而不是代码常量，新增第三个离线产品不用改代码。
+ */
+function manualProducts() {
+  return String(getSetting('release_manual_products', 'LabelGo-Offline') || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * 给清单加签名：canonical（键排序、紧凑、数组保序、UTF-8）后 Ed25519。
+ * kid 放进被签内容，客户端可以按 kid 选择内嵌的公钥。
+ */
+function signManifest(body) {
+  return manifestKey.signObject(body);
+}
+
+/**
  * 生成清单。baseUrl 由调用方按当前请求拼（换域名/换子路径都不用改库）。
  * 无更新时只回 { latest: 当前版本 }，不带 full/delta —— 客户端按 latest 比对即可。
+ *
+ * 2026-11-11：每次响应都用 Ed25519 现签（signature + kid）。
+ * 不在发布时签一次静态文件 —— 清单里有 rollout / mandatory / server_time，
+ * 静态签名会把「这台机器是否命中灰度」签成发布那一刻的样子，验签反而失真。
  */
 function manifest(opts, baseUrl) {
   const product = String(opts.product || '').trim();
@@ -335,21 +357,23 @@ function manifest(opts, baseUrl) {
     product, channel, platform, arch, server_time: now(),
     // 客户端升级后回调这个地址，后台才有「谁真的升了」的记录
     report_url: `${String(baseUrl || '').replace(/\/+$/, '')}/api/open/v1/app/update-report`,
+    // false = 该产品不进自动升级流程（离线版：只挂 full，客户手动装）
+    auto_update: !manualProducts().includes(product),
   };
 
   if (!rec) {
-    return {
+    return signManifest({
       ...head,
       latest: current || '',
       current: current || '',
       update_available: false,
-    };
+    });
   }
 
   const minVersion = String(rec.min_version || '0.0.0');
   const mandatory = rec.mandatory || (current ? cmpVersion(current, minVersion) < 0 : false);
 
-  return {
+  return signManifest({
     ...head,
     latest: rec.version,
     channel: rec.channel,
@@ -367,7 +391,7 @@ function manifest(opts, baseUrl) {
     update_available: true,
     // 灰度命中的比例，排障时一眼看出「为什么这台机器拿到了 / 没拿到」
     rollout: rec.rollout,
-  };
+  });
 }
 
 /* ---------------- latest.json 兜底清单 ---------------- */
@@ -453,13 +477,15 @@ function writeLatest(baseUrl) {
   for (const p of products) {
     const body = latestBodyFor(p, base);
     if (!body) continue;
+    // 静态兜底同样加签：只签动态响应会留一个「未验签也能装包」的入口
+    const signed = signManifest({ ...body, auto_update: !manualProducts().includes(p) });
     const dir = safeToken(p, 'app');
-    writeJson(`${dir}/latest.json`, body);
+    writeJson(`${dir}/latest.json`, signed);
     written.push(`${dir}/latest.json`);
-    bodies[p] = body;
+    bodies[p] = signed;
   }
 
-  writeJson('products.json', {
+  writeJson('products.json', signManifest({
     generated_at: now(),
     products: products.filter((p) => bodies[p]).map((p) => ({
       product: p,
@@ -468,18 +494,18 @@ function writeLatest(baseUrl) {
       platform: bodies[p].platform,
       manifest_url: fileUrl(base, `${safeToken(p, 'app')}/latest.json`),
     })),
-  });
+  }));
   written.push('products.json');
 
   // 根 latest.json 固定给默认产品：单产品时代的老客户端与文档都指向这个路径
-  const rootBody = bodies[tgt.product] || {
+  const rootBody = bodies[tgt.product] || signManifest({
     generated_at: now(),
     product: tgt.product,
     channel: tgt.channel,
     platform: tgt.platform,
     arch: tgt.arch,
     latest: '',
-  };
+  });
   writeJson('latest.json', rootBody);
   written.push('latest.json');
 
@@ -715,6 +741,9 @@ module.exports = {
   get,
   pick,
   manifest,
+  signManifest,
+  verifyManifest: (body) => manifestKey.verifyObject(body),
+  manualProducts,
   writeLatest,
   latestBodyFor,
   getLastWriteInfo,

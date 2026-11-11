@@ -16,11 +16,27 @@ window.PageOpenapi = {
       <div class="card-body">
         <div class="kv">
           <div class="k">接口基址</div><div class="v">{{ baseUrl }}/api/open/v1</div>
-          <div class="k">应用签名</div><div class="v">HMAC-SHA256，请求头 X-App-Key / X-Timestamp / X-Nonce / X-Signature</div>
+          <div class="k">应用签名</div><div class="v">HMAC-SHA256，请求头 X-App-Key / X-Timestamp / X-Nonce / X-Signature（旧客户端，双模期保留）</div>
+          <div class="k">公开模式</div><div class="v">仅 X-App-Key（写请求必须带 X-Nonce），每 IP / 每应用频控；新客户端不内置共享密钥</div>
           <div class="k">签名内容</div><div class="v">appKey \\n METHOD \\n path \\n timestamp \\n nonce \\n bodyRaw（\\n 分隔，body 为空时传空串）</div>
           <div class="k">用户令牌</div><div class="v">Authorization: Bearer &lt;access_token&gt;，有效期 2 小时，可用 refresh_token 续期</div>
         </div>
         <div class="hint" style="margin-top:10px">完整接口文档见项目 docs/软件端接入API.md</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h3>鉴权模式（近 14 天）</h3>
+        <button class="btn sm" @click="loadAuthModes">刷新</button>
+      </div>
+      <div class="card-body">
+        <div class="grid g4" style="margin-bottom:10px">
+          <div class="stat"><div class="label">用户令牌</div><div class="value">{{ fmt.int(authTotals.token || 0) }}</div><div class="delta">Bearer access_token</div></div>
+          <div class="stat"><div class="label">当前密钥签名</div><div class="value">{{ fmt.int(authTotals.hmac || 0) }}</div><div class="delta">新 AppSecret</div></div>
+          <div class="stat"><div class="label">旧密钥签名</div><div class="value" :style="{ color: authTotals.hmac_legacy ? 'var(--danger)' : 'var(--success)' }">{{ fmt.int(authTotals.hmac_legacy || 0) }}</div><div class="delta">归零后才能关旧通道</div></div>
+          <div class="stat"><div class="label">公开模式</div><div class="value">{{ fmt.int(authTotals.public || 0) }}</div><div class="delta">仅 x-app-key + 频控</div></div>
+        </div>
+        <div class="hint">旧密钥请求连续 7 天为 0，说明在用的客户端都已换成新凭证；此时再「关闭旧密钥」不会误伤。</div>
       </div>
     </div>
 
@@ -34,7 +50,7 @@ window.PageOpenapi = {
       <div class="card-body tight">
         <div class="table-wrap">
           <table class="table">
-            <thead><tr><th>应用</th><th>绑定上架商品</th><th>套餐档位</th><th>AppKey</th><th>AppSecret</th><th>状态</th><th>会话 / 在线</th><th>API 调用</th><th style="width:230px">操作</th></tr></thead>
+            <thead><tr><th>应用</th><th>绑定上架商品</th><th>套餐档位</th><th>AppKey</th><th>AppSecret</th><th>鉴权通道</th><th>状态</th><th>会话 / 在线</th><th>API 调用</th><th style="width:290px">操作</th></tr></thead>
             <tbody>
               <tr v-for="a in list" :key="a.id">
                 <td>
@@ -53,6 +69,11 @@ window.PageOpenapi = {
                 </td>
                 <td style="font-family:ui-monospace,monospace;font-size:12px">{{ a.app_key }}</td>
                 <td style="font-family:ui-monospace,monospace;font-size:12px">{{ a.app_secret_masked }}</td>
+                <td>
+                  <span class="tag" :class="a.public_auth ? 'success' : ''">公开{{ a.public_auth ? '开' : '关' }}</span>
+                  <span class="tag" :class="a.legacy_hmac ? 'warning' : 'success'" style="margin-left:4px">旧密钥{{ a.legacy_hmac ? '可用' : '已停' }}</span>
+                  <div style="color:var(--text-3);font-size:12px">{{ a.release_product || '未设升级通道' }}</div>
+                </td>
                 <td><span class="tag" :class="a.status === 'active' ? 'success' : 'danger'">{{ a.status === 'active' ? '启用' : '停用' }}</span></td>
                 <td>{{ a.session_count }} / <b style="color:var(--brand)">{{ a.online_count }}</b></td>
                 <td>{{ fmt.int(a.api_calls) }}</td>
@@ -61,6 +82,8 @@ window.PageOpenapi = {
                     <button class="btn sm" @click="edit(a)">编辑</button>
                     <button class="btn sm" @click="viewSessions(a)">会话</button>
                     <button class="btn sm" @click="toggle(a)">{{ a.status === 'active' ? '停用' : '启用' }}</button>
+                    <button class="btn sm" @click="rotate(a)">轮换密钥</button>
+                    <button class="btn sm" @click="toggleLegacy(a)">{{ a.legacy_hmac ? '关旧密钥' : '开旧密钥' }}</button>
                     <button class="btn sm" @click="resetSecret(a)">重置密钥</button>
                     <button class="btn sm danger" @click="remove(a)">删除</button>
                   </div>
@@ -94,8 +117,13 @@ window.PageOpenapi = {
             </div>
           </div>
           <div class="field-row">
-            <div class="field"><label>最新版本号</label><input class="input" v-model="form.version" placeholder="1.0.0" /></div>
+            <div class="field"><label>最新版本号</label><input class="input" v-model="form.version" placeholder="V1.0.0" /></div>
             <div class="field"><label>离线宽限（天）</label><input class="input" type="number" v-model.number="form.offline_days" /></div>
+          </div>
+          <div class="field">
+            <label>升级通道产品名</label>
+            <input class="input" v-model="form.release_product" placeholder="LabelGo（离线版填 LabelGo-Offline）" />
+            <div class="hint" style="margin-bottom:0">对应「版本发布」里的产品名，决定这台客户端查哪份 latest.json。与商品 sku（权益维度）是两件事。</div>
           </div>
           <div class="field"><label>安装包下载地址</label><input class="input" v-model="form.download_url" placeholder="https://..." /></div>
           <div class="field">
@@ -163,8 +191,11 @@ window.PageOpenapi = {
     const baseUrl = computed(() => location.origin);
     const form = reactive({
       id: 0, name: '', product_id: null, status: 'active', offline_days: 0,
-      version: '', download_url: '', release_note: '', remark: '',
+      version: '', download_url: '', release_note: '', remark: '', release_product: '',
     });
+    // 双模切换看板：近 14 天各鉴权模式的调用量
+    const authTotals = ref({});
+    const authRows = ref([]);
     // 功能码表用「每行 token = 名称」的文本编辑；提交时服务端统一校验格式与去重
     const schemaText = ref('');
     // 标签打印软件（labelgo）示例词表：与客户端核对后可增删，别让两套语义对不上
@@ -179,6 +210,7 @@ window.PageOpenapi = {
       'labelgo.offline = 离线模式',
       'labelgo.api = 本地接口',
       'labelgo.distributed = 分布式席位',
+      'labelgo.erp_conn = ERP 对接',
     ].join('\n');
     const secretBox = reactive({ show: false, app_key: '', app_secret: '' });
     const sessions = reactive({ show: false, appId: 0, appName: '', list: [] });
@@ -208,12 +240,20 @@ window.PageOpenapi = {
       } catch (e) { /* ignore */ }
     }
     async function loadAll() {
-      await Promise.all([load(), loadSummary(), loadProducts()]);
+      await Promise.all([load(), loadSummary(), loadProducts(), loadAuthModes()]);
       await loadPlanCounts();
     }
 
+    async function loadAuthModes() {
+      try {
+        const res = await U.api.get('/api/open-apps/auth-modes?days=14');
+        authTotals.value = res.totals || {};
+        authRows.value = res.rows || [];
+      } catch (e) { /* 报表失败不影响主表 */ }
+    }
+
     function openCreate() {
-      Object.assign(form, { id: 0, name: '', product_id: null, status: 'active', offline_days: 0, version: '', download_url: '', release_note: '', remark: '' });
+      Object.assign(form, { id: 0, name: '', product_id: null, status: 'active', offline_days: 0, version: '', download_url: '', release_note: '', remark: '', release_product: '' });
       schemaText.value = '';
       editing.value = true;
     }
@@ -221,7 +261,7 @@ window.PageOpenapi = {
       Object.assign(form, {
         id: a.id, name: a.name, product_id: a.product_id || null, status: a.status,
         offline_days: a.offline_days || 0, version: a.version || '', download_url: a.download_url || '',
-        release_note: a.release_note || '', remark: a.remark || '',
+        release_note: a.release_note || '', remark: a.remark || '', release_product: a.release_product || '',
       });
       schemaText.value = (a.feature_schema || []).map((x) => x.label ? `${x.token} = ${x.label}` : x.token).join('\n');
       editing.value = true;
@@ -259,12 +299,33 @@ window.PageOpenapi = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
     async function resetSecret(a) {
-      if (!(await U.confirm('重置后该应用下所有已登录客户端会被强制下线，继续？'))) return;
+      if (!(await U.confirm('重置后旧密钥立即作废（含双模期的旧值），该应用下所有已登录客户端会被强制下线，继续？'))) return;
       try {
         const res = await U.api.post('/api/open-apps/' + a.id + '/reset-secret', {});
         secretBox.app_key = a.app_key;
         secretBox.app_secret = res.app_secret;
         secretBox.show = true;
+        await loadAll();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+    /** 双模轮换：新值生效、旧值继续放行，不踢会话；等报表归零后再关旧通道 */
+    async function rotate(a) {
+      if (!(await U.confirm('轮换后新密钥立即生效，旧密钥在「关闭旧密钥」前仍可用（双模期），在线客户端不会被踢下线。继续？'))) return;
+      try {
+        const res = await U.api.post('/api/open-apps/' + a.id + '/rotate-secret', {});
+        secretBox.app_key = a.app_key;
+        secretBox.app_secret = res.app_secret;
+        secretBox.show = true;
+        U.toast(res.hint || '已轮换', 'success');
+        await loadAll();
+      } catch (e) { U.toast(e.message, 'error'); }
+    }
+    async function toggleLegacy(a) {
+      const next = !a.legacy_hmac;
+      if (!next && !(await U.confirm('关闭后仍用旧密钥的客户端会直接 401（APP_SECRET_RETIRED）。确认近 14 天「旧密钥签名」已归零？'))) return;
+      try {
+        await U.api.post('/api/open-apps/' + a.id + '/legacy', { enabled: next });
+        U.toast(next ? '旧密钥通道已开启' : '旧密钥通道已关闭', 'success');
         await loadAll();
       } catch (e) { U.toast(e.message, 'error'); }
     }
@@ -297,8 +358,8 @@ window.PageOpenapi = {
 
     return {
       list, products, summary, editing, form, secretBox, sessions, fmt, baseUrl,
-      schemaText, fillLabelgoPreset,
-      openCreate, edit, save, toggle, resetSecret, remove, viewSessions, revoke, loadAll,
+      schemaText, fillLabelgoPreset, authTotals, authRows,
+      openCreate, edit, save, toggle, rotate, toggleLegacy, resetSecret, remove, viewSessions, revoke, loadAll, loadAuthModes,
     };
   },
 };

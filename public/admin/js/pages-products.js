@@ -120,6 +120,11 @@ window.PageProducts = {
             </div>
           </div>
           <div class="field"><label>下载地址</label><input class="input" v-model="form.download_url" placeholder="安装包 URL" /></div>
+          <div class="field">
+            <label>权益维度 sku（选填）</label>
+            <input class="input" v-model="form.sku" placeholder="例如 online-standard / offline-box" />
+            <div class="hint">决定「这份授权是什么权益」；升级通道是另一维度（应用里配的升级通道产品名）。同一 sku 可以同时用于在线版与离线盒子。</div>
+          </div>
           <div class="field" v-if="form.type==='software'">
             <label>版本差异页面 URL</label>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -175,7 +180,7 @@ window.PageProducts = {
       Object.assign(form, {
         type: 'software', name: '', subtitle: '', category: '', price: 0, original_price: 0,
         stock: 0, version: '1.0.0', icon: '', download_url: '', description: '', status: 'off',
-        sort: 0, is_official: 1, quota: 0, compare_url: '', features: [],
+        sort: 0, is_official: 1, quota: 0, compare_url: '', sku: '', features: [],
       });
       featureText.value = '';
     }

@@ -52,6 +52,8 @@ const loginAgain = newUser; // 同 openid 再扫一次码，模拟重登时微�
 
 const MOCK_U = {
   basePath: '',
+  // 页面守卫统一 await U.authReady()：本测试全部按「已登录」渲染
+  authReady: async () => true,
   fmt: {
     money: (v) => '¥' + Number(v || 0).toFixed(2),
     date: (s) => String(s || '').slice(0, 10),

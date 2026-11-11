@@ -174,6 +174,21 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_license_devices_machine ON license_devic
 db.exec('CREATE INDEX IF NOT EXISTS idx_licenses_batch ON licenses(batch_no)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_users_agent ON users(agent_id)');
 ensureColumn('agent_commissions', 'kind', "kind TEXT DEFAULT 'commission'");
+// 应用级密钥轮换（2026-11-11，发售前保护 P0-1）：
+// 旧 secret 已进过源码/备份，必须能「先发新值、旧值并存观察、再关旧通道」。
+// 直接把 app_secret 覆盖掉会让所有在用客户端立刻 401，等于自己制造一次全量故障。
+ensureColumn('open_apps', 'app_secret_prev', "app_secret_prev TEXT DEFAULT ''");
+ensureColumn('open_apps', 'secret_rotated_at', "secret_rotated_at TEXT DEFAULT ''");
+// 1 = 仍接受旧 secret 的 HMAC 请求（双模期），0 = 旧通道关闭
+ensureColumn('open_apps', 'legacy_hmac', 'legacy_hmac INTEGER DEFAULT 1');
+// 1 = 允许「未登录 + 仅 x-app-key + 频控 + nonce」的公开模式（新客户端不内置共享密钥）
+ensureColumn('open_apps', 'public_auth', 'public_auth INTEGER DEFAULT 1');
+// 应用对应的「升级通道产品名」（LabelGo / LabelGo-Offline）：
+// 和 products.sku（权益维度）是两件事，别混成一列
+ensureColumn('open_apps', 'release_product', "release_product TEXT DEFAULT ''");
+// 权益维度（sku/edition）与升级通道（app_release.product）分开：
+// 3 个在线版 + 2 个离线版共用同一套权益码，但离线包不能混进在线升级通道
+ensureColumn('products', 'sku', "sku TEXT DEFAULT ''");
 // 所有列补齐后才执行 schema.sql 的索引（见文件顶部说明）。
 // 旧库升级时这一步必须晚于 ensureColumn，否则会因引用尚不存在的列而中断启动。
 db.exec(indexLines.join('\n'));
