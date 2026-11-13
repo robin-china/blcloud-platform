@@ -341,6 +341,88 @@ function multipart(filename, content) {
   const badBearer = json(await app.inject({ method: 'GET', url: `${OPEN}/user/credits`, headers: { authorization: 'Bearer nope' } }));
   ok('失效 Bearer 401', badBearer.code === 'UNAUTHORIZED', badBearer);
 
+  /* ---------------------------------------------------------------- [9] 已购丢弃 */
+  console.log('\n[9] 已购丢弃：幂等 / 不返积分 / 作废短链 / 解除删除保护');
+  const DISCARD = (id) => `${OPEN}/market/owned/${encodeURIComponent(id)}/discard`;
+  const discard = (id, opts = {}) => app.inject({
+    method: 'POST', url: DISCARD(id),
+    headers: bearer(opts.token || 'mkt-token-1', opts.nonce !== false),
+    payload: { machine_code: opts.machine || 'M-1' },
+  }).then(json);
+  const hasBought = (id, uid = userId) => !!db.prepare('SELECT 1 FROM market_purchases WHERE user_id=? AND template_id=?').get(uid, id);
+
+  const dNoBearerRes = await app.inject({
+    method: 'POST', url: DISCARD(ids[1]),
+    headers: { 'x-nonce': nonce(), 'content-type': 'application/json' }, payload: { machine_code: 'M-1' },
+  });
+  ok('丢弃未登录 401', dNoBearerRes.statusCode === 401, dNoBearerRes.statusCode);
+  const dNoNonce = json(await app.inject({
+    method: 'POST', url: DISCARD(ids[1]), headers: bearer('mkt-token-1', false), payload: { machine_code: 'M-1' },
+  }));
+  ok('丢弃缺 x-nonce 401 NONCE_REQUIRED', dNoNonce.code === 'NONCE_REQUIRED', dNoNonce);
+  const dReusedN = nonce();
+  const dReusedH = { authorization: 'Bearer mkt-token-1', 'content-type': 'application/json', 'x-nonce': dReusedN };
+  await app.inject({ method: 'POST', url: DISCARD('tpl_never'), headers: dReusedH, payload: { machine_code: 'M-1' } });
+  const dReused = json(await app.inject({ method: 'POST', url: DISCARD(ids[1]), headers: dReusedH, payload: { machine_code: 'M-1' } }));
+  ok('丢弃 nonce 重放 401 NONCE_REUSED', dReused.code === 'NONCE_REUSED', dReused);
+  const dNoMachine = json(await app.inject({
+    method: 'POST', url: DISCARD(ids[1]), headers: bearer('mkt-token-1'), payload: {},
+  }));
+  ok('丢弃缺 machine_code 400 MACHINE_REQUIRED', dNoMachine.code === 'MACHINE_REQUIRED', dNoMachine);
+  ok('缺机器码时未解除绑定', hasBought(ids[1]));
+  const dMismatch = await discard(ids[1], { machine: 'M-2' });
+  ok('丢弃机器码不一致 403 MACHINE_MISMATCH', dMismatch.code === 'MACHINE_MISMATCH', dMismatch);
+  ok('机器码不一致时未解除绑定', hasBought(ids[1]));
+
+  const userId2 = db.prepare(`INSERT INTO users (openid, nickname, points, status, created_at, last_login_at)
+    VALUES (?,?,?,?,?,?)`).run('mkt_user_2', '丢弃测试用户2', 200, 'active', t, t).lastInsertRowid;
+  db.prepare(`INSERT INTO client_sessions
+    (token, app_id, user_id, machine_id, status, expires_at, last_seen_at, created_at)
+    VALUES (?,?,?,?,?,?,?,?)`).run('mkt-token-3', appId, userId2, 'M-3', 'active', future(), t, t);
+  const dOther = await discard(ids[1], { token: 'mkt-token-3', machine: 'M-3' });
+  ok('他人不能解绑我的已购 discarded:false', dOther.ok && dOther.discarded === false, dOther);
+  ok('他人请求后我的已购仍在', hasBought(ids[1]));
+  const dNever = await discard(ids[2]);
+  ok('未购模板丢弃幂等 ok:true / discarded:false', dNever.ok === true && dNever.discarded === false, dNever);
+  ok('不存在的模板也幂等', (await discard('tpl_never_404')).discarded === false);
+
+  const balBefore = pointsLib.balance(userId);
+  const d1 = await discard(ids[1]);
+  ok('丢弃已购 discarded:true + serverTime', d1.ok && d1.discarded === true && !!d1.serverTime, d1);
+  ok('已购行被删除', !hasBought(ids[1]));
+  ok('不返还积分', pointsLib.balance(userId) === balBefore, { before: balBefore, after: pointsLib.balance(userId) });
+  const ownedAfter = json(await app.inject({ method: 'GET', url: `${OPEN}/market/owned`, headers: bearer('mkt-token-1', false) }));
+  ok('/market/owned 不再含该模板', !ownedAfter.templateIds.includes(ids[1]), ownedAfter);
+  ok('不影响其它已购模板', ownedAfter.templateIds.includes(ids[0]), ownedAfter);
+  const tpl1 = db.prepare('SELECT * FROM market_templates WHERE id = ?').get(ids[1]);
+  ok('服务端 .blls 文件未被删除', !!tpl1.file_path && fs.existsSync(path.join(market.ROOT, tpl1.file_path)));
+  const d2 = await discard(ids[1]);
+  ok('重复丢弃幂等 discarded:false', d2.ok && d2.discarded === false, d2);
+
+  // 丢弃前签发的 5 分钟短链必须作废，否则「丢弃」只是从列表里藏起来
+  const fresh = json(await app.inject({
+    method: 'POST', url: `${OPEN}/market/redeem`, headers: bearer('mkt-token-1'),
+    payload: { template_id: ids[0], machine_code: 'M-1' },
+  }));
+  const freshUrl = new URL(fresh.downloadUrl);
+  const dFree = await discard(ids[0]);
+  ok('丢弃免费模板同样生效', dFree.discarded === true, dFree);
+  const linkAfter = json(await app.inject({ method: 'GET', url: freshUrl.pathname + freshUrl.search }));
+  ok('丢弃前签发的短链作废 404 LINK_NOT_FOUND', linkAfter.code === 'LINK_NOT_FOUND', linkAfter);
+
+  // 重新上架 + 补足积分 → 再兑换应重新扣分（回到「未拥有」状态）
+  db.prepare('UPDATE users SET points = 100 WHERE id = ?').run(userId);
+  await app.inject({ method: 'PATCH', url: `${B}/api/market/templates/${ids[1]}`, headers: AH, payload: { status: 'on' } });
+  const rebuy = json(await app.inject({
+    method: 'POST', url: `${OPEN}/market/redeem`, headers: bearer('mkt-token-1'),
+    payload: { template_id: ids[1], machine_code: 'M-1' },
+  }));
+  ok('丢弃后重新兑换会重新扣分', rebuy.ok && rebuy.already === false && rebuy.balance === 80, rebuy);
+  const d3 = await discard(ids[1]);
+  ok('重新兑换后可再次丢弃', d3.discarded === true, d3);
+  const delAfter = json(await app.inject({ method: 'DELETE', url: `${B}/api/market/templates/${ids[1]}`, headers: AH }));
+  ok('丢弃后后台可删除该模板（解除删除保护）', delAfter.ok === true, delAfter);
+
   await app.close();
   console.log(`\n模板市场测试：${pass} 通过 / ${fail} 失败`);
   if (fail) process.exit(1);

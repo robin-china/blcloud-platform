@@ -381,6 +381,26 @@ function redeem({ userId, machineCode, templateId }) {
   })();
 }
 
+/**
+ * 已购丢弃（2026-11-13 客户端需求）：只解除账号与模板的绑定，不返还积分。
+ * - 幂等：未拥有时 discarded:false，不报错；
+ * - 单事务：DELETE 已购行 + 作废该账号该模板尚未消费的下载短链，
+ *   否则「丢弃前签发的 5 分钟短链」还能绕过丢弃继续下载；
+ * - 本地已下载的 .blls 不受影响（服务端本就不持有），重新兑换会再扣分。
+ */
+function discardOwned({ userId, templateId }) {
+  return db.transaction(() => {
+    const id = String(templateId || '').trim();
+    const removed = db.prepare('DELETE FROM market_purchases WHERE user_id = ? AND template_id = ?')
+      .run(Number(userId), id).changes;
+    if (removed) {
+      db.prepare("DELETE FROM market_download_links WHERE user_id = ? AND template_id = ? AND used_at = ''")
+        .run(Number(userId), id);
+    }
+    return { ok: true, discarded: removed > 0 };
+  })();
+}
+
 /* ---------------------------------------------------------------- 后台 CRUD */
 
 const TEXT_FIELDS = ['name', 'industry', 'description', 'paper_type', 'author', 'thumbnail_url'];
@@ -897,7 +917,7 @@ module.exports = {
   ROOT, fileAbs, linkTtl,
   options, meta, saveOptions, DPI_ALLOWED,
   publicTemplate, adminTemplate, list, detail, ownedIds,
-  redeem, verifyLink, consumeLink,
+  redeem, discardOwned, verifyLink, consumeLink,
   createTemplate, updateTemplate, replaceFile, deleteTemplate,
   stats, recentPurchases, adminList,
   // API 上架

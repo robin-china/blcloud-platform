@@ -216,6 +216,27 @@ module.exports = async function marketRoutes(app) {
     };
   });
 
+  /**
+   * 已购丢弃（解除绑定）：客户端「我的已购 → 丢弃」按钮走这里。
+   * 只删 market_purchases 的一行，不返还积分、不动本地文件；幂等。
+   * machine_code 与 /license/ticket、/market/redeem 同口径。
+   */
+  app.post(`${OPEN}/market/owned/:templateId/discard`, async (req, reply) => {
+    if (!(await requireClientWrite(req, reply))) return;
+    touchSession(req.session, clientIp(req));
+    const b = req.body || {};
+    const machineCode = String(b.machine_code || b.machine_id || '').trim();
+    if (!machineCode) return fail(reply, 400, 'MACHINE_REQUIRED', '缺少 machine_code');
+    if (req.session.machine_id && machineCode !== req.session.machine_id) {
+      return fail(reply, 403, 'MACHINE_MISMATCH', '机器码与会话不一致，请重新激活');
+    }
+    if (!rateHit(`market:discard:${req.session.user_id}`, 30, 60000)) {
+      return fail(reply, 429, 'RATE_LIMITED', '操作过于频繁，请稍后再试');
+    }
+    const r = market.discardOwned({ userId: req.session.user_id, templateId: req.params.templateId });
+    return { ok: true, discarded: r.discarded, serverTime: now() };
+  });
+
   /* ---------------- 一次性下载 ---------------- */
 
   /**

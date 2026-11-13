@@ -215,6 +215,7 @@ S2 之前**不要**让客户端删 `appSecret`——`APP_SECRET_RETIRED` 是给�
 | POST | `/user/signin` | 用户令牌 + x-nonce | 每日签到 +10（北京时间日切，幂等） |
 | POST | `/market/redeem` | 用户令牌 + x-nonce | 积分兑换，返回一次性下载短链 |
 | GET | `/market/owned` | 用户令牌 | 本账号已购模板 id 列表 |
+| POST | `/market/owned/:templateId/discard` | 用户令牌 + x-nonce | **丢弃已购**（解除绑定，不返积分），见 §11.9 |
 | GET | `/market/download?token=` | 短链自证（无需 Bearer） | 一次性下载 .blls |
 
 ---
@@ -892,7 +893,7 @@ sha256   : aa2ce39732b0f6d294a96d5440433ccef19af301a9fe58144a910e51f1bd8b97
 | 400 | `CURSOR_INVALID` | 模板市场游标无效 / 与筛选条件不匹配 | 丢弃本地游标，从第一页重新拉取 |
 | 400 | `TEMPLATE_REQUIRED` | 兑换缺 template_id | 补参数 |
 | 400 | `LINK_INVALID` | 下载短链签名不对或被篡改 | 重新调用 `/market/redeem` 领新短链 |
-| 404 | `TEMPLATE_NOT_FOUND` / `LINK_NOT_FOUND` | 模板不存在或已下架 / 短链不存在 | 刷新列表 |
+| 404 | `TEMPLATE_NOT_FOUND` / `LINK_NOT_FOUND` | 模板不存在或已下架 / 短链不存在（含**丢弃已购后被作废**的短链） | 刷新列表 |
 | 402 | `INSUFFICIENT_CREDITS` | 积分不足 | 提示签到 / 充值，别本地放行 |
 | 403 | `TEMPLATE_OFFLINE` | 模板已下架 | 刷新列表 |
 | 409 | `TEMPLATE_FILE_MISSING` | 后台模板文件缺失（不扣分、不发货） | 提示联系客服 |
@@ -1029,7 +1030,7 @@ node tools/test-open.js
 |---|---|---|
 | 公开读 | `/market/meta`、`/market/list`、`/market/detail/:id` | 仅 `X-App-Key`（也可带 Bearer）；GET 不要求 nonce |
 | 登录态读 | `/user/credits`、`/market/owned`、`/market/list?mine=true` | `Authorization: Bearer <access_token>` |
-| 写 / 扣积分 | `/user/signin`、`/market/redeem` | **Bearer + `X-Nonce`**（每次新值；缺失 `401 NONCE_REQUIRED`，重放 `401 NONCE_REUSED`） |
+| 写 / 扣积分 | `/user/signin`、`/market/redeem`、`/market/owned/:id/discard` | **Bearer + `X-Nonce`**（每次新值；缺失 `401 NONCE_REQUIRED`，重放 `401 NONCE_REUSED`） |
 | 提货 | `/market/download?token=` | 只认短链自身的 HMAC，不需要 Bearer / X-App-Key |
 
 公开模式频控：每 IP 300 次/分钟、每 app+IP 120 次/分钟（`429 RATE_LIMITED`）。
@@ -1146,7 +1147,9 @@ node tools/test-open.js
   重新签发一张新短链，**不重复扣分**；
 - `downloads` 每次成功签发下载凭证 +1（含已购重复下载），用于热度排序；
 - 同 `machine_code` 超过 20 次/分钟返回 `429 RATE_LIMITED` 并留审计告警；
-- **离线期间禁止放行兑换**：断网时只能用展示缓存，不允许本地扣分 / 本地解锁，否则必然双花。
+- **离线期间禁止放行兑换**：断网时只能用展示缓存，不允许本地扣分 / 本地解锁，否则必然双花；
+
+> 想主动放弃某个已购模板，走 §11.9 的「丢弃」接口，不要本地改 `owned` 集合。
 
 ### 11.6 GET `/market/download?token=`
 
@@ -1193,5 +1196,52 @@ Cache-Control: no-store
 **《模板市场-API上架接入.md》**。这一节仅供软件端了解「模板从哪来」，
 客户端**不需要**、也**不应该**持有上架密钥。
 
-自测：`node tools/test-market.js`（76 项）、`node tools/test-market-ui.js`（26 项）、
+自测：`node tools/test-market.js`（99 项）、`node tools/test-market-ui.js`（26 项）、
 `node tools/test-market-api.js`（102 项）。
+
+### 11.9 POST `/market/owned/:templateId/discard` — 丢弃已购（2026-11-13 新增）
+
+对应客户端「我的已购 → 丢弃」按钮。**只解除账号与模板的绑定**，不是退款、不是退货。
+
+```
+POST /api/open/v1/market/owned/tpl_mkt_xxx/discard
+Authorization: Bearer <access_token>
+X-Nonce: <每次新值>
+Content-Type: application/json
+
+{ "machine_code": "硬盘序列号哈希" }
+```
+
+响应（幂等）：
+
+```json
+{ "ok": true, "discarded": true, "serverTime": "2026-11-13T14:00:00.000Z" }
+```
+
+| 场景 | `discarded` | 说明 |
+|---|---|---|
+| 本账号确实已购 | `true` | 删除 `market_purchases` 对应行 |
+| 本账号没买过 / 模板不存在 / 重复调用 | `false` | `ok:true`，**不报错**，客户端直接移除本地卡片即可 |
+
+**语义（与需求单一致，逐条钉死）**：
+
+- **不返还积分**：丢弃不写任何积分流水，余额不变；
+- **不影响本地文件**：用户本地已下载的 `.blls` 保留（服务端本来就不持有），客户端不要顺手删用户磁盘文件；
+- **丢弃后可重新兑换**：回到「未拥有」状态，再次 `/market/redeem` 会**重新扣分**（`already:false`）；
+- **后台删除保护保持原样**：有已购记录的模板仍「只能下架、不能删除」，所有已购用户都丢弃后即可删；
+- **后台额外做了一件事**：丢弃时**作废该账号该模板尚未消费的下载短链**（`market_download_links`），
+  否则丢弃前签发的 5 分钟短链还能继续下载，等于「丢弃」只是把卡片藏起来。旧短链再请求返回
+  `404 LINK_NOT_FOUND`，客户端按「已失效」处理，不要自动重新兑换。
+
+**鉴权与错误码**（与 `/market/redeem` 完全同口径）：
+
+| 情况 | 结果 |
+|---|---|
+| 无 Bearer / 令牌失效 | `401 UNAUTHORIZED` |
+| 缺 `X-Nonce` / nonce 重放 | `401 NONCE_REQUIRED` / `NONCE_REUSED` |
+| 缺 `machine_code` | `400 MACHINE_REQUIRED` |
+| `machine_code` 与会话机器码不一致 | `403 MACHINE_MISMATCH` |
+| 同一账号 >30 次/分钟 | `429 RATE_LIMITED` |
+
+机器码口径同 `/license/ticket`：服务端只按「账号 + 模板」解绑，**不会**因为换机而把别的账号资产解掉。
+客户端确认文案建议：「丢弃后将从「我的已购」移除，且不退还积分。确定丢弃？」

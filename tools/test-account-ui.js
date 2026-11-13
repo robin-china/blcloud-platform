@@ -32,6 +32,7 @@ ok('自定义组件标签显式闭合', /<pay-dialog[\s\S]*?><\/pay-dialog>/.tes
 ok('index.html 引入新页面并注册组件', /js\/page-account\.js/.test(userIndex)
   && /component\('pay-dialog'/.test(userIndex));
 ok('CSS 有账户中心与移动端断点', /\.acct \{/.test(css) && /@media \(max-width: 560px\)/.test(css));
+ok('PC 端单列账户中心水平居中', /\.acct \{[^}]*max-width:\s*760px;[^}]*margin:\s*0 auto/.test(css), (css.match(/\.acct \{[^}]*\}/) || [''])[0]);
 ok('头像库中性别无关的中性默认存在', /id: '00', name: '默认头像'/.test(avatarJs)
   && /function defaultValue\(\) \{ return 'preset:' \+ defaultId\(\); \}/.test(avatarJs));
 

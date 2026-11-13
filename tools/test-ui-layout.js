@@ -103,6 +103,7 @@ check('主页面只留手机号状态与按钮', /maskedPhone/.test(accountJs) &
 check('主页面不再显示 openid，改显示个人 ID', !/user\?\.openid|me\?\.openid/.test(accountJs)
   && /publicId/.test(accountJs));
 check('CSS 有账户中心紧凑布局与移动端断点', /\.acct \{/.test(css) && /@media \(max-width: 560px\)/.test(css));
+check('PC 端单列账户中心水平居中', /\.acct \{[^}]*margin:\s*0 auto/.test(css));
 check('弹层 teleport 到 body 且有滚动锁/Esc', /<teleport to="body">/.test(accountJs)
   && /body\.style\.overflow/.test(accountJs) && /e\.key === 'Escape'/.test(accountJs));
 check('user/index.html 引入新账户中心并注册 pay-dialog',

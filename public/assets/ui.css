@@ -307,7 +307,7 @@ table.table tbody tr:hover { background: var(--surface-2); }
 
 /* 内置头像选择器 */
 /* 账户中心：单列紧凑布局，移动端不挤压（2026-11-13） */
-.acct { display: grid; gap: 14px; max-width: 760px; }
+.acct { display: grid; gap: 14px; max-width: 760px; margin: 0 auto; width: 100%; }
 .acct-card { min-width: 0; }
 .acct-card .card-body.tight { overflow-x: auto; }
 .acct-top { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
