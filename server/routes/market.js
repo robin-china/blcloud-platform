@@ -301,6 +301,34 @@ module.exports = async function marketRoutes(app) {
     return { ok: true, item: r.item, serverTime: now() };
   });
 
+  /**
+   * 两步式上传缩略图：multipart，字段名 file。
+   * 只收真实图片（魔数 + 扩展名一致）、≤2MB，落公开 uploads 目录，
+   * 文件名由内容 sha256 生成，用户给的文件名绝不参与落盘路径。
+   */
+  app.post(`${API}/templates/:id/thumbnail`, async (req, reply) => {
+    const key = await withKey(req, reply, 'upload_thumb', { write: true });
+    if (!key) return;
+    req.apiTemplateId = String(req.params.id || '');
+    let data;
+    try { data = await req.file(); }
+    catch { return apiFail(req, reply, 400, 'FILE_REQUIRED', '缩略图必须用 multipart/form-data 上传，字段名 file'); }
+    if (!data) return apiFail(req, reply, 400, 'FILE_REQUIRED', '未收到缩略图文件');
+    let buf;
+    try { buf = await data.toBuffer(); } catch (e) {
+      if (/too large|filesize|limit/i.test(String(e.message || ''))) {
+        return apiFail(req, reply, 400, 'THUMB_TOO_LARGE', '缩略图超过 2MB');
+      }
+      return apiFail(req, reply, 400, 'FILE_READ_FAILED', '读取缩略图失败：' + e.message);
+    }
+    const r = market.apiReplaceThumbnail({
+      key, id: req.params.id, filename: data.filename, buffer: buf,
+      declaredSha: req.headers['x-file-sha256'],
+    });
+    if (!r.ok) return apiFail(req, reply, r.status || 400, r.code, r.error);
+    return { ok: true, ...r, serverTime: now() };
+  });
+
   /* ---------------- 后台管理 ---------------- */
 
   /* 上架密钥：明文只在创建响应里出现一次，列表永远只回前缀。 */

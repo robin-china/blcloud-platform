@@ -1170,14 +1170,19 @@ Cache-Control: no-store
   与本节客户端读接口是两套身份与两套前缀，**客户端不要接**。
 - `.blls` 存 `data/market/` 私有目录，**不挂 Nginx 静态映射、不走 uploads/、不上 CDN**；
   备份包会带上 `market/`（与 `app.db`、`.appsecret` 同批），恢复时 `tools/restore-backup.js` 一并还原。
+- **缩略图与模板文件是两条路**：缩略图是公开图片，落 `data/uploads/` 由 Nginx 直出，
+  `thumbnailUrl` 直接下发给客户端展示（后台人工上传或 API 上传均可）；
+  模板文件永不直出。Nginx 的 `.html/.svg` 403 拦截必须保留。
 - 上线检查：`deploy/nginx-subpath.conf` 里**不得**给 `data/market` 加 `alias`，否则防盗链形同虚设。
 
 ### 11.8 上架侧（非客户端）
 
 后台支持 **API 上架**：`/api/market/v1/templates`（独立 `X-Market-Key`）、`external_id` 幂等、
-默认待审、字典强校验、`.blls` sha256 比对、调用日志与限流。完整契约见
+默认待审、字典强校验、`.blls` sha256 比对、调用日志与限流；缩略图可用
+`thumbnailBase64` 一步式传、`POST /templates/:id/thumbnail` 两步式传，或填 `thumbnailUrl` 外链
+（仅 png/jpg/webp/gif、≤2MB、按魔数校验）。完整契约见
 **《模板市场-API上架接入.md》**。这一节仅供软件端了解「模板从哪来」，
 客户端**不需要**、也**不应该**持有上架密钥。
 
-自测：`node tools/test-market.js`（76 项）、`node tools/test-market-ui.js`（24 项）、
-`node tools/test-market-api.js`（66 项）。
+自测：`node tools/test-market.js`（76 项）、`node tools/test-market-ui.js`（26 项）、
+`node tools/test-market-api.js`（102 项）。

@@ -15,6 +15,8 @@ fs.rmSync(TMP, { recursive: true, force: true });
 fs.mkdirSync(TMP, { recursive: true });
 process.env.DB_PATH = path.join(TMP, 'test.db');
 process.env.MARKET_DIR = path.join(TMP, 'market');
+// 缩略图落公开 uploads 目录，测试必须隔离，别往项目 data/uploads 里写文件
+process.env.MARKET_THUMB_DIR = path.join(TMP, 'thumbs');
 process.env.UPDATES_DIR = path.join(TMP, 'updates');
 process.env.ADMIN_INIT_PASSWORD = 'admin123';
 process.env.NODE_ENV = 'test';
@@ -56,6 +58,13 @@ function multipart(filename, content) {
   };
 }
 const sha = (s) => crypto.createHash('sha256').update(Buffer.from(s)).digest('hex');
+// 真 1×1 PNG；第二个变体只用于制造不同的内容哈希
+const PNG1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==', 'base64');
+const PNG2 = Buffer.concat([PNG1, Buffer.from('cover-v2')]);
+const GIF1 = Buffer.from('GIF89a' + 'fake-but-sniffable-gif-body');
+const shaBuf = (b) => crypto.createHash('sha256').update(b).digest('hex');
+const THUMB_DIR = path.join(TMP, 'thumbs');
+const thumbFiles = () => fs.readdirSync(THUMB_DIR).filter((n) => n.startsWith('mkt-'));
 
 const keyH = (k, extra = {}) => ({
   'x-market-key': k, 'x-nonce': nonce(), 'content-type': 'application/json', ...extra,
@@ -279,12 +288,111 @@ const keyH = (k, extra = {}) => ({
   }));
   ok('API 不能改后台人工建的模板', crossAdmin.code === 'TEMPLATE_FORBIDDEN', crossAdmin);
 
-  /* ------------------------------------------------------------ [7] 日志与运维 */
-  console.log('\n[7] 调用日志 / 留存 / 字典边界');
+  /* ------------------------------------------------------------ [7] 缩略图 */
+  console.log('\n[7] 缩略图上传（一步式 / 两步式 / 安全 / 幂等）');
+  const thumbBody = (extra) => ({ ...body0, price: 30, ...extra });
+  const postMeta = (extra) => app.inject({
+    method: 'POST', url: `${API}/templates`, headers: keyH(keyA), payload: thumbBody(extra),
+  }).then(json);
+
+  const tAdd = await postMeta({ thumbnailBase64: PNG1.toString('base64'), thumbnailSha256: shaBuf(PNG1) });
+  const expected1 = `/platform/uploads/mkt-${shaBuf(PNG1).slice(0, 20)}.png`;
+  ok('一步式封面上传成功并回传 thumbnailUrl', tAdd.ok === true && tAdd.item.thumbnailUrl === expected1, tAdd.item);
+  ok('封面落公开 uploads 目录', fs.existsSync(path.join(THUMB_DIR, path.basename(expected1))));
+  ok('文件名由内容 sha256 生成，不采用上传者文件名', thumbFiles().length === 1 && thumbFiles()[0] === path.basename(expected1), thumbFiles());
+  ok('响应不泄露服务器路径 / 私有目录', !/data\/(market|uploads)|file_path/.test(JSON.stringify(tAdd)), tAdd);
+  const thumbVer = tAdd.item.version;
+
+  const tAgain = await postMeta({ thumbnailBase64: PNG1.toString('base64'), thumbnailSha256: shaBuf(PNG1) });
+  ok('同图重发 no-op 且 version 不动', tAgain.changed === false && tAgain.item.version === thumbVer, tAgain.item);
+  ok('同图不重复写盘（内容寻址去重）', thumbFiles().length === 1, thumbFiles());
+  const tKeep = await postMeta({});
+  ok('重发元数据不带缩略图字段时保留旧封面', tKeep.item.thumbnailUrl === expected1, tKeep.item);
+
+  const tBadSha = await postMeta({ thumbnailBase64: PNG2.toString('base64'), thumbnailSha256: shaBuf(PNG1) });
+  ok('缩略图 sha 不符 400 THUMB_SHA_MISMATCH', tBadSha.code === 'THUMB_SHA_MISMATCH', tBadSha);
+  ok('sha 不符不落盘、不覆盖旧封面', thumbFiles().length === 1
+    && db.prepare('SELECT thumbnail_url FROM market_templates WHERE id = ?').get(id1).thumbnail_url === expected1);
+  const tSvg = await postMeta({ thumbnailBase64: Buffer.from('<svg onload="alert(1)">').toString('base64'), thumbnailFilename: 'evil.png' });
+  ok('SVG 改名成 .png 被拒（魔数校验）', tSvg.code === 'THUMB_TYPE_INVALID', tSvg);
+  const tHtml = await postMeta({ thumbnailBase64: Buffer.from('<html><script>alert(1)</script>').toString('base64') });
+  ok('HTML 伪装被拒', tHtml.code === 'THUMB_TYPE_INVALID', tHtml);
+  const tMime = await postMeta({ thumbnailBase64: `data:image/gif;base64,${PNG1.toString('base64')}` });
+  ok('data URI 声明类型与真实内容不符被拒', tMime.code === 'THUMB_TYPE_INVALID', tMime);
+  const tBig = await postMeta({ thumbnailBase64: Buffer.concat([PNG1, Buffer.alloc(2 * 1024 * 1024)]).toString('base64') });
+  ok('超过 2MB 被拒 THUMB_TOO_LARGE', tBig.code === 'THUMB_TOO_LARGE', tBig);
+
+  const tUrl = await postMeta({ thumbnailUrl: 'https://cdn.example.com/cover.png' });
+  ok('https 外链缩略图可用', tUrl.item.thumbnailUrl === 'https://cdn.example.com/cover.png', tUrl.item);
+  for (const bad of ['javascript:alert(1)', 'data:image/png;base64,AAAA', '//evil.com/x.png', 'http://evil.com/x.png']) {
+    const r = await postMeta({ thumbnailUrl: bad });
+    ok(`危险 URL 被拒：${bad.slice(0, 22)}`, r.code === 'THUMB_URL_INVALID', r);
+  }
+  const tClear = await postMeta({ thumbnailUrl: '' });
+  ok('显式传空串可清空封面', tClear.item.thumbnailUrl === '', tClear.item);
+
+  const thumbReq = (filename, body, headers = {}) => {
+    const mp = multipart(filename, body);
+    return app.inject({
+      method: 'POST', url: `${API}/templates/${id1}/thumbnail`,
+      headers: { 'x-market-key': keyA, 'x-nonce': nonce(), 'content-type': mp.contentType, ...headers },
+      payload: mp.body,
+    }).then(json);
+  };
+  const expected2 = `/platform/uploads/mkt-${shaBuf(PNG2).slice(0, 20)}.png`;
+  const upThumb = await thumbReq('cover.png', PNG2, { 'x-file-sha256': shaBuf(PNG2) });
+  ok('两步式 multipart 上传封面成功', upThumb.ok === true && upThumb.thumbnailUrl === expected2, upThumb);
+  ok('两步式推进 version 并回写 item.thumbnailUrl', upThumb.item.version > tClear.item.version
+    && upThumb.item.thumbnailUrl === expected2, upThumb.item);
+  ok('两步式落盘文件名仍为内容寻址', thumbFiles().includes(path.basename(expected2)), thumbFiles());
+  ok('两步式 sha 不符被拒', (await thumbReq('cover.png', PNG2, { 'x-file-sha256': shaBuf(PNG1) })).code === 'THUMB_SHA_MISMATCH');
+  ok('扩展名与真实内容不符被拒', (await thumbReq('cover.gif', PNG2)).code === 'THUMB_TYPE_INVALID');
+  ok('SVG 分步上传被拒', (await thumbReq('cover.svg', '<svg/>')).code === 'THUMB_TYPE_INVALID');
+  const upGif = await thumbReq('cover.gif', GIF1);
+  ok('合法 GIF 按魔数识别并生成 .gif 文件', upGif.ok === true && /\.gif$/.test(upGif.thumbnailUrl), upGif);
+  ok('文件名穿越不会落到目录外（全部文件名受控）',
+    thumbFiles().every((n) => /^mkt-[0-9a-f]{20}\.(png|jpg|gif|webp)$/.test(n)), thumbFiles());
+  await thumbReq('../../../evil.png', PNG1);
+  ok('带 ../ 的文件名也不产生越界文件',
+    thumbFiles().every((n) => /^mkt-[0-9a-f]{20}\.(png|jpg|gif|webp)$/.test(n)), thumbFiles());
+  // multipart() 每次生成新 boundary，headers 与 payload 必须复用同一次的结果
+  const crossUpload = async (url, marketKey) => {
+    const mp = multipart('a.png', PNG1);
+    return app.inject({
+      method: 'POST', url,
+      headers: { 'x-market-key': marketKey, 'x-nonce': nonce(), 'content-type': mp.contentType },
+      payload: mp.body,
+    }).then(json);
+  };
+  ok('跨密钥改封面 403',
+    (await crossUpload(`${API}/templates/${id1}/thumbnail`, keyB)).code === 'TEMPLATE_FORBIDDEN');
+  ok('模板不存在 404 TEMPLATE_NOT_FOUND',
+    (await crossUpload(`${API}/templates/tpl_not_exist/thumbnail`, keyA)).code === 'TEMPLATE_NOT_FOUND');
+  ok('API 不能给后台人工模板传封面',
+    (await crossUpload(`${API}/templates/${adminCreatedId}/thumbnail`, keyA)).code === 'TEMPLATE_FORBIDDEN');
+  ok('封面变更不覆盖 .blls 文件', fs.readFileSync(path.join(market.ROOT, `${id1}.blls`), 'utf8') === content2);
+  const notMultipart = json(await app.inject({
+    method: 'POST', url: `${API}/templates/${id1}/thumbnail`, headers: keyH(keyA), payload: {},
+  }));
+  ok('非 multipart 请求明确 400 而非 500', notMultipart.code === 'FILE_REQUIRED', notMultipart);
+
+  await app.inject({ method: 'PATCH', url: `${ADMIN}/templates/${id1}`, headers: AH, payload: { status: 'on' } });
+  const detailT = json(await app.inject({ method: 'GET', url: `${OPEN}/market/detail/${id1}`, headers: PUB }));
+  ok('客户端详情能拿到 thumbnailUrl', !!detailT.thumbnailUrl && detailT.thumbnailUrl.startsWith('/platform/uploads/'), detailT.thumbnailUrl);
+  const adminT = json(await app.inject({ method: 'GET', url: `${ADMIN}/templates`, headers: AH }));
+  ok('后台列表能看到封面', (adminT.items || []).some((x) => x.id === id1 && !!x.thumbnailUrl));
+
+  /* ------------------------------------------------------------ [8] 日志与运维 */
+  console.log('\n[8] 调用日志 / 留存 / 字典边界');
   const logs = json(await app.inject({ method: 'GET', url: `${ADMIN}/api-keys`, headers: AH }));
   ok('后台能查到调用日志', (logs.logs || []).length > 10, (logs.logs || []).length);
-  ok('日志含失败码与幂等键', (logs.logs || []).some((l) => l.code === 'FILE_SHA_MISMATCH')
-    && (logs.logs || []).some((l) => l.external_id === 'ext-001'), logs.logs.slice(0, 3));
+  // 页面只展示最近 50 条，新增缩略图调用会把早期记录挤出窗口 —— 这里查全表断言
+  const allLogs = db.prepare('SELECT * FROM market_api_logs').all();
+  ok('日志含失败码与幂等键', allLogs.some((l) => l.code === 'FILE_SHA_MISMATCH')
+    && allLogs.some((l) => l.external_id === 'ext-001'), allLogs.length);
+  ok('缩略图上传有独立 action 日志且记录了失败码',
+    allLogs.some((l) => l.action === 'upload_thumb' && l.status_code === 200)
+    && allLogs.some((l) => l.code === 'THUMB_TYPE_INVALID'), allLogs.filter((l) => l.action === 'upload_thumb').length);
   ok('日志不含明文密钥', !JSON.stringify(logs).includes(keyA));
   const retention = read('server/lib/retention.js');
   ok('调用日志纳入 30 天滚动清理', /key: 'market_api_logs'[\s\S]{0,120}days: 30/.test(retention));

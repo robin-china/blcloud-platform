@@ -13,7 +13,7 @@ const path = require('path');
 const crypto = require('crypto');
 const db = require('../db');
 const { now, safeJson } = require('./util');
-const { getSetting } = require('./config');
+const { getSetting, basePath } = require('./config');
 const { getMasterKey } = require('./crypto');
 const pointsLib = require('./points');
 
@@ -21,6 +21,19 @@ const ROOT = process.env.MARKET_DIR
   ? path.resolve(process.env.MARKET_DIR)
   : path.join(__dirname, '..', '..', 'data', 'market');
 fs.mkdirSync(ROOT, { recursive: true });
+
+/* 缩略图与私有 .blls 是两条完全不同的路：它是「要展示给客户端的图片」，
+ * 必须落在 Nginx 直出的 data/uploads/。正因为公开，校验要比 .blls 严：
+ * 文件头魔数（防把 HTML/SVG 改名成 .png 造成存储型 XSS）+ 大小上限 +
+ * 服务端生成文件名（用户给的文件名绝不参与路径）+ 内容寻址去重。
+ * MARKET_THUMB_DIR 只用于测试隔离，生产不设即与 server/index.js 的 UPLOAD_DIR 同目录。
+ */
+const THUMB_DIR = process.env.MARKET_THUMB_DIR
+  ? path.resolve(process.env.MARKET_THUMB_DIR)
+  : path.join(__dirname, '..', '..', 'data', 'uploads');
+fs.mkdirSync(THUMB_DIR, { recursive: true });
+const MAX_THUMB = 2 * 1024 * 1024;
+const THUMB_EXT_OF_KIND = { png: 'png', jpeg: 'jpg', gif: 'gif', webp: 'webp' };
 
 const DEFAULT_LINK_TTL = 300; // 秒
 
@@ -376,7 +389,10 @@ const NUM_FIELDS = ['width_mm', 'height_mm', 'dpi', 'columns', 'price', 'version
 function normalize(body, base = {}) {
   const out = {};
   for (const f of TEXT_FIELDS) {
-    if (body[f] !== undefined) out[f] = String(body[f] == null ? '' : body[f]).trim().slice(0, f === 'description' ? 500 : 200);
+    if (body[f] !== undefined) {
+      out[f] = String(body[f] == null ? '' : body[f]).trim()
+        .slice(0, f === 'description' ? 500 : f === 'thumbnail_url' ? 300 : 200);
+    }
   }
   for (const f of NUM_FIELDS) {
     if (body[f] !== undefined) out[f] = Math.max(0, Math.trunc(Number(body[f]) || 0));
@@ -598,7 +614,8 @@ function recentApiLogs(limit = 50) {
     ORDER BY l.id DESC LIMIT ?`).all(Math.min(200, Math.max(1, Number(limit) || 50)));
 }
 
-/** API 通道的响应：刻意不含 file_path / fileUrl / downloadUrl。 */
+/** API 通道的响应：刻意不含 file_path / fileUrl / downloadUrl。
+ *  thumbnailUrl 是公开图片地址（客户端本来就要展示），不属于模板文件路径。 */
 function apiTemplate(r) {
   if (!r) return null;
   return {
@@ -608,6 +625,7 @@ function apiTemplate(r) {
     status: r.status,
     source: 'api',
     version: Number(r.version) || 1,
+    thumbnailUrl: r.thumbnail_url || '',
     fileSha256: r.file_sha256 || '',
     fileSize: Number(r.file_size) || 0,
     hasFile: !!r.file_path,
@@ -641,6 +659,89 @@ function toSnake(body) {
   };
 }
 
+/* ---------------------------- 缩略图（API 上架通道专用） ---------------------------- */
+
+/** 只认真正的图片文件头；扩展名和内容类型都不可信。 */
+function sniffImage(buf) {
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpeg';
+  if (buf.length >= 6 && /^GIF8[79]a$/.test(buf.subarray(0, 6).toString('latin1'))) return 'gif';
+  if (buf.length >= 12 && buf.subarray(0, 4).toString('latin1') === 'RIFF'
+    && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'webp';
+  return '';
+}
+
+/** 把声明的文件名归一到允许集；返回 '' 表示不允许或没传。 */
+function thumbExtOf(filename) {
+  const ext = path.extname(String(filename || '')).toLowerCase().replace(/^\./, '');
+  if (ext === 'jpg' || ext === 'jpeg') return 'jpg';
+  if (ext === 'png' || ext === 'gif' || ext === 'webp') return ext;
+  return '';
+}
+
+/**
+ * 内容寻址落盘：文件名 = mkt-<内容 sha256 前 20 位>.<实际类型>。
+ * 同一张图全局只存一份，重跑幂等或不同模板用同一张封面都不重复写盘；
+ * 用户给的文件名完全不参与路径，杜绝 ../ 穿越与覆盖已有上传。
+ */
+function storeThumbnail(buf, declaredSha) {
+  if (!Buffer.isBuffer(buf) || !buf.length) return { error: '缩略图为空', code: 'THUMB_EMPTY' };
+  if (buf.length > MAX_THUMB) return { error: '缩略图超过 2MB', code: 'THUMB_TOO_LARGE' };
+  const kind = sniffImage(buf);
+  if (!kind) {
+    return { error: '缩略图不是合法图片（仅支持 png / jpg / webp / gif；SVG、HTML 一律拒收）', code: 'THUMB_TYPE_INVALID' };
+  }
+  const sha = crypto.createHash('sha256').update(buf).digest('hex');
+  if (declaredSha && String(declaredSha).toLowerCase() !== sha) {
+    return { error: '缩略图 sha256 与声明不一致', code: 'THUMB_SHA_MISMATCH' };
+  }
+  const name = `mkt-${sha.slice(0, 20)}.${THUMB_EXT_OF_KIND[kind]}`;
+  const target = path.join(THUMB_DIR, name);
+  if (!fs.existsSync(target)) {
+    // 先写 tmp 再 rename：不要让半张图被 Nginx 直出
+    const tmp = path.join(THUMB_DIR, `.${name}.${process.pid}.tmp`);
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, target);
+  }
+  return { url: `${basePath()}/uploads/${name}`, sha, name };
+}
+
+/** 一步式：thumbnailBase64（可带 data:image/...;base64, 前缀）。 */
+function decodeThumbnail(body) {
+  const raw = body.thumbnailBase64 !== undefined ? body.thumbnailBase64 : body.thumbnail_base64;
+  if (raw === undefined || raw === null || raw === '') return { buf: null, provided: false };
+  const s = String(raw);
+  const m = /^data:image\/([a-z0-9.+-]+);base64,/i.exec(s);
+  const payload = m ? s.slice(m[0].length) : s;
+  let buf;
+  try { buf = Buffer.from(String(payload).replace(/\s+/g, ''), 'base64'); }
+  catch { return { error: 'thumbnailBase64 不是合法 base64', code: 'THUMB_INVALID' }; }
+  if (!buf.length) return { error: '缩略图为空', code: 'THUMB_EMPTY' };
+  if (buf.length > MAX_THUMB) return { error: '缩略图超过 2MB', code: 'THUMB_TOO_LARGE' };
+  const kind = sniffImage(buf);
+  if (!kind) {
+    return { error: '缩略图不是合法图片（仅支持 png / jpg / webp / gif；SVG、HTML 一律拒收）', code: 'THUMB_TYPE_INVALID' };
+  }
+  // 声明类型（data URI 的 mime 或 thumbnailFilename）必须和文件头一致，
+  // 否则「叫 .png 的 SVG」这类混搭会绕过粗心的客户端渲染。
+  const declared = m ? thumbExtOf('x.' + m[1].toLowerCase()) : thumbExtOf(body.thumbnailFilename || body.thumbnail_filename);
+  if (declared && declared !== THUMB_EXT_OF_KIND[kind]) {
+    return { error: `缩略图声明类型「${declared}」与实际内容「${THUMB_EXT_OF_KIND[kind]}」不一致`, code: 'THUMB_TYPE_INVALID' };
+  }
+  return { buf, provided: true, sha: crypto.createHash('sha256').update(buf).digest('hex') };
+}
+
+/** 保留字符串通道给已有 CDN 图片；但拒绝 javascript:/data:/http: 与协议相对 URL。 */
+function checkThumbnailUrl(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return { url: '' };
+  const bad = /^[a-z][a-z0-9+.-]*:/i.test(s) && !/^https:\/\//i.test(s);
+  if (bad || s.startsWith('//') || (!/^https:\/\//i.test(s) && !s.startsWith('/'))) {
+    return { error: 'thumbnailUrl 只接受 https:// 绝对地址或站内 / 开头的路径', code: 'THUMB_URL_INVALID' };
+  }
+  return { url: s.slice(0, 300) };
+}
+
 function decodeBlls(body) {
   if (body.fileBase64 === undefined && !body.file) return { buf: null };
   const raw = String(body.fileBase64 || '').replace(/^data:[^,]+,/, '');
@@ -672,17 +773,35 @@ function publishTemplate({ key, body }) {
   }
   const file = decodeBlls(body);
   if (file.error) return { status: 400, code: file.code, error: file.error };
+  const thumb = decodeThumbnail(body);
+  if (thumb.error) return { status: 400, code: thumb.code, error: thumb.error };
+  // 缩略图单独走「增量」语义：一个缩略图字段都没带时保留旧值。否则脚本
+  // 「两步式传完封面 → 重跑一次元数据」会把刚传的图清空。
+  // 显式传 thumbnailUrl:'' 才是清空。
+  const thumbProvided = thumb.provided
+    || body.thumbnailUrl !== undefined || body.thumbnail_url !== undefined;
+  let thumbUrl = '';
+  if (thumb.provided) {
+    const stored = storeThumbnail(thumb.buf, body.thumbnailSha256 || body.thumbnail_sha256);
+    if (stored.error) return { status: 400, code: stored.code, error: stored.error };
+    thumbUrl = stored.url;
+  } else if (thumbProvided) {
+    const checked = checkThumbnailUrl(body.thumbnailUrl !== undefined ? body.thumbnailUrl : body.thumbnail_url);
+    if (checked.error) return { status: 400, code: checked.code, error: checked.error };
+    thumbUrl = checked.url;
+  }
 
+  const existing = db.prepare("SELECT * FROM market_templates WHERE source='api' AND api_key_id=? AND external_id=?")
+    .get(Number(key.id) || 0, externalId);
   const desired = {
     name: data.name || '', industry: data.industry || '', description: data.description || '',
     paper_type: data.paper_type || '', width_mm: data.width_mm || 0, height_mm: data.height_mm || 0,
     dpi: data.dpi || 203, columns: data.columns || 1, price: data.price || 0,
-    author: data.author || '', thumbnail_url: data.thumbnail_url || '',
+    author: data.author || '',
+    thumbnail_url: thumbProvided ? thumbUrl : (existing ? existing.thumbnail_url || '' : ''),
     tags: data.tags || '[]',
   };
   const metaKeys = Object.keys(desired);
-  const existing = db.prepare("SELECT * FROM market_templates WHERE source='api' AND api_key_id=? AND external_id=?")
-    .get(Number(key.id) || 0, externalId);
   const metaChanged = !existing || metaKeys.some((k) => String(existing[k] ?? '') !== String(desired[k]));
   const fileChanged = !!file.buf && (!existing || existing.file_sha256 !== file.sha);
   if (existing && !metaChanged && !fileChanged) {
@@ -746,6 +865,34 @@ function apiReplaceFile({ key, id, filename, buffer, declaredSha }) {
   return { ok: true, item: apiTemplate(db.prepare('SELECT * FROM market_templates WHERE id = ?').get(tpl.id)) };
 }
 
+/** 两步式上传缩略图：与 /file 同口径的归属校验，但走公开图片的安全规则。 */
+function apiReplaceThumbnail({ key, id, filename, buffer, declaredSha }) {
+  const tpl = db.prepare('SELECT * FROM market_templates WHERE id = ?').get(String(id || ''));
+  if (!tpl) return { status: 404, code: 'TEMPLATE_NOT_FOUND', error: '模板不存在' };
+  if (tpl.source !== 'api' || Number(tpl.api_key_id) !== Number(key.id)) {
+    return { status: 403, code: 'TEMPLATE_FORBIDDEN', error: '该模板不属于当前 API 密钥' };
+  }
+  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || '');
+  if (!buf.length) return { status: 400, code: 'THUMB_EMPTY', error: '缩略图为空' };
+  if (buf.length > MAX_THUMB) return { status: 400, code: 'THUMB_TOO_LARGE', error: '缩略图超过 2MB' };
+  const kind = sniffImage(buf);
+  if (!kind) {
+    return { status: 400, code: 'THUMB_TYPE_INVALID', error: '缩略图不是合法图片（仅支持 png / jpg / webp / gif）' };
+  }
+  const declared = thumbExtOf(filename);
+  if (!declared || declared !== THUMB_EXT_OF_KIND[kind]) {
+    return { status: 400, code: 'THUMB_TYPE_INVALID', error: `缩略图扩展名与实际内容不符：${declared || '未知'} ≠ ${THUMB_EXT_OF_KIND[kind]}` };
+  }
+  const stored = storeThumbnail(buf, declaredSha);
+  if (stored.error) return { status: 400, code: stored.code, error: stored.error };
+  db.prepare('UPDATE market_templates SET thumbnail_url = ?, version = version + 1, updated_at = ? WHERE id = ?')
+    .run(stored.url, now(), tpl.id);
+  return {
+    ok: true, thumbnailUrl: stored.url,
+    item: apiTemplate(db.prepare('SELECT * FROM market_templates WHERE id = ?').get(tpl.id)),
+  };
+}
+
 module.exports = {
   ROOT, fileAbs, linkTtl,
   options, meta, saveOptions, DPI_ALLOWED,
@@ -755,7 +902,8 @@ module.exports = {
   stats, recentPurchases, adminList,
   // API 上架
   createApiKey, findApiKey, listApiKeys, setApiKey, deleteApiKey, touchApiKey,
-  logApiCall, recentApiLogs, apiTemplate, apiTemplateByExternal, publishTemplate, apiReplaceFile,
+  logApiCall, recentApiLogs, apiTemplate, apiTemplateByExternal, publishTemplate,
+  apiReplaceFile, apiReplaceThumbnail, storeThumbnail, sniffImage,
   // 测试用
   encodeCursor, decodeCursor, SORTS,
 };

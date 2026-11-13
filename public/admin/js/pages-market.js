@@ -573,10 +573,15 @@ window.PageMarketApi = {
             <div class="hint" style="margin-bottom:6px">② 大文件两步：先建元数据，再传 .blls</div>
             <pre class="code-block">{{ curlUpload }}</pre>
           </div>
+          <div>
+            <div class="hint" style="margin-bottom:6px">③ 缩略图：一步式字段或单独上传（png/jpg/webp/gif，≤2MB）</div>
+            <pre class="code-block">{{ curlThumb }}</pre>
+          </div>
         </div>
         <div class="hint" style="margin-top:10px">
           完整字段、错误码与重试建议见 <b>docs/模板市场-API上架接入.md</b>。
-          模板文件仍只存私有目录，API 响应不含任何文件路径或下载地址；删除 / 下架只能在本后台操作。
+          模板文件仍只存私有目录，API 响应不含任何文件路径或下载地址；缩略图是公开图片，
+          落在 <code>uploads/</code> 由 Nginx 直出；删除 / 下架只能在本后台操作。
         </div>
       </div>
     </div>
@@ -666,6 +671,15 @@ curl -X POST ${base}/templates/<id>/file \\
 # 查状态
 curl "${base}/templates?externalId=shelf-50x30-001" \\
   -H "X-Market-Key: mkt_…"`;
+    const curlThumb = `# 方式 A：上架请求里直接带（可带 data:image/png;base64, 前缀）
+#   "thumbnailBase64":"<base64 图片>","thumbnailSha256":"<sha256>"
+# 方式 B：单独上传封面（拿 item.id 后）
+curl -X POST ${base}/templates/<id>/thumbnail \\
+  -H "X-Market-Key: mkt_…" -H "X-Nonce: <uuid3>" \\
+  -H "X-File-Sha256: <sha256>" \\
+  -F "file=@cover.png"
+
+# 也可用 thumbnailUrl 填 https 外链；不传任何缩略图字段会保留旧封面`;
 
     async function load() {
       busy.value = true;
@@ -717,7 +731,7 @@ curl "${base}/templates?externalId=shelf-50x30-001" \\
 
     onMounted(load);
     return {
-      fmt, keys, logs, busy, showNew, newName, newAuto, plainKey, curlPublish, curlUpload,
+      fmt, keys, logs, busy, showNew, newName, newAuto, plainKey, curlPublish, curlUpload, curlThumb,
       load, openNew, closeNew, create, togglePublish, toggleStatus, remove, copyKey,
     };
   },

@@ -38,6 +38,8 @@ ok('菜单独立分组「扩展功能」且三页带 LabelGo 前缀', /group: '�
   && /name: 'LabelGo模板API上架'/.test(appJs));
 ok('字典行样式已定义', /\.dict-row \{/.test(css) && /\.dict-idx \{/.test(css));
 ok('curl 示例块样式已定义', /\.code-block \{/.test(css));
+ok('接口速查含缩略图示例且 setup 已导出 curlThumb', /const curlThumb = `/.test(pageCode)
+  && /templates\/<id>\/thumbnail/.test(pageCode) && /curlUpload, curlThumb,/.test(pageCode));
 ok('私有目录不被 Nginx 静态映射（上线检查提示）', /绝对不要在这里加 alias/.test(read('deploy/nginx-subpath.conf')));
 
 console.log('\n[2] Vue 模板真编译 + 挂载');
@@ -106,6 +108,7 @@ ok('渲染出「模板上下架」表格区', html.includes('LabelGo模板市场
 ok('渲染出「LabelGo模板字典」页', html.includes('LabelGo模板字典'));
 ok('渲染出 600 dpi 选项', html.includes('600 dpi'));
 ok('渲染出「API 上架」密钥页与 curl 示例', html.includes('LabelGo模板API上架') && html.includes('curl -X POST'));
+ok('渲染出缩略图上传端点速查', html.includes('③ 缩略图') && html.includes('/thumbnail'));
 ok('渲染出尺寸预设说明', html.includes('尺寸预设'));
 ok('首屏渲染时无 Vue 运行时错误', errors.length === 0, errors);
 
