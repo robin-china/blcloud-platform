@@ -12,6 +12,7 @@ const plans = require('../lib/plans');
 const commission = require('../lib/commission');
 const reminders = require('../lib/reminders');
 const profileLib = require('../lib/profile');
+const pointsLib = require('../lib/points');
 const orderdel = require('../lib/orderdel');
 
 /**
@@ -637,17 +638,11 @@ module.exports = async function portalRoutes(app) {
 
   app.post('/api/portal/signin', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.sub);
-    const last = db.prepare("SELECT * FROM points_logs WHERE user_id = ? AND reason = '每日签到' ORDER BY id DESC LIMIT 1").get(req.user.sub);
-    if (last && new Date(last.created_at).toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10)) {
-      return reply.code(400).send({ error: '今天已经签到过了' });
-    }
-    const gain = Number(getSetting('user_points_signin', '10'));
-    const balance = (user.points || 0) + gain;
-    db.prepare('UPDATE users SET points = ? WHERE id = ?').run(balance, req.user.sub);
-    db.prepare('INSERT INTO points_logs (user_id, change, balance, reason, created_at) VALUES (?,?,?,?,?)')
-      .run(req.user.sub, gain, balance, '每日签到', now());
-    return { balance, gain };
+    // 与开放接口 /user/signin 共用同一份判定：北京时间日切 + 事务幂等 + 统一流水，
+    // 否则网页端签一次、软件端又签一次，同一天能领两份积分。
+    const r = pointsLib.signin(req.user.sub);
+    if (!r.ok) return reply.code(400).send({ error: '今天已经签到过了', code: 'ALREADY_SIGNED', balance: r.balance });
+    return { balance: r.balance, gain: r.gain, date: r.date };
   });
 
   app.post('/api/portal/download/:id', async (req, reply) => {

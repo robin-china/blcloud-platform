@@ -85,6 +85,8 @@ const MACHINE = {
       // 确认框已改为自绘的 U.confirm（原生 confirm 在内嵌浏览器里会被静默禁用），
       // 测试里直接放行即可，不需要真的点按钮
       confirm: () => Promise.resolve(true),
+      // 用户端新页面守卫走 U.authReady()（handoff 免登换票竞态），DOM 测试 stub 必须带
+      authReady: async () => true,
       failMsg: (e, f) => (e && e.message) || f || '失败',
       fmt: { date: () => '2026-11-02', time: () => '2026-11-02 10:00' },
       avatar: (v) => String(v || ''),
@@ -191,6 +193,8 @@ const MACHINE = {
       // 确认框已改为自绘的 U.confirm（原生 confirm 在内嵌浏览器里会被静默禁用），
       // 测试里直接放行即可，不需要真的点按钮
       confirm: () => Promise.resolve(true),
+      // 用户端新页面守卫走 U.authReady()（handoff 免登换票竞态），DOM 测试 stub 必须带
+      authReady: async () => true,
       failMsg: (e, f) => (e && e.message) || f || '失败',
       fmt: { date: () => '2026-11-02', time: () => '2026-11-02 10:00' },
       avatar: (v) => String(v || ''),

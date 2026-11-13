@@ -52,6 +52,8 @@ async function newUser(app, openid) {
 
 const MOCK_U = {
   basePath: '',
+  // 用户端页面守卫会 await U.authReady()，缺了会在 jsdom 里报 TypeError
+  authReady: async () => true,
   fmt: {
     money: (v) => '¥' + Number(v || 0).toFixed(2),
     date: (s) => String(s || '').slice(0, 10),

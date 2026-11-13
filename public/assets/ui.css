@@ -136,6 +136,11 @@ input, select, textarea, button { font-family: inherit; font-size: 14px; }
 .input:focus, .select:focus, textarea.input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
 textarea.input { min-height: 90px; resize: vertical; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* 模板市场后台：label.field 里用 span 当标题（label 内嵌 input 时更稳），字典行可排序 */
+.field > span:first-child { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 6px; }
+.dict-row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+.dict-row .input { flex: 1; }
+.dict-idx { width: 24px; flex: none; text-align: center; font-size: 12px; color: var(--text-3); }
 .hint { font-size: 12px; color: var(--text-3); margin-top: 4px; }
 /* label.switch 的优先级必须压过 .field label { display:block }（同为 label 时 0,1,1 平级靠后者胜），
    否则 .field 里的开关被强制 block，.track 退化成 inline —— width/height/background 全失效，

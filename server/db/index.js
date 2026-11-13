@@ -335,4 +335,27 @@ function seed() {
 
 seed();
 
+/* 模板市场枚举字典默认值：只种一次。
+ * 用 settings 里的标记而不是「表为空」判断 —— 运营把行业删到只剩两个时，
+ * 下次重启不能又把 9 个默认项全塞回来（商品演示数据以前就踩过这个坑）。
+ * 字典内容由后台「枚举字典」页维护，/market/meta 实时读表下发。 */
+(function seedMarketOptions() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key = 'market_options_seeded'").get()) return;
+  const t = now();
+  const ins = db.prepare('INSERT OR IGNORE INTO market_options (kind, value, sort, created_at) VALUES (?,?,?,?)');
+  const industries = ['制造业', '物流仓储', '零售电商', '食品餐饮', '医疗器械', '固定资产', '化工', '服饰', '其他'];
+  const papers = ['间隙纸', '黑标纸', '连续纸'];
+  const presets = [
+    { label: '50×30mm', widthMm: 50, heightMm: 30 },
+    { label: '40×30mm', widthMm: 40, heightMm: 30 },
+    { label: '60×40mm', widthMm: 60, heightMm: 40 },
+    { label: '100×100mm', widthMm: 100, heightMm: 100 },
+  ];
+  industries.forEach((v, i) => ins.run('industry', v, i * 10, t));
+  papers.forEach((v, i) => ins.run('paper_type', v, i * 10, t));
+  presets.forEach((v, i) => ins.run('size_preset', JSON.stringify(v), i * 10, t));
+  db.prepare('INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?,?,?)')
+    .run('market_options_seeded', '1', t);
+})();
+
 module.exports = db;

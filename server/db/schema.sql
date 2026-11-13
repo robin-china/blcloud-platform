@@ -570,3 +570,78 @@ CREATE TABLE IF NOT EXISTS machine_ledger (
   PRIMARY KEY (machine_code, license_id)
 );
 CREATE INDEX IF NOT EXISTS idx_machine_ledger_last ON machine_ledger(last_seen_at);
+
+-- ---------------------------------------------------------------------------
+-- 模板市场（2026-11-13，对接 LabelGo 客户端「云端模板市场」）
+-- 安全边界：file_path 只存私有目录里的相对文件名，任何对外接口都不得返回它，
+-- 也不返回 fileUrl；模板文件只能经「兑换 → 一次性短链」由后端读出。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS market_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  industry TEXT DEFAULT '',
+  description TEXT DEFAULT '',
+  tags TEXT DEFAULT '[]',
+  width_mm REAL DEFAULT 0,
+  height_mm REAL DEFAULT 0,
+  paper_type TEXT DEFAULT '',
+  dpi INTEGER DEFAULT 203,
+  columns INTEGER DEFAULT 1,
+  price INTEGER DEFAULT 0,
+  author TEXT DEFAULT '',
+  thumbnail_url TEXT DEFAULT '',
+  file_path TEXT DEFAULT '',
+  file_sha256 TEXT DEFAULT '',
+  file_size INTEGER DEFAULT 0,
+  version INTEGER DEFAULT 1,
+  status TEXT DEFAULT 'on',
+  downloads INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+-- 游标分页靠 (sortKey, id) 联合条件，索引第一列必须是 status（筛选恒带 status='on'）
+CREATE INDEX IF NOT EXISTS idx_market_tpl_hot ON market_templates(status, downloads DESC, id);
+CREATE INDEX IF NOT EXISTS idx_market_tpl_new ON market_templates(status, created_at DESC, id);
+CREATE INDEX IF NOT EXISTS idx_market_tpl_price ON market_templates(status, price, id);
+CREATE INDEX IF NOT EXISTS idx_market_tpl_filter ON market_templates(status, industry, paper_type, width_mm, height_mm);
+
+-- 已购归「账号」不归机器：换机/重装不该丢已购模板。
+-- machine_code 只记录首次兑换的机器，用于防刷与排障，不参与归属唯一键。
+CREATE TABLE IF NOT EXISTS market_purchases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  template_id TEXT NOT NULL,
+  order_id TEXT NOT NULL UNIQUE,
+  machine_code TEXT DEFAULT '',
+  price INTEGER DEFAULT 0,
+  purchased_at TEXT NOT NULL,
+  UNIQUE(user_id, template_id)
+);
+CREATE INDEX IF NOT EXISTS idx_market_purchase_user ON market_purchases(user_id, purchased_at DESC);
+CREATE INDEX IF NOT EXISTS idx_market_purchase_tpl ON market_purchases(template_id);
+
+-- 枚举字典：kind = industry | paper_type | size_preset。
+-- size_preset 的 value 是一段 JSON {label,widthMm,heightMm}，其余两种是纯文本。
+-- 运营在后台改完立刻影响 /market/meta，不需要发客户端版本。
+CREATE TABLE IF NOT EXISTS market_options (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  value TEXT NOT NULL,
+  sort INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL,
+  UNIQUE(kind, value)
+);
+CREATE INDEX IF NOT EXISTS idx_market_options_kind ON market_options(kind, sort, id);
+
+-- 一次性下载短链：短链本身是无状态 HMAC，但「用过一次就废」必须有状态。
+-- jti 落库，下载时 UPDATE ... WHERE used_at='' 抢占，并发请求只有一个能拿到文件。
+CREATE TABLE IF NOT EXISTS market_download_links (
+  jti TEXT PRIMARY KEY,
+  template_id TEXT NOT NULL,
+  user_id INTEGER NOT NULL,
+  machine_code TEXT DEFAULT '',
+  expires_at TEXT NOT NULL,
+  used_at TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_link_exp ON market_download_links(expires_at);

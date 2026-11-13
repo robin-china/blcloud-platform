@@ -78,6 +78,12 @@ const POLICIES = [
     why: '唯一的判断依据是签名窗口，留 1 天已经很宽松',
   },
   {
+    key: 'market_download_links', table: 'market_download_links', ts: 'created_at', days: 1, auto: true,
+    name: '模板市场下载短链',
+    desc: '每次兑换签发的一次性短链 jti，用过即废、5 分钟过期',
+    why: '短链本身只活 5 分钟，留 1 天只为查「客户说下载不了」时的签发记录',
+  },
+  {
     key: 'machine_ledger', table: 'machine_ledger', ts: 'last_seen_at', days: 0, auto: false,
     name: '机器台账',
     desc: '机器码 ↔ 客户 ↔ 授权 ↔ 构建/版本的对照表',

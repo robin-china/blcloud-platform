@@ -8,6 +8,22 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * 北京时间（UTC+8）自然日，返回 YYYY-MM-DD；传入 ISO 字符串可算某条历史记录属于哪天。
+ * 中国自 1991 年后不再实行夏令时，固定 +8 是准确的，比 Intl 少一个 ICU 依赖。
+ * 网页端签到原来直接用 toISOString().slice(0,10)（UTC 日切），北京时间 00:00–08:00
+ * 会被算成前一天，用户明明昨天签过却提示「今天已签到」。积分/签到一律改用这两个函数。
+ */
+function chinaDay(input) {
+  const d = input == null ? new Date() : new Date(input);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Date(d.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function chinaToday() {
+  return chinaDay();
+}
+
 function hashPassword(plain) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(String(plain), salt, 64).toString('hex');
@@ -72,6 +88,6 @@ function safeJson(text, fallback) {
 }
 
 module.exports = {
-  now, today, hashPassword, verifyPassword, genOrderNo, genLicenseKey,
+  now, today, chinaDay, chinaToday, hashPassword, verifyPassword, genOrderNo, genLicenseKey,
   genApiKey, genScene, genCode, pick, safeJson, randomPassword,
 };

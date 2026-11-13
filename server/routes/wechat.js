@@ -9,6 +9,7 @@ const tb = require('../services/tb');
 const plans = require('../lib/plans');
 const profileLib = require('../lib/profile');
 const handoff = require('../lib/handoff');
+const pointsLib = require('../lib/points');
 
 async function ensureUser(openid, profile = {}) {
   let user = db.prepare('SELECT * FROM users WHERE openid = ?').get(openid);
@@ -47,6 +48,9 @@ async function ensureUser(openid, profile = {}) {
     .run(openid, profile.unionid || '', profileLib.cleanText(profile.nickname, 24) || `用户${String(openid || '').slice(-4)}`,
       initialAvatar, null, 0, 'active', now(), now());
   user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+  // 新用户赠送积分（默认 200，设置项 user_points_register 可改）只在注册这一刻发一次，
+  // 并写 points_logs 流水。历史账号不补发：模板市场尚未发售，不需要追溯旧口径。
+  try { pointsLib.registerBonus(user.id); } catch (e) { console.warn('[points] 新用户赠送失败：' + e.message); }
   const cfg = getConfig('tb');
   const suffix = cfg.email_suffix || '@tb.cn';
   db.prepare('UPDATE users SET tb_username = ?, tb_password = ?, tb_status = ?, tb_message = ? WHERE id = ?')

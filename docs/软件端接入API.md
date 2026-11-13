@@ -202,6 +202,14 @@ S2 之前**不要**让客户端删 `appSecret`——`APP_SECRET_RETIRED` 是给�
 | POST | `/license/bind` | 用户令牌 | **绑定卡密**（渠道印的未分配码） |
 | POST | `/license/ticket` | 用户令牌 | **离线票据**（Ed25519 签名，断网自证） |
 | POST | `/telemetry` | 用户令牌 | 上报使用数据（可选） |
+| GET | `/market/meta` | 应用签名 / 公开模式 | **模板市场**枚举字典（行业 / 纸型 / 尺寸预设），见 §11 |
+| GET | `/market/list` | 应用签名 / 公开模式 | 模板列表：4 维筛选 + 4 排序 + 游标分页 |
+| GET | `/market/detail/:id` | 应用签名 / 公开模式 | 模板详情（不含 fileUrl） |
+| GET | `/user/credits` | 用户令牌 | 积分余额（唯一真相源） |
+| POST | `/user/signin` | 用户令牌 + x-nonce | 每日签到 +10（北京时间日切，幂等） |
+| POST | `/market/redeem` | 用户令牌 + x-nonce | 积分兑换，返回一次性下载短链 |
+| GET | `/market/owned` | 用户令牌 | 本账号已购模板 id 列表 |
+| GET | `/market/download?token=` | 短链自证（无需 Bearer） | 一次性下载 .blls |
 
 ---
 
@@ -598,6 +606,12 @@ MQTT 地址：tcp://<tb.url 的域名>:1883（或 8883 走 TLS）
 }
 ```
 
+> **kid 以 /app/keys 为准**：示例中的 `"kid": "9f3a1c7b2d40e851"` 是格式示意值。
+> 实际签票密钥是独立于清单/权益的第三把 Ed25519（`offline` 那把），其 kid 与 PEM
+> 以 `GET /app/keys` 响应的 `offline.kid` / `offline.public_key` 为唯一事实源
+> （当前生产 = `b40170db9b699ece`）；`/license/ticket` 响应里的 `public_key`
+> **恒等于**这把公钥，构建期内嵌时不要从文档抄 PEM，直接取 /app/keys。
+
 **套餐权益字段**：`plan_code` / `plan_name` / `tier` / `features` / `limits` / `seats` / `online_required` / `app_id` / `entitlement_version` / `downgraded_from` 都随签名一起下发，`app_id` 标明档位归属哪个软件产品。客户端断网时问不了服务端，**功能开关只能以验签通过的 `features` 为准、数量上限以 `limits` 为准**，不要用本地缓存的旧档位，也不要相信接口单独返回的目录。`entitlement_version` 断网后没有用处，但它保证「同一张票内权益自洽」。套餐授权的 `product_id=0`（不绑定具体商品），激活时改由 `licenses.app_id` / 档位 `app_id` 做产品匹配；`app_id` 为空的历史通用码按「不限应用」放行。历史商品授权与卡密池码没有档位，这些字段为 `""` / `0` / `[]` / `null`，`offline_days` 回退到开放应用里的「离线宽限」。
 
 `/app/version` 额外返回 `plan_catalog`（**只包含本应用自己的档位**），仅供展示可购买档位；权益判定仍以票据签名字段为准。
@@ -654,12 +668,112 @@ const ok = crypto.verify(null, Buffer.from(body, 'utf8'),
 
 | 字段 | 说明 |
 |---|---|
-| `entitlement_sig` | 对 entitlement 对象做 Ed25519（base64），canonical 规则同清单签名（去掉 `entitlement_sig`） |
-| `entitlement_kid` | 形如 `ent-2026-11`，**在签名内容里** |
+| `entitlement_sig` | Ed25519 签名（base64）。**签名输入 = `entitlement` 对象剔除 `signature`/`kid` 后注入 `kid` 的包装对象**，即 `canonical({ ...entitlement, kid: entitlement_kid })` |
+| `entitlement_kid` | 形如 `ent-2026-11`，**参与签名**（注入到被签对象里，不是签名后附加的元数据） |
+
+一句话口径：**签的是「带 kid 的 entitlement」，不是「裸 entitlement」**；`signature` 字段本身
+不参与签名（它就是要产出的东西），`kid` 必须参与。`entitlement_sig` 不在被签对象内 ——
+它只是把被签对象里 `signature` 字段的 base64 拿出来单独放在响应顶层/旁边。
 
 断网期间保留的旧快照必须验签通过才可用：本地改一个 JSON 就能解锁全部功能，
 这正是「离线宽限」最容易被利用的地方。验签失败 → 按无结论处理（保留上一份**验签通过**的快照）。
 注意：`entitlement_sig` 与 `.lic` 文件签名、清单签名**不是同一把密钥**，公钥分别内嵌。
+
+**权益签名 golden vector（v1，2026-11-12）**
+
+同一份 entitlement 用同一把密钥签名，canonical 与 sha256 恒定 —— 客户端先用下面的
+`canonical_utf8` / `canonical_sha256` 对齐规范化实现，再用向量公钥验 `entitlement_sig`，
+两端就必然一致。生成脚本：`tools/gen-entitlement-vector.js`（可重跑，输出逐字节相同）。
+
+> 向量用的是**专用测试密钥** `ent-vector-1`（不是生产 `ent-2026-11`），只能用来校验
+> canonical / 验签逻辑，**不要内嵌进客户端**。
+
+向量公钥（SPKI PEM，测试用）：
+
+```
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAyemrhERAFnZWBedF3vTr5kGBgdD5Q6g1nJK04W08gB8=
+-----END PUBLIC KEY-----
+```
+
+**向量 A：在线付费档（online-standard 形状）**
+
+响应片段（`license.entitlement` / 票顶层 `entitlement` + 两个签名字段）：
+
+```json
+{
+  "entitlement": {
+    "plan_code": "member",
+    "plan_name": "在线会员版",
+    "plan_display_name": "在线会员版",
+    "billing": "yearly",
+    "is_free": false,
+    "tier": 10,
+    "features": ["labelgo.basic", "labelgo.library", "labelgo.excel"],
+    "limits": { "labelgo.library": 30, "labelgo.excel_rows": 100 },
+    "seats": 1,
+    "offline_days": 3,
+    "online_required": 1,
+    "app_id": 3,
+    "product_id": 0,
+    "product_name": "在线会员版"
+  },
+  "entitlement_kid": "ent-vector-1",
+  "entitlement_sig": "BPJz97M1VbLQEAXnFLGie5eZCffzD3M523wbk4Sa5Q4kJJq1zx5EQK1hlHln9keVxdyYcT45N2vi7eGDh+ApBg=="
+}
+```
+
+被签对象（= entitlement + `kid`，`signature` 已剔除）：
+
+```json
+{"plan_code":"member","plan_name":"在线会员版","plan_display_name":"在线会员版","billing":"yearly","is_free":false,"tier":10,"features":["labelgo.basic","labelgo.library","labelgo.excel"],"limits":{"labelgo.library":30,"labelgo.excel_rows":100},"seats":1,"offline_days":3,"online_required":1,"app_id":3,"product_id":0,"product_name":"在线会员版","kid":"ent-vector-1"}
+```
+
+canonical UTF-8（键字典序，**中文不转义**）：
+
+```
+{"app_id":3,"billing":"yearly","features":["labelgo.basic","labelgo.library","labelgo.excel"],"is_free":false,"kid":"ent-vector-1","limits":{"labelgo.excel_rows":100,"labelgo.library":30},"offline_days":3,"online_required":1,"plan_code":"member","plan_display_name":"在线会员版","plan_name":"在线会员版","product_id":0,"product_name":"在线会员版","seats":1,"tier":10}
+```
+
+```
+sha256(canonical UTF-8) = 50d05821e9e4d86219e3c515f7b0f9d612619df7643c799224622512b5e08b3b
+```
+
+**向量 B：历史商品授权 / 卡密池码（无档位，features 空数组、limits 空对象）**
+
+```json
+{
+  "entitlement": {
+    "plan_code": "legacy",
+    "plan_name": "标准授权",
+    "billing": "once",
+    "is_free": false,
+    "tier": 0,
+    "features": [],
+    "limits": {},
+    "seats": 1,
+    "offline_days": 0,
+    "online_required": 0,
+    "app_id": null,
+    "product_id": 12,
+    "product_name": ""
+  },
+  "entitlement_kid": "ent-vector-1",
+  "entitlement_sig": "bWNCRPzvG89VoQUs04i0Xxee23p2rL5eutbSTETySUvAxmzbFHoWciQf3qvDk+4zO1Lk8WmOROAobHjBjYMTAw=="
+}
+```
+
+```
+canonical: {"app_id":null,"billing":"once","features":[],"is_free":false,"kid":"ent-vector-1","limits":{},"offline_days":0,"online_required":0,"plan_code":"legacy","plan_name":"标准授权","product_id":12,"product_name":"","seats":1,"tier":0}
+sha256   : aa2ce39732b0f6d294a96d5440433ccef19af301a9fe58144a910e51f1bd8b97
+```
+
+**规范化规则里最容易踩的四点**（向量就是用来钉死这些）：
+
+1. 键按**码点字典序**排序（`app_id` < `billing` < … < `tier`），嵌套对象同样排序（`limits` 里 `excel_rows` 在 `library` 前）。
+2. 中文**按 UTF-8 原样写入**，不做 `\uXXXX` 转义 —— Python 端必须 `ensure_ascii=False`，否则 sha256 必不同。
+3. 数组**保序**，不排序（`features` 顺序就是后台配置顺序）。
+4. 空数组 `[]`、空对象 `{}` 原样保留；`null` 就写 `null`（不要省略、不要写空串）；值为 `undefined` 的键整条丢弃。
 
 **有效期语义**
 
@@ -766,6 +880,15 @@ const ok = crypto.verify(null, Buffer.from(body, 'utf8'),
 | 403 | `MACHINE_MISMATCH` | 换票机器码与会话不一致 | 重新激活，不要拿别的机器的票 |
 | 403 | `TICKET_STOPPED` | 该机器换票已被后台停用 | 提示联系客服；已发的票按 epoch 失效 |
 | 400 | `MACHINE_REQUIRED` | 换票缺 machine_code | 补上机器码 |
+| 400 | `CURSOR_INVALID` | 模板市场游标无效 / 与筛选条件不匹配 | 丢弃本地游标，从第一页重新拉取 |
+| 400 | `TEMPLATE_REQUIRED` | 兑换缺 template_id | 补参数 |
+| 400 | `LINK_INVALID` | 下载短链签名不对或被篡改 | 重新调用 `/market/redeem` 领新短链 |
+| 404 | `TEMPLATE_NOT_FOUND` / `LINK_NOT_FOUND` | 模板不存在或已下架 / 短链不存在 | 刷新列表 |
+| 402 | `INSUFFICIENT_CREDITS` | 积分不足 | 提示签到 / 充值，别本地放行 |
+| 403 | `TEMPLATE_OFFLINE` | 模板已下架 | 刷新列表 |
+| 409 | `TEMPLATE_FILE_MISSING` | 后台模板文件缺失（不扣分、不发货） | 提示联系客服 |
+| 410 | `LINK_EXPIRED` / `LINK_USED` | 短链过期 / 已用过 | 重新兑换（已购不会重复扣分） |
+| 400 | `ALREADY_SIGNED` | 网页端签到重复（开放接口返回 `already:true` 而非报错） | 显示「今日已签到」 |
 
 ---
 
@@ -882,3 +1005,161 @@ node tools/test-open.js
 ```
 
 会走完整链路：创建应用 → 签名校验 → 激活 → 重复激活 → 超出机器数 → 取资料/授权/硬件 → 校验 → 心跳 → 刷新令牌 → 手机号登录 → 扫码登录 → 解绑 → 吊销后失效，共 28 项断言。
+
+---
+
+## 11. 模板市场接口（2026-11-13 新增）
+
+前缀统一为 `/api/open/v1`。客户端「云端模板市场」的入口、筛选、无限滚动由主线实现，
+本节只描述后台提供的接口与字段。**模板文件 `.blls` 只在兑换成功后经一次性短链下发，
+列表 / 详情永远不返回 `fileUrl` 或任何文件路径。**
+
+### 11.1 鉴权口径（沿用 C 批框架）
+
+| 类型 | 接口 | 要求 |
+|---|---|---|
+| 公开读 | `/market/meta`、`/market/list`、`/market/detail/:id` | 仅 `X-App-Key`（也可带 Bearer）；GET 不要求 nonce |
+| 登录态读 | `/user/credits`、`/market/owned`、`/market/list?mine=true` | `Authorization: Bearer <access_token>` |
+| 写 / 扣积分 | `/user/signin`、`/market/redeem` | **Bearer + `X-Nonce`**（每次新值；缺失 `401 NONCE_REQUIRED`，重放 `401 NONCE_REUSED`） |
+| 提货 | `/market/download?token=` | 只认短链自身的 HMAC，不需要 Bearer / X-App-Key |
+
+公开模式频控：每 IP 300 次/分钟、每 app+IP 120 次/分钟（`429 RATE_LIMITED`）。
+`/auth/refresh` 维持原契约（不带 Bearer、不带 nonce），本次未改老接口。
+
+### 11.2 GET `/market/meta`
+
+后台「模板字典」页保存后**立即生效**，客户端不得写死行业 / 纸型 / 尺寸预设。
+
+```json
+{
+  "industries": ["制造业", "物流仓储", "零售电商"],
+  "paperTypes": ["间隙纸", "黑标纸", "连续纸"],
+  "sizePresets": [{ "label": "50×30mm", "widthMm": 50, "heightMm": 30 }],
+  "sorts": ["downloads_desc", "newest", "price_asc", "price_desc"],
+  "defaultSort": "downloads_desc",
+  "defaultLimit": 50,
+  "signinGain": 10,
+  "registerBonus": 200,
+  "linkTtlSeconds": 300,
+  "serverTime": "2026-11-13T03:00:00.000Z",
+  "timezone": "Asia/Shanghai"
+}
+```
+
+尺寸**不是枚举**：客户端按 `widthMm` / `heightMm` 精确值筛选，`sizePresets` 只用来生成快捷按钮。
+字典若被运营清空，后台会回退到内置默认值，不会下发空数组。
+
+### 11.3 GET `/market/list`
+
+| 参数 | 说明 |
+|---|---|
+| `industry` / `paperType` | 精确匹配枚举值 |
+| `widthMm` / `heightMm` | 精确匹配数值，可只传一个 |
+| `q` | 关键词，检索 `name` + `description` + `tags` |
+| `sort` | `downloads_desc`（默认）/ `newest` / `price_asc` / `price_desc` |
+| `mine` | `true` 时只返回本账号已购，**必须带 Bearer** |
+| `cursor` | 上一页的 `nextCursor`，不传即从第一页开始 |
+| `limit` | 默认 **50**，范围 1–100 |
+
+```json
+{
+  "items": [{
+    "id": "tpl_mkt_xxx", "name": "仓储货架标签", "industry": "物流仓储",
+    "description": "一行描述", "tags": ["条码", "货架"],
+    "widthMm": 50, "heightMm": 30, "paperType": "间隙纸",
+    "dpi": 203, "columns": 1, "price": 20, "author": "官方",
+    "thumbnailUrl": "/platform/uploads/xxx.png",
+    "fileSha256": "…", "fileSize": 20480, "version": 2,
+    "status": "on", "downloads": 128,
+    "createdAt": 1763000000000, "updatedAt": 1763000000000
+  }],
+  "nextCursor": "eyJzIjoi…<MAC>",
+  "hasMore": true,
+  "sort": "downloads_desc",
+  "limit": 50
+}
+```
+
+游标规则（务必按此实现，别自己拼 offset）：
+
+- `nextCursor` 编码的是**上一页末条的 `(sortKey, id)`**，服务端用 `WHERE (sortKey,id)` 严格比较，走联合索引，不漏不重；
+- 游标带排序 + 筛选指纹的 MAC。**换排序、换筛选、改 `q`、切 `mine` 后必须丢弃旧游标从第一页重拉**，
+  否则返回 `400 CURSOR_INVALID`；篡改游标同样 400；
+- `hasMore=false` 或 `nextCursor=null` 即到底；
+- 按 `downloads_desc` 翻页时热度会随他人兑换变化，可能出现轻微重复/抖动，客户端按 `id` 去重即可。
+
+`GET /market/detail/:id` 返回上面**单个 TemplateItem 对象**（不是 `{item:…}` 包装），同样不含 `fileUrl`；
+下架或不存在的模板回 `404 TEMPLATE_NOT_FOUND`。
+
+### 11.4 积分与签到
+
+`GET /user/credits` → `{ balance, signedInToday, signinGain, serverTime, timezone }`
+
+`POST /user/signin` → `{ ok:true, already, gain, balance, date, signedInToday:true, serverTime }`
+
+- 每日 +10（后台设置 `user_points_signin`，默认 10），**北京时间 00:00 日切**；
+- 同日重复调用返回 `already:true` / `gain:0`，不是错误 —— 客户端直接显示「今日已签到」；
+- 网页端签到走同一份幂等判定，两个入口不会各领一次；
+- 新用户注册赠送 200（设置 `user_points_register`），只在建档那一刻发一次并写 `points_logs`；
+- **`users.points` 是唯一真相源**，客户端 `credits.json` 只能当离线展示缓存，不得用于本地放行。
+
+### 11.5 POST `/market/redeem`
+
+请求（必须带 `Authorization: Bearer` + `X-Nonce`）：
+
+```json
+{ "template_id": "tpl_mkt_xxx", "machine_code": "硬盘序列号哈希" }
+```
+
+`machine_code` 与 `/license/ticket` 同口径；与会话机器码不一致回 `403 MACHINE_MISMATCH`，
+缺失回 `400 MACHINE_REQUIRED`。
+
+响应：
+
+```json
+{
+  "ok": true, "already": false, "orderId": "MT…", "balance": 180,
+  "downloadUrl": "https://www.bliot.cn/platform/api/open/v1/market/download?token=…",
+  "fileSha256": "…", "fileSize": 20480, "name": "仓储货架标签",
+  "version": 2, "price": 20, "expiresIn": 300, "expiresAt": "…", "serverTime": "…"
+}
+```
+
+- 服务端**单事务**：校验 → 条件扣分 → 写积分流水 → 写已购 → 签发短链，任一步失败全回滚；
+  先确认私有文件存在再扣分，不会出现「扣了分没发货」；
+- **已购归账号**（`user_id`），不归机器：换机 / 重装后再兑换返回 `already:true`，
+  重新签发一张新短链，**不重复扣分**；
+- `downloads` 每次成功签发下载凭证 +1（含已购重复下载），用于热度排序；
+- 同 `machine_code` 超过 20 次/分钟返回 `429 RATE_LIMITED` 并留审计告警；
+- **离线期间禁止放行兑换**：断网时只能用展示缓存，不允许本地扣分 / 本地解锁，否则必然双花。
+
+### 11.6 GET `/market/download?token=`
+
+短链是 `GET`，下载器可直接取，无需任何应用头。响应头：
+
+```
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="<template_id>.blls"
+X-File-Sha256: <hex>
+X-File-Size: <bytes>
+X-Template-Version: <n>
+Cache-Control: no-store
+```
+
+- **5 分钟 TTL + 一次性**：`jti` 用过即废，重放 `410 LINK_USED`，过期 `410 LINK_EXPIRED`；
+- 签名绑定 `template + user + machine`，篡改 `400 LINK_INVALID`；
+- 客户端下载完必须用 `fileSha256` 强校验再导入（防中间人替换 / 文件投毒）；
+- 短链过期或用掉后，重新调 `/market/redeem` 即可（已购不扣分）。
+
+`GET /market/owned` → `{ "templateIds": ["tpl_mkt_xxx"], "count": 1 }`（按账号，换机不丢）。
+
+### 11.7 后台能力与上线检查
+
+- 「产品运营 → 模板市场」：增删改模板、定价（0=免费）、上下架、`author`（UGC 预留）、
+  上传 `.blls` 与缩略图、看下载量与兑换统计。有用户兑换过的模板只能下架、不能删除。
+- 「产品运营 → 模板字典」：行业 / 纸型 / 尺寸预设增删改与排序，保存即下发。
+- `.blls` 存 `data/market/` 私有目录，**不挂 Nginx 静态映射、不走 uploads/、不上 CDN**；
+  备份包会带上 `market/`（与 `app.db`、`.appsecret` 同批），恢复时 `tools/restore-backup.js` 一并还原。
+- 上线检查：`deploy/nginx-subpath.conf` 里**不得**给 `data/market` 加 `alias`，否则防盗链形同虚设。
+
+自测：`node tools/test-market.js`（76 项）、`node tools/test-market-ui.js`（20 项）。

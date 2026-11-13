@@ -3,7 +3,8 @@
  *
  * 与后台「上传恢复」的区别：
  *  - 后台恢复是原地覆盖数据库行，运行中的进程不用停，但不动 .appsecret、不动上传文件；
- *  - 本脚本是文件级还原：app.db + .appsecret + uploads 一起落盘，等于回到备份那一刻的机器状态。
+ *  - 本脚本是文件级还原：app.db + .appsecret + uploads + market 一起落盘，等于回到备份那一刻的机器状态。
+ *    market/ 是模板市场的私有 .blls 文件（不挂静态目录），漏掉它会出现「已购有记录但下不了文件」。
  *    所以**必须先停服务**（PM2: pm2 stop blcloud-admin），否则正在运行的进程会拿着被替换的库继续跑。
  *
  * 用法：
@@ -27,6 +28,7 @@ function usage(msg) {
     --db <path>     目标数据库（默认 data/app.db）
     --no-secret     不覆盖 data/.appsecret
     --no-uploads    不还原 data/uploads
+    --no-market     不还原 data/market（模板市场私有 .blls）
     --yes           跳过确认（非交互环境必须加）
 
   注意: 执行前请先停服务（pm2 stop blcloud-admin），否则运行中的进程仍持有旧库句柄。
@@ -49,6 +51,8 @@ const opt = (name) => {
 const dbTarget = path.resolve(String(opt('--db') && opt('--db') !== true ? opt('--db') : path.join(DATA_DIR, 'app.db')));
 const withSecret = !args.includes('--no-secret');
 const withUploads = !args.includes('--no-uploads');
+const withMarket = !args.includes('--no-market');
+const MARKET_DIR = process.env.MARKET_DIR ? path.resolve(process.env.MARKET_DIR) : path.join(DATA_DIR, 'market');
 const yes = args.includes('--yes');
 
 (async () => {
@@ -71,7 +75,8 @@ const yes = args.includes('--yes');
     console.log(`  数据规模: ${manifest.db ? manifest.db.rows : '?'} 行`);
   }
   const uploadEntries = [...zip.keys()].filter((k) => k.startsWith('uploads/'));
-  console.log(`  包含: app.db${zip.has('.appsecret') ? ' + .appsecret' : ''}${uploadEntries.length ? ` + ${uploadEntries.length} 个上传文件` : ''}`);
+  const marketEntries = [...zip.keys()].filter((k) => k.startsWith('market/') && k.endsWith('.blls'));
+  console.log(`  包含: app.db${zip.has('.appsecret') ? ' + .appsecret' : ''}${uploadEntries.length ? ` + ${uploadEntries.length} 个上传文件` : ''}${marketEntries.length ? ` + ${marketEntries.length} 个模板文件` : ''}`);
   console.log('');
 
   // 先校验，别把坏包写进生产目录
@@ -148,6 +153,19 @@ const yes = args.includes('--yes');
       n += 1;
     }
     console.log(`  ✓ 上传文件已还原: ${n} 个`);
+  }
+
+  if (withMarket && marketEntries.length) {
+    let n = 0;
+    for (const name of marketEntries) {
+      const rel = name.slice('market/'.length);
+      // 只接受纯文件名：私有目录里不该出现子路径，也不能被备份包写出去
+      if (!rel || rel.includes('/') || rel.includes('\\') || rel.includes('..')) continue;
+      fs.mkdirSync(MARKET_DIR, { recursive: true });
+      fs.writeFileSync(path.join(MARKET_DIR, rel), zip.get(name), { mode: 0o600 });
+      n += 1;
+    }
+    console.log(`  ✓ 模板市场私有文件已还原: ${n} 个`);
   }
 
   console.log('\n  完成。启动服务：pm2 start blcloud-admin && pm2 logs blcloud-admin\n');

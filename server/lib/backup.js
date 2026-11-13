@@ -25,6 +25,11 @@ const BACKUP_DIR = process.env.BACKUP_DIR || path.join(DATA_DIR, 'backups');
 const RESTORE_DIR = process.env.RESTORE_DIR || path.join(DATA_DIR, 'restore');
 const SECRET_FILE = path.join(DATA_DIR, '.appsecret');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+// 模板市场的 .blls 是私有文件（不挂静态、只在兑换后经短链下发），
+// 备份时必须与 uploads 一起带走 —— 只备份 app.db 会让所有已购模板「有记录没文件」。
+const MARKET_DIR = process.env.MARKET_DIR
+  ? path.resolve(process.env.MARKET_DIR)
+  : path.join(DATA_DIR, 'market');
 
 const FORMAT = 1;
 const NAME_RE = /^[A-Za-z0-9._-]+\.zip$/;
@@ -76,19 +81,19 @@ function tableCounts(d) {
   return { tables, counts, rows };
 }
 
-function uploadFiles() {
+function uploadFiles(dir = UPLOAD_DIR) {
   const out = [];
-  if (!fs.existsSync(UPLOAD_DIR)) return out;
-  const walk = (dir) => {
-    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, ent.name);
+  if (!fs.existsSync(dir)) return out;
+  const walk = (folder) => {
+    for (const ent of fs.readdirSync(folder, { withFileTypes: true })) {
+      const full = path.join(folder, ent.name);
       if (ent.isDirectory()) { walk(full); continue; }
-      const rel = path.relative(UPLOAD_DIR, full).replace(/\\/g, '/');
+      const rel = path.relative(dir, full).replace(/\\/g, '/');
       const st = fs.statSync(full);
       out.push({ name: rel, size: st.size, mtime: st.mtimeMs, file: full });
     }
   };
-  walk(UPLOAD_DIR);
+  walk(dir);
   return out;
 }
 
@@ -116,6 +121,7 @@ function createPackage(opts = {}) {
     if (secret) entries.push({ name: '.appsecret', data: secret });
 
     let uploadsStat = { files: 0, bytes: 0, skipped: false };
+    let marketStat = { files: 0, bytes: 0, skipped: false };
     if (opts.uploads) {
       const files = uploadFiles();
       const total = files.reduce((s, f) => s + f.size, 0);
@@ -125,6 +131,15 @@ function createPackage(opts = {}) {
       } else {
         for (const f of files) entries.push({ name: `uploads/${f.name}`, data: fs.readFileSync(f.file) });
         uploadsStat = { files: files.length, bytes: total, skipped: false };
+      }
+      // 私有模板文件紧跟上传文件一起打包（前缀 market/，绝不与 uploads/ 混）
+      const mfiles = uploadFiles(MARKET_DIR).filter((f) => f.name.endsWith('.blls'));
+      const mtotal = mfiles.reduce((s, f) => s + f.size, 0);
+      if (total + mtotal > 200 * 1024 * 1024 || files.length + mfiles.length > 5000) {
+        marketStat.skipped = true;
+      } else {
+        for (const f of mfiles) entries.push({ name: `market/${f.name}`, data: fs.readFileSync(f.file) });
+        marketStat = { files: mfiles.length, bytes: mtotal, skipped: false };
       }
     }
 
@@ -139,6 +154,7 @@ function createPackage(opts = {}) {
       has_appsecret: !!secret,
       appsecret_sha256: secret ? sha256(secret) : '',
       uploads: uploadsStat,
+      market: marketStat,
     };
     entries.push({ name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') });
 
@@ -407,12 +423,13 @@ function summary() {
     last_backup: backups[0] ? { name: backups[0].name, mtime: backups[0].mtime, size: backups[0].size } : null,
     backup_dir: BACKUP_DIR,
     uploads: { files: uploads.length, bytes: uploads.reduce((s, f) => s + f.size, 0) },
+    market: { files: uploadFiles(MARKET_DIR).filter((f) => f.name.endsWith('.blls')).length },
     has_appsecret: !!appSecretBuf(),
   };
 }
 
 module.exports = {
-  DATA_DIR, BACKUP_DIR, RESTORE_DIR, SECRET_FILE, UPLOAD_DIR,
+  DATA_DIR, BACKUP_DIR, RESTORE_DIR, SECRET_FILE, UPLOAD_DIR, MARKET_DIR,
   dbFile, createPackage, autoSnapshot, prune, list, backupFile, remove,
   stage, applyRestore, dropStaged, cleanStaged, stagedPath, validateDbFile,
   summary, secretNote, tableCounts, uploadFiles, sha256,

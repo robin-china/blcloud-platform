@@ -275,9 +275,37 @@ function revokeSession(token) {
   db.prepare('UPDATE client_sessions SET status = ? WHERE token = ?').run('revoked', token);
 }
 
+/**
+ * 「登录态 + 一次性 nonce」守卫（模板市场写接口 / 扣积分接口专用）。
+ *
+ * requireClient 只验 Bearer 会话，不校验 nonce —— 公开模式的 nonce 是在
+ * verifyPublic 里做的，Bearer 分支整个跳过了。清单要求「写与扣积分必须
+ * Bearer + x-nonce」，所以补这个入口。
+ *
+ * 只用于新增的 /market/* 与 /user/signin 等写接口，**不套到老接口上**：
+ * /auth/refresh 按既有契约不带 Bearer、不带 nonce，全局强制会把 1.0.54 客户端
+ * 的换票链路打断。老接口维持原样，双模期结束后再统一收敛。
+ */
+async function requireClientWrite(req, reply) {
+  const s = await requireClient(req, reply);
+  if (!s) return null;
+  const nonce = String(req.headers['x-nonce'] || '').trim();
+  if (!nonce || nonce.length > 128) {
+    reply.code(401).send({ error: '写操作必须带 x-nonce', code: 'NONCE_REQUIRED' });
+    return null;
+  }
+  const appKey = String((req.app && req.app.app_key) || 'token');
+  if (!consumeNonce(appKey, nonce)) {
+    reply.code(401).send({ error: 'nonce 已使用，请求重复', code: 'NONCE_REUSED' });
+    return null;
+  }
+  return s;
+}
+
 module.exports = {
   genAppKey, genAppSecret, genClientToken,
   sign, verifySignature, verifyPublic, resolveApp, rateHit, buildSignPayload,
-  issueSession, getSession, getSessionState, touchSession, requireClient, revokeSession, readClientToken,
+  issueSession, getSession, getSessionState, touchSession, requireClient, requireClientWrite,
+  revokeSession, readClientToken, consumeNonce,
   ACCESS_TTL, REFRESH_TTL, SIGN_WINDOW,
 };

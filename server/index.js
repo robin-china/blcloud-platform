@@ -115,7 +115,7 @@ function build() {
   const opts = BASE ? { prefix: BASE } : {};
   for (const name of ['admin', 'products', 'plans', 'users', 'licenses', 'orders', 'stats',
     'pay', 'wechat', 'portal', 'open', 'openapps', 'agents', 'blcloud', 'blcloud-admin', 'backup', 'releases',
-    'retention']) {
+    'retention', 'market']) {
     app.register(require(`./routes/${name}`), opts);
   }
 
