@@ -1035,6 +1035,7 @@ node tools/test-open.js
   "industries": ["制造业", "物流仓储", "零售电商"],
   "paperTypes": ["间隙纸", "黑标纸", "连续纸"],
   "sizePresets": [{ "label": "50×30mm", "widthMm": 50, "heightMm": 30 }],
+  "dpis": [203, 300, 600],
   "sorts": ["downloads_desc", "newest", "price_asc", "price_desc"],
   "defaultSort": "downloads_desc",
   "defaultLimit": 50,
@@ -1048,6 +1049,11 @@ node tools/test-open.js
 
 尺寸**不是枚举**：客户端按 `widthMm` / `heightMm` 精确值筛选，`sizePresets` 只用来生成快捷按钮。
 字典若被运营清空，后台会回退到内置默认值，不会下发空数组。
+
+**`dpis`（2026-11-13 订正新增）**：打印分辨率的可选值，服务端硬允许集为
+**203 / 300 / 600**（此前只有 203 / 300）。`meta.dpis` 由后台「LabelGo模板字典」勾选决定，
+客户端筛选栏 / 展示文案请读它，**不要写死**；`TemplateItem.dpi` 只会是这三个值之一。
+后台若把字典裁剪成 `[203,600]`，旧模板里已是 300dpi 的记录仍可正常读取与编辑。
 
 ### 11.3 GET `/market/list`
 
@@ -1155,11 +1161,23 @@ Cache-Control: no-store
 
 ### 11.7 后台能力与上线检查
 
-- 「产品运营 → 模板市场」：增删改模板、定价（0=免费）、上下架、`author`（UGC 预留）、
-  上传 `.blls` 与缩略图、看下载量与兑换统计。有用户兑换过的模板只能下架、不能删除。
-- 「产品运营 → 模板字典」：行业 / 纸型 / 尺寸预设增删改与排序，保存即下发。
+- 「**扩展功能 → LabelGo模板市场**」：增删改模板、定价（0=免费）、上下架、`author`（UGC 预留）、
+  上传 `.blls` 与缩略图、看下载量与兑换统计；API 投稿的模板带「API 投稿 / 待审」标记，
+  审核通过点「上架」才对外可见。有用户兑换过的模板只能下架、不能删除。
+- 「**扩展功能 → LabelGo模板字典**」：行业 / 纸型 / 尺寸预设 / 打印分辨率（203/300/600）
+  增删改与排序，保存即下发。
+- 「**扩展功能 → LabelGo模板API上架**」：给运营脚本 / 第三方投稿用的独立上架通道，
+  与本节客户端读接口是两套身份与两套前缀，**客户端不要接**。
 - `.blls` 存 `data/market/` 私有目录，**不挂 Nginx 静态映射、不走 uploads/、不上 CDN**；
   备份包会带上 `market/`（与 `app.db`、`.appsecret` 同批），恢复时 `tools/restore-backup.js` 一并还原。
 - 上线检查：`deploy/nginx-subpath.conf` 里**不得**给 `data/market` 加 `alias`，否则防盗链形同虚设。
 
-自测：`node tools/test-market.js`（76 项）、`node tools/test-market-ui.js`（20 项）。
+### 11.8 上架侧（非客户端）
+
+后台支持 **API 上架**：`/api/market/v1/templates`（独立 `X-Market-Key`）、`external_id` 幂等、
+默认待审、字典强校验、`.blls` sha256 比对、调用日志与限流。完整契约见
+**《模板市场-API上架接入.md》**。这一节仅供软件端了解「模板从哪来」，
+客户端**不需要**、也**不应该**持有上架密钥。
+
+自测：`node tools/test-market.js`（76 项）、`node tools/test-market-ui.js`（24 项）、
+`node tools/test-market-api.js`（66 项）。

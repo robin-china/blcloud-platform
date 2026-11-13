@@ -10,10 +10,18 @@
         { key: 'products', name: '产品管理', icon: 'box' },
         { key: 'plans', name: '套餐档位', icon: 'shield' },
         { key: 'storefront', name: '官方上架', icon: 'store' },
-        { key: 'market', name: '模板市场', icon: 'box' },
-        { key: 'marketOptions', name: '模板字典', icon: 'settings' },
         { key: 'release', name: '客户端更新', icon: 'download' },
         { key: 'licenses', name: '授权管理', icon: 'shield' },
+      ],
+    },
+    {
+      // 扩展功能：按软件产品归类的增值模块。以后每个产品自己的市场/字典/插件
+      // 都往这个分组里加，别再塞进「产品运营」——那边只放主站商品与交易运营。
+      group: '扩展功能',
+      items: [
+        { key: 'market', name: 'LabelGo模板市场', icon: 'box' },
+        { key: 'marketOptions', name: 'LabelGo模板字典', icon: 'settings' },
+        { key: 'marketApi', name: 'LabelGo模板API上架', icon: 'key' },
       ],
     },
     {

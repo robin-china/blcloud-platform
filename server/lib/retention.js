@@ -84,6 +84,12 @@ const POLICIES = [
     why: '短链本身只活 5 分钟，留 1 天只为查「客户说下载不了」时的签发记录',
   },
   {
+    key: 'market_api_logs', table: 'market_api_logs', ts: 'created_at', days: 30, auto: true,
+    name: '模板 API 上架调用流水',
+    desc: '每次 API 上架/查询/上传一行，含幂等键、模板 ID、结果码与来源 IP',
+    why: '30 天足够查「某次批量上架为什么失败」；模板本身与已购账本永不自动清',
+  },
+  {
     key: 'machine_ledger', table: 'machine_ledger', ts: 'last_seen_at', days: 0, auto: false,
     name: '机器台账',
     desc: '机器码 ↔ 客户 ↔ 授权 ↔ 构建/版本的对照表',

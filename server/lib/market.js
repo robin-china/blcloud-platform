@@ -33,14 +33,21 @@ function linkTtl() {
 
 const DEFAULT_INDUSTRIES = ['制造业', '物流仓储', '零售电商', '食品餐饮', '医疗器械', '固定资产', '化工', '服饰', '其他'];
 const DEFAULT_PAPER_TYPES = ['间隙纸', '黑标纸', '连续纸'];
+// 2026-11-13 订正：还有 600dpi。这里是**服务端硬允许集**，字典只决定给客户端
+// 下发哪几项，不允许运营/API 写出集外的值（否则客户端渲染与打印尺寸全乱）。
+const DPI_ALLOWED = [203, 300, 600];
+const DEFAULT_DPIS = [203, 300, 600];
 
 function options() {
   const rows = db.prepare('SELECT * FROM market_options ORDER BY sort ASC, id ASC').all();
-  const out = { industries: [], paper_types: [], size_presets: [] };
+  const out = { industries: [], paper_types: [], size_presets: [], dpis: [] };
   for (const r of rows) {
     if (r.kind === 'industry') out.industries.push(r.value);
     else if (r.kind === 'paper_type') out.paper_types.push(r.value);
-    else if (r.kind === 'size_preset') {
+    else if (r.kind === 'dpi') {
+      const n = Number(r.value);
+      if (DPI_ALLOWED.includes(n)) out.dpis.push(n);
+    } else if (r.kind === 'size_preset') {
       const p = safeJson(r.value, null);
       if (p && typeof p === 'object') out.size_presets.push({
         label: String(p.label || ''), widthMm: Number(p.widthMm) || 0, heightMm: Number(p.heightMm) || 0,
@@ -51,6 +58,7 @@ function options() {
   // 回退到内置默认值，并在 meta 里标明来源，方便排障。
   if (!out.industries.length) out.industries = [...DEFAULT_INDUSTRIES];
   if (!out.paper_types.length) out.paper_types = [...DEFAULT_PAPER_TYPES];
+  if (!out.dpis.length) out.dpis = [...DEFAULT_DPIS];
   return out;
 }
 
@@ -60,6 +68,7 @@ function meta() {
     industries: o.industries,
     paperTypes: o.paper_types,
     sizePresets: o.size_presets,
+    dpis: o.dpis,
     sorts: ['downloads_desc', 'newest', 'price_asc', 'price_desc'],
     defaultSort: 'downloads_desc',
     defaultLimit: 50,
@@ -84,6 +93,12 @@ function saveOptions(body) {
       heightMm: Math.max(0, Number((p && (p.heightMm ?? p.height_mm)) || 0)),
     }))
     .filter((p) => p.label && p.widthMm > 0 && p.heightMm > 0);
+  // 老版本后台页不传 dpis → 保留原有配置；一次都没有则回落到三项全开，
+  // 免得「保存行业」顺手把 600dpi 弄没了。
+  const rawDpis = Array.isArray(body.dpis) ? body.dpis.map(Number).filter((n) => DPI_ALLOWED.includes(n)) : null;
+  const dpis = rawDpis === null
+    ? (options().dpis || DEFAULT_DPIS)
+    : ([...new Set(rawDpis)].length ? [...new Set(rawDpis)].sort((a, b) => a - b) : [...DEFAULT_DPIS]);
   const t = now();
   const ins = db.prepare('INSERT OR IGNORE INTO market_options (kind, value, sort, created_at) VALUES (?,?,?,?)');
   db.transaction(() => {
@@ -91,10 +106,11 @@ function saveOptions(body) {
     industries.forEach((v, i) => ins.run('industry', v, i * 10, t));
     paperTypes.forEach((v, i) => ins.run('paper_type', v, i * 10, t));
     presets.forEach((v, i) => ins.run('size_preset', JSON.stringify(v), i * 10, t));
+    dpis.forEach((v, i) => ins.run('dpi', String(v), i * 10, t));
     db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at')
       .run('market_options_seeded', '1', t);
   })();
-  return { industries: industries.length, paperTypes: paperTypes.length, sizePresets: presets.length };
+  return { industries: industries.length, paperTypes: paperTypes.length, sizePresets: presets.length, dpis };
 }
 
 /* ---------------------------------------------------------------- 模板输出 */
@@ -134,6 +150,9 @@ function adminTemplate(r) {
     hasFile: !!r.file_path,
     fileName: r.file_path || '',
     filePath: r.file_path || '',
+    source: r.source || 'admin',
+    externalId: r.external_id || '',
+    apiKeyId: Number(r.api_key_id) || 0,
   };
 }
 
@@ -371,10 +390,26 @@ function normalize(body, base = {}) {
   return out;
 }
 
-function validate(data) {
+/**
+ * strictDict 只给 API 上架通道用：机器批量灌数据时，行业/纸型写成字典外的值
+ * 会让客户端筛选栏出现「永远筛不出东西」的幽灵选项。后台人工通道保持宽松，
+ * 运营改了字典后老模板还能保存（否则历史数据一律编辑不了）。
+ */
+function validate(data, { strictDict = false } = {}) {
   if (!data.name) return '模板名不能为空';
   if (data.price !== undefined && !Number.isFinite(Number(data.price))) return '积分价格必须是数字';
-  if (data.dpi !== undefined && ![203, 300].includes(Number(data.dpi))) return 'dpi 只支持 203 / 300';
+  if (data.dpi !== undefined && !DPI_ALLOWED.includes(Number(data.dpi))) {
+    return `dpi 只支持 ${DPI_ALLOWED.join(' / ')}`;
+  }
+  if (strictDict) {
+    const o = options();
+    if (data.industry && !o.industries.includes(data.industry)) {
+      return `industry「${data.industry}」不在字典中，请先到「LabelGo模板字典」添加`;
+    }
+    if (data.paper_type && !o.paper_types.includes(data.paper_type)) {
+      return `paperType「${data.paper_type}」不在字典中，请先到「LabelGo模板字典」添加`;
+    }
+  }
   return '';
 }
 
@@ -456,9 +491,11 @@ function stats() {
   const t = db.prepare("SELECT COUNT(*) AS c, SUM(CASE WHEN status='on' THEN 1 ELSE 0 END) AS on_c, COALESCE(SUM(downloads),0) AS dl FROM market_templates").get();
   const p = db.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(price),0) AS pts FROM market_purchases').get();
   const l = db.prepare('SELECT COUNT(*) AS c FROM market_download_links').get();
+  const pending = db.prepare("SELECT COUNT(*) AS c FROM market_templates WHERE source='api' AND status='off'").get();
   return {
     templates: t.c, online: t.on_c || 0, downloads: t.dl,
     purchases: p.c, pointsSpent: p.pts, links: l.c,
+    apiPending: pending.c,
   };
 }
 
@@ -478,13 +515,247 @@ function adminList(q = '') {
   return rows.map(adminTemplate);
 }
 
+/* ---------------------------------------------------------------- API 上架 */
+/*
+ * 为什么不用现成的后台 CRUD：
+ *  - 管理员 JWT 12h 过期、等于全后台权限、不能单独吊销、审计只能记到人；
+ *  - 没有幂等键，脚本超时重试会重复建模板；
+ *  - 没有来源/审核概念，第三方拿到凭据就能直接对外上架；
+ *  - 不校验字典，批量灌入会污染客户端筛选栏。
+ * 这条通道的边界：独立密钥（hash 入库）+ external_id 幂等 + 默认待审 +
+ * 字典强校验 + 文件 sha256 比对 + 调用日志。删除/下架仍只在后台，脚本碰不到。
+ */
+const MAX_BLLS = 64 * 1024 * 1024;
+
+function apiKeyHash(raw) {
+  return crypto.createHash('sha256').update(String(raw || ''), 'utf8').digest('hex');
+}
+
+function genApiKey() {
+  return 'mkt_' + crypto.randomBytes(24).toString('base64url');
+}
+
+function createApiKey({ name, autoPublish = 0, createdBy = '' }) {
+  const raw = genApiKey();
+  const t = now();
+  const r = db.prepare(`INSERT INTO market_api_keys
+    (name, key_prefix, key_hash, auto_publish, status, last_used_at, created_by, created_at)
+    VALUES (?,?,?,?,'active','',?,?)`)
+    .run(String(name || '未命名密钥').trim().slice(0, 60), raw.slice(0, 12), apiKeyHash(raw),
+      autoPublish ? 1 : 0, String(createdBy || ''), t);
+  return {
+    id: Number(r.lastInsertRowid), name: String(name || '未命名密钥'),
+    keyPrefix: raw.slice(0, 12), plainKey: raw, autoPublish: autoPublish ? 1 : 0,
+  };
+}
+
+/** 明文只在创建时返回一次；这里只按 hash 查。状态由路由判断，好区分「无效」与「已停用」。 */
+function findApiKey(raw) {
+  if (!raw) return null;
+  return db.prepare('SELECT * FROM market_api_keys WHERE key_hash = ?').get(apiKeyHash(raw)) || null;
+}
+
+function listApiKeys() {
+  return db.prepare(`SELECT k.id, k.name, k.key_prefix, k.auto_publish, k.status, k.last_used_at,
+      k.created_by, k.created_at,
+      (SELECT COUNT(*) FROM market_templates t WHERE t.api_key_id = k.id) AS templates
+    FROM market_api_keys k ORDER BY k.id DESC`).all();
+}
+
+function setApiKey(id, patch) {
+  const old = db.prepare('SELECT * FROM market_api_keys WHERE id = ?').get(Number(id) || 0);
+  if (!old) return null;
+  const name = patch.name !== undefined ? String(patch.name).trim().slice(0, 60) : old.name;
+  const status = patch.status !== undefined ? (patch.status === 'active' ? 'active' : 'disabled') : old.status;
+  const autoPublish = patch.autoPublish !== undefined ? (patch.autoPublish ? 1 : 0) : old.auto_publish;
+  db.prepare('UPDATE market_api_keys SET name = ?, status = ?, auto_publish = ? WHERE id = ?')
+    .run(name || old.name, status, autoPublish, old.id);
+  return db.prepare('SELECT * FROM market_api_keys WHERE id = ?').get(old.id);
+}
+
+function deleteApiKey(id) {
+  return db.prepare('DELETE FROM market_api_keys WHERE id = ?').run(Number(id) || 0).changes === 1;
+}
+
+function touchApiKey(id) {
+  db.prepare('UPDATE market_api_keys SET last_used_at = ? WHERE id = ?').run(now(), Number(id) || 0);
+}
+
+function logApiCall({ keyId = 0, action = '', externalId = '', templateId = '', statusCode = 0, code = '', ip = '', detail = '' }) {
+  try {
+    db.prepare(`INSERT INTO market_api_logs
+      (key_id, action, external_id, template_id, status_code, code, ip, detail, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(
+      Number(keyId) || 0, String(action).slice(0, 40), String(externalId).slice(0, 120),
+      String(templateId).slice(0, 80), Number(statusCode) || 0, String(code).slice(0, 60),
+      String(ip).slice(0, 64), String(detail).slice(0, 300), now());
+  } catch { /* 审计失败不影响主流程 */ }
+}
+
+function recentApiLogs(limit = 50) {
+  return db.prepare(`SELECT l.*, k.name AS key_name, k.key_prefix
+    FROM market_api_logs l LEFT JOIN market_api_keys k ON k.id = l.key_id
+    ORDER BY l.id DESC LIMIT ?`).all(Math.min(200, Math.max(1, Number(limit) || 50)));
+}
+
+/** API 通道的响应：刻意不含 file_path / fileUrl / downloadUrl。 */
+function apiTemplate(r) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    externalId: r.external_id || '',
+    name: r.name,
+    status: r.status,
+    source: 'api',
+    version: Number(r.version) || 1,
+    fileSha256: r.file_sha256 || '',
+    fileSize: Number(r.file_size) || 0,
+    hasFile: !!r.file_path,
+    createdAt: Date.parse(r.created_at) || 0,
+    updatedAt: Date.parse(r.updated_at) || 0,
+  };
+}
+
+function apiTemplateByExternal(key, externalId) {
+  const r = db.prepare("SELECT * FROM market_templates WHERE source='api' AND api_key_id=? AND external_id=?")
+    .get(Number(key.id) || 0, String(externalId || ''));
+  return apiTemplate(r);
+}
+
+/** 把对外 camelCase 契约转成库里 snake_case，只带调用方真正传了的字段。 */
+function toSnake(body) {
+  const pick = (a, b) => (body[a] !== undefined ? body[a] : body[b]);
+  return {
+    name: body.name,
+    industry: body.industry,
+    description: body.description,
+    paper_type: pick('paperType', 'paper_type'),
+    width_mm: pick('widthMm', 'width_mm'),
+    height_mm: pick('heightMm', 'height_mm'),
+    dpi: body.dpi,
+    columns: body.columns,
+    price: body.price,
+    author: body.author,
+    thumbnail_url: pick('thumbnailUrl', 'thumbnail_url'),
+    tags: body.tags,
+  };
+}
+
+function decodeBlls(body) {
+  if (body.fileBase64 === undefined && !body.file) return { buf: null };
+  const raw = String(body.fileBase64 || '').replace(/^data:[^,]+,/, '');
+  if (!raw) return { error: 'fileBase64 为空', code: 'FILE_REQUIRED' };
+  let buf;
+  try { buf = Buffer.from(raw, 'base64'); } catch { return { error: 'fileBase64 不是合法 base64', code: 'FILE_INVALID' }; }
+  if (!buf.length) return { error: '文件为空', code: 'FILE_EMPTY' };
+  if (buf.length > MAX_BLLS) return { error: '文件超过 64MB', code: 'FILE_TOO_LARGE' };
+  const sha = crypto.createHash('sha256').update(buf).digest('hex');
+  if (body.fileSha256 && String(body.fileSha256).toLowerCase() !== sha) {
+    return { error: '文件 sha256 与声明不一致，可能是传输损坏', code: 'FILE_SHA_MISMATCH' };
+  }
+  return { buf, sha };
+}
+
+/**
+ * 上架（创建或幂等更新）。
+ * 幂等：同 (key, externalId) 重复提交不新建；内容没变时 no-op，version 也不动。
+ * 安全：已存在模板的 status 一律保留 —— 运营人工下架后，脚本重跑不能偷偷推上线。
+ */
+function publishTemplate({ key, body }) {
+  const externalId = String(body.externalId || body.external_id || '').trim().slice(0, 120);
+  if (!externalId) return { status: 400, code: 'EXTERNAL_ID_REQUIRED', error: 'externalId 必填，它同时是幂等键' };
+  const data = normalize(toSnake(body));
+  const bad = validate(data, { strictDict: true });
+  if (bad) return { status: 400, code: 'PARAM_INVALID', error: bad };
+  if (!(data.width_mm > 0) || !(data.height_mm > 0)) {
+    return { status: 400, code: 'PARAM_INVALID', error: 'widthMm / heightMm 必须大于 0（客户端按精确尺寸筛选）' };
+  }
+  const file = decodeBlls(body);
+  if (file.error) return { status: 400, code: file.code, error: file.error };
+
+  const desired = {
+    name: data.name || '', industry: data.industry || '', description: data.description || '',
+    paper_type: data.paper_type || '', width_mm: data.width_mm || 0, height_mm: data.height_mm || 0,
+    dpi: data.dpi || 203, columns: data.columns || 1, price: data.price || 0,
+    author: data.author || '', thumbnail_url: data.thumbnail_url || '',
+    tags: data.tags || '[]',
+  };
+  const metaKeys = Object.keys(desired);
+  const existing = db.prepare("SELECT * FROM market_templates WHERE source='api' AND api_key_id=? AND external_id=?")
+    .get(Number(key.id) || 0, externalId);
+  const metaChanged = !existing || metaKeys.some((k) => String(existing[k] ?? '') !== String(desired[k]));
+  const fileChanged = !!file.buf && (!existing || existing.file_sha256 !== file.sha);
+  if (existing && !metaChanged && !fileChanged) {
+    return { ok: true, created: false, changed: false, item: apiTemplate(existing), externalId };
+  }
+
+  const tagsArr = safeJson(desired.tags, []);
+  try {
+    const result = db.transaction(() => {
+      let row;
+      let created = false;
+      if (!existing) {
+        const r = createTemplate({ ...desired, tags: tagsArr, status: key.auto_publish ? 'on' : 'off' });
+        if (r.error) throw Object.assign(new Error(r.error), { code: r.code });
+        row = r.row;
+        created = true;
+        db.prepare("UPDATE market_templates SET source='api', external_id=?, api_key_id=? WHERE id=?")
+          .run(externalId, Number(key.id) || 0, row.id);
+        row = db.prepare('SELECT * FROM market_templates WHERE id = ?').get(row.id);
+      } else if (metaChanged) {
+        const r = updateTemplate(existing.id, { ...desired, tags: tagsArr, status: existing.status });
+        if (r.error) throw Object.assign(new Error(r.error), { code: r.code });
+        row = r.row;
+      } else {
+        row = existing;
+      }
+      if (fileChanged) {
+        const r = replaceFile(row.id, 'template.blls', file.buf);
+        if (r.error) throw Object.assign(new Error(r.error), { code: r.code });
+        row = db.prepare('SELECT * FROM market_templates WHERE id = ?').get(row.id);
+      }
+      return { row, created };
+    })();
+    return {
+      ok: true, created: result.created, changed: true,
+      item: apiTemplate(result.row), externalId,
+      // 明确告诉调用方「这次是待审还是已对外」，别让它自己猜 status
+      needsReview: result.created && !key.auto_publish,
+    };
+  } catch (e) {
+    return { status: 400, code: e.code || 'PUBLISH_FAILED', error: e.message || '上架失败' };
+  }
+}
+
+/** 两步式上传大文件：只允许改本密钥自己建的模板，跨密钥直接 403。 */
+function apiReplaceFile({ key, id, filename, buffer, declaredSha }) {
+  const tpl = db.prepare('SELECT * FROM market_templates WHERE id = ?').get(String(id || ''));
+  if (!tpl) return { status: 404, code: 'TEMPLATE_NOT_FOUND', error: '模板不存在' };
+  if (tpl.source !== 'api' || Number(tpl.api_key_id) !== Number(key.id)) {
+    return { status: 403, code: 'TEMPLATE_FORBIDDEN', error: '该模板不属于当前 API 密钥' };
+  }
+  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || '');
+  if (!buf.length) return { status: 400, code: 'FILE_EMPTY', error: '文件为空' };
+  if (buf.length > MAX_BLLS) return { status: 400, code: 'FILE_TOO_LARGE', error: '文件超过 64MB' };
+  const sha = crypto.createHash('sha256').update(buf).digest('hex');
+  if (declaredSha && String(declaredSha).toLowerCase() !== sha) {
+    return { status: 400, code: 'FILE_SHA_MISMATCH', error: '文件 sha256 与声明不一致' };
+  }
+  const r = replaceFile(tpl.id, filename, buf);
+  if (r.error) return { status: 400, code: r.code, error: r.error };
+  return { ok: true, item: apiTemplate(db.prepare('SELECT * FROM market_templates WHERE id = ?').get(tpl.id)) };
+}
+
 module.exports = {
   ROOT, fileAbs, linkTtl,
-  options, meta, saveOptions,
+  options, meta, saveOptions, DPI_ALLOWED,
   publicTemplate, adminTemplate, list, detail, ownedIds,
   redeem, verifyLink, consumeLink,
   createTemplate, updateTemplate, replaceFile, deleteTemplate,
   stats, recentPurchases, adminList,
+  // API 上架
+  createApiKey, findApiKey, listApiKeys, setApiKey, deleteApiKey, touchApiKey,
+  logApiCall, recentApiLogs, apiTemplate, apiTemplateByExternal, publishTemplate, apiReplaceFile,
   // 测试用
   encodeCursor, decodeCursor, SORTS,
 };

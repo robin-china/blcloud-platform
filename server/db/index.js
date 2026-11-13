@@ -189,9 +189,19 @@ ensureColumn('open_apps', 'release_product', "release_product TEXT DEFAULT ''");
 // 权益维度（sku/edition）与升级通道（app_release.product）分开：
 // 3 个在线版 + 2 个离线版共用同一套权益码，但离线包不能混进在线升级通道
 ensureColumn('products', 'sku', "sku TEXT DEFAULT ''");
+// API 上架（2026-11-13）：模板来源 + 调用方幂等键 + 归属密钥。
+// 后台人工创建的 source='admin'、external_id=''，不参与下面的唯一索引。
+ensureColumn('market_templates', 'source', "source TEXT DEFAULT 'admin'");
+ensureColumn('market_templates', 'external_id', "external_id TEXT DEFAULT ''");
+ensureColumn('market_templates', 'api_key_id', 'api_key_id INTEGER DEFAULT 0');
 // 所有列补齐后才执行 schema.sql 的索引（见文件顶部说明）。
 // 旧库升级时这一步必须晚于 ensureColumn，否则会因引用尚不存在的列而中断启动。
 db.exec(indexLines.join('\n'));
+// 部分唯一索引：同一个调用方脚本用同一 external_id 重试不能建出第二份模板。
+// 用 WHERE 限定 source='api' 且非空，避免后台建的模板全部 external_id='' 互相冲突。
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_market_tpl_external
+  ON market_templates(source, api_key_id, external_id)
+  WHERE source='api' AND external_id<>''`);
 
 // 常见弱口令：命中即强制登录后修改密码
 const WEAK_PASSWORDS = ['admin123', 'admin', '123456', '12345678', 'admin888', 'password', 'root', 'test123'];

@@ -135,6 +135,13 @@ input, select, textarea, button { font-family: inherit; font-size: 14px; }
 }
 .input:focus, .select:focus, textarea.input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
 textarea.input { min-height: 90px; resize: vertical; }
+/* API 上架页的 curl 示例：等宽、可横向滚动，长行不撑破卡片 */
+.code-block {
+  margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text-2);
+  font: 12px/1.65 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  white-space: pre; overflow-x: auto; word-break: normal;
+}
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 /* 模板市场后台：label.field 里用 span 当标题（label 内嵌 input 时更稳），字典行可排序 */
 .field > span:first-child { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 6px; }

@@ -11,6 +11,7 @@ const { ref, reactive, computed, onMounted } = Vue;
 
 const DEFAULT_INDUSTRIES = ['制造业', '物流仓储', '零售电商', '食品餐饮', '医疗器械', '固定资产', '化工', '服饰', '其他'];
 const DEFAULT_PAPERS = ['间隙纸', '黑标纸', '连续纸'];
+const DEFAULT_DPIS = [203, 300, 600];
 
 function emptyForm() {
   return {
@@ -29,14 +30,14 @@ window.PageMarket = {
   <div>
     <div class="grid g4" style="margin-bottom:16px">
       <div class="stat"><div class="label">模板总数</div><div class="value">{{ fmt.int(stats.templates || 0) }}</div><div class="delta">含已下架</div></div>
-      <div class="stat"><div class="label">当前上架</div><div class="value">{{ fmt.int(stats.online || 0) }}</div><div class="delta">客户端可见</div></div>
+      <div class="stat"><div class="label">当前上架</div><div class="value">{{ fmt.int(stats.online || 0) }}</div><div class="delta">客户端可见<span v-if="stats.apiPending"> · <b style="color:var(--danger)">{{ stats.apiPending }} 条 API 投稿待审</b></span></div></div>
       <div class="stat"><div class="label">累计下载</div><div class="value">{{ fmt.int(stats.downloads || 0) }}</div><div class="delta">含已购重复下载</div></div>
       <div class="stat"><div class="label">兑换笔数</div><div class="value">{{ fmt.int(stats.purchases || 0) }}</div><div class="delta">消耗 {{ fmt.int(stats.pointsSpent || 0) }} 积分</div></div>
     </div>
 
     <div class="card">
       <div class="card-head">
-        <h3>模板上下架</h3>
+        <h3>LabelGo模板市场 · 模板上下架</h3>
         <div style="display:flex;gap:8px;align-items:center">
           <input class="input" style="width:210px" placeholder="搜名称 / 模板 ID" v-model="q" @keyup.enter="load" />
           <button class="btn sm" @click="load" :disabled="busy">搜索</button>
@@ -52,7 +53,7 @@ window.PageMarket = {
         <table class="table" style="margin-top:10px">
           <thead><tr>
             <th style="width:70px">缩略图</th><th>模板</th><th>行业 / 纸型</th><th>尺寸</th>
-            <th style="width:90px">积分</th><th style="width:86px">状态</th>
+            <th style="width:90px">积分</th><th style="width:86px">状态</th><th style="width:110px">来源</th>
             <th style="width:86px">下载</th><th style="width:100px">文件</th><th style="width:200px">操作</th>
           </tr></thead>
           <tbody>
@@ -70,7 +71,14 @@ window.PageMarket = {
               <td>{{ it.industry || '-' }}<div class="hint" style="margin:2px 0 0">{{ it.paperType || '-' }} · {{ it.dpi }}dpi · {{ it.columns }}列</div></td>
               <td>{{ it.widthMm }}×{{ it.heightMm }}<div class="hint" style="margin:2px 0 0">mm</div></td>
               <td><b :style="it.price ? '' : 'color:var(--success)'">{{ it.price ? it.price : '免费' }}</b></td>
-              <td><span class="tag" :class="it.status === 'on' ? 'success' : ''">{{ it.status === 'on' ? '上架' : '下架' }}</span></td>
+              <td>
+                <span class="tag" :class="it.status === 'on' ? 'success' : ''">{{ it.status === 'on' ? '上架' : '下架' }}</span>
+                <span v-if="it.source === 'api' && it.status !== 'on'" class="tag danger" style="margin-top:3px">待审</span>
+              </td>
+              <td>
+                <span class="tag" :class="it.source === 'api' ? '' : 'success'">{{ it.source === 'api' ? 'API 投稿' : '后台' }}</span>
+                <div v-if="it.externalId" class="hint" style="margin:2px 0 0;word-break:break-all">{{ it.externalId }}</div>
+              </td>
               <td>{{ fmt.int(it.downloads) }}</td>
               <td>
                 <span v-if="it.hasFile" class="tag success">已上传</span>
@@ -85,7 +93,7 @@ window.PageMarket = {
                 </div>
               </td>
             </tr>
-            <tr v-if="!items.length"><td colspan="9" style="text-align:center;padding:28px" class="hint">还没有模板，点右上角「新增模板」开始</td></tr>
+            <tr v-if="!items.length"><td colspan="10" style="text-align:center;padding:28px" class="hint">还没有模板，点右上角「新增模板」开始</td></tr>
           </tbody>
         </table>
         <div class="hint" style="padding:10px 16px 14px">
@@ -118,7 +126,9 @@ window.PageMarket = {
               <label class="field"><span>宽 mm</span><input class="input" type="number" min="1" v-model.number="form.width_mm" /></label>
               <label class="field"><span>高 mm</span><input class="input" type="number" min="1" v-model.number="form.height_mm" /></label>
               <label class="field"><span>打印分辨率</span>
-                <select class="input" v-model.number="form.dpi"><option :value="203">203 dpi</option><option :value="300">300 dpi</option></select>
+                <select class="input" v-model.number="form.dpi">
+                  <option v-for="d in opts.dpis" :key="d" :value="d">{{ d }} dpi</option>
+                </select>
               </label>
               <label class="field"><span>一纸列数</span><input class="input" type="number" min="1" v-model.number="form.columns" /></label>
               <label class="field"><span>所需积分（0 = 免费）</span><input class="input" type="number" min="0" v-model.number="form.price" /></label>
@@ -163,7 +173,7 @@ window.PageMarket = {
     const fmt = U.fmt;
     const items = ref([]);
     const stats = ref({});
-    const opts = ref({ industries: [], paperTypes: [], sizePresets: [] });
+    const opts = ref({ industries: [], paperTypes: [], sizePresets: [], dpis: [203, 300, 600] });
     const q = ref('');
     const busy = ref(false);
     const showEdit = ref(false);
@@ -310,7 +320,7 @@ window.PageMarketOptions = {
   template: `
   <div>
     <div class="card" style="margin-bottom:16px">
-      <div class="card-head"><h3>枚举字典</h3>
+      <div class="card-head"><h3>LabelGo模板字典</h3>
         <div style="display:flex;gap:8px">
           <button class="btn sm" @click="resetDefaults" :disabled="busy">恢复默认值</button>
           <button class="btn sm" @click="load" :disabled="busy">重新加载</button>
@@ -363,6 +373,24 @@ window.PageMarketOptions = {
       </div>
     </div>
 
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h3>打印分辨率 dpis</h3><span class="tag">{{ dpis.length }} 项</span></div>
+      <div class="card-body">
+        <div class="hint" style="margin-top:0">
+          可选值固定 <b>203 / 300 / 600 dpi</b>（2026-11-13 订正补 600）。勾选结果随
+          <b>GET /api/open/v1/market/meta</b> 的 <b>dpis</b> 下发给客户端，模板表单的下拉也跟着这里走；
+          服务端只接受这三个值，字典只控制「下发哪几项」，不能写出集外的值。
+        </div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:10px">
+          <label v-for="d in allDpis" :key="d" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" :value="d" v-model="dpis" @change="markDirty" />
+            <span>{{ d }} dpi</span>
+          </label>
+        </div>
+        <div v-if="!dpis.length" class="hint" style="margin-top:8px">一项都不勾时，保存会自动回落为三项全开</div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-head"><h3>尺寸预设 sizePresets</h3><span class="tag">仅填表辅助，客户端按宽高精确筛选</span></div>
       <div class="card-body" style="padding:0">
@@ -398,6 +426,8 @@ window.PageMarketOptions = {
     const industries = ref([]);
     const papers = ref([]);
     const presets = ref([]);
+    const dpis = ref([...DEFAULT_DPIS]);
+    const allDpis = DEFAULT_DPIS;
     const newIndustry = ref('');
     const newPaper = ref('');
     const np = reactive({ label: '', widthMm: 50, heightMm: 30 });
@@ -413,6 +443,7 @@ window.PageMarketOptions = {
         industries.value = r.industries || [];
         papers.value = r.paperTypes || [];
         presets.value = (r.sizePresets || []).map((p) => ({ label: p.label, widthMm: p.widthMm, heightMm: p.heightMm }));
+        dpis.value = (r.dpis || []).length ? r.dpis.map(Number) : [...DEFAULT_DPIS];
         dirty.value = false;
       } catch (e) { U.toast(U.failMsg(e, '加载字典失败'), 'error'); }
       finally { busy.value = false; }
@@ -452,6 +483,7 @@ window.PageMarketOptions = {
         { label: '60×40mm', widthMm: 60, heightMm: 40 },
         { label: '100×100mm', widthMm: 100, heightMm: 100 },
       ];
+      dpis.value = [...DEFAULT_DPIS];
       markDirty();
       U.toast('已填入默认值，记得点「保存字典」', 'info');
     }
@@ -461,8 +493,9 @@ window.PageMarketOptions = {
       try {
         const r = await U.api.post('/api/market/options', {
           industries: industries.value, paperTypes: papers.value, sizePresets: presets.value,
+          dpis: dpis.value,
         });
-        U.toast(`字典已保存：${r.industries} 行业 / ${r.paperTypes} 纸型 / ${r.sizePresets} 预设`, 'success');
+        U.toast(`字典已保存：${r.industries} 行业 / ${r.paperTypes} 纸型 / ${r.sizePresets} 预设 / ${(r.dpis || []).length} 种分辨率`, 'success');
         await load();
       } catch (e) { U.toast(U.failMsg(e, '保存失败'), 'error'); }
       finally { busy.value = false; }
@@ -470,8 +503,222 @@ window.PageMarketOptions = {
 
     onMounted(load);
     return {
-      industries, papers, presets, newIndustry, newPaper, np, busy, dirty,
+      industries, papers, presets, dpis, allDpis, newIndustry, newPaper, np, busy, dirty,
       markDirty, load, del, move, addIndustry, addPaper, addPreset, resetDefaults, save,
+    };
+  },
+};
+
+/* ---------------------------------------------------------------- API 上架 */
+
+window.PageMarketApi = {
+  template: `
+  <div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h3>LabelGo模板API上架 · 密钥</h3>
+        <div style="display:flex;gap:8px">
+          <button class="btn sm" @click="load" :disabled="busy">刷新</button>
+          <button class="btn sm primary" @click="openNew">+ 新建密钥</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="hint" style="margin-top:0">
+          给运营脚本 / 设计工具 / 第三方投稿用的机器对机器通道，<b>与管理员登录、客户端 X-App-Key 完全隔离</b>。
+          明文密钥<b>只在创建时显示一次</b>，库里只存 sha256；可单独停用、单独限流（120 次/分钟）。
+          <b>自动上架默认关闭</b>：API 建的模板先落到「待审」（下架状态），在「LabelGo模板市场」页点「上架」才对外可见；
+          只给可信的官方脚本打开自动上架。
+        </div>
+      </div>
+      <div class="card-body" style="padding:0">
+        <table class="table">
+          <thead><tr>
+            <th>名称</th><th style="width:130px">密钥前缀</th><th style="width:110px">自动上架</th>
+            <th style="width:90px">状态</th><th style="width:80px">模板数</th>
+            <th style="width:160px">最后使用</th><th style="width:230px">操作</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="k in keys" :key="k.id">
+              <td><b>{{ k.name }}</b><div class="hint" style="margin:2px 0 0">{{ k.created_by || '—' }} · {{ k.created_at }}</div></td>
+              <td><code>{{ k.key_prefix }}…</code></td>
+              <td><span class="tag" :class="k.auto_publish ? 'danger' : 'success'">{{ k.auto_publish ? '直接上架' : '待审' }}</span></td>
+              <td><span class="tag" :class="k.status === 'active' ? 'success' : ''">{{ k.status === 'active' ? '启用' : '停用' }}</span></td>
+              <td>{{ fmt.int(k.templates || 0) }}</td>
+              <td>{{ k.last_used_at || '从未' }}</td>
+              <td><div class="table-actions">
+                <button class="btn sm" @click="togglePublish(k)" :disabled="busy">{{ k.auto_publish ? '改为待审' : '允许直上' }}</button>
+                <button class="btn sm" @click="toggleStatus(k)" :disabled="busy">{{ k.status === 'active' ? '停用' : '启用' }}</button>
+                <button class="btn sm danger" @click="remove(k)" :disabled="busy">删除</button>
+              </div></td>
+            </tr>
+            <tr v-if="!keys.length"><td colspan="7" style="text-align:center;padding:24px" class="hint">还没有密钥，点右上角新建</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h3>接口速查</h3><span class="tag">/api/market/v1</span></div>
+      <div class="card-body">
+        <div class="hint" style="margin-top:0">
+          所有请求带 <code>X-Market-Key: mkt_…</code>；<b>写请求还要带 X-Nonce</b>（每次新值，重放回 401 NONCE_REUSED）。
+          <code>externalId</code> 是幂等键：同一密钥重复提交不会建出第二份，内容没变时连 version 都不动。
+          行业 / 纸型必须在「LabelGo模板字典」里，dpi 只能是 203 / 300 / 600。
+        </div>
+        <div class="grid g2" style="gap:12px;margin-top:12px">
+          <div>
+            <div class="hint" style="margin-bottom:6px">① 一步上架（≤10MB 文件放 fileBase64）</div>
+            <pre class="code-block">{{ curlPublish }}</pre>
+          </div>
+          <div>
+            <div class="hint" style="margin-bottom:6px">② 大文件两步：先建元数据，再传 .blls</div>
+            <pre class="code-block">{{ curlUpload }}</pre>
+          </div>
+        </div>
+        <div class="hint" style="margin-top:10px">
+          完整字段、错误码与重试建议见 <b>docs/模板市场-API上架接入.md</b>。
+          模板文件仍只存私有目录，API 响应不含任何文件路径或下载地址；删除 / 下架只能在本后台操作。
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>最近调用</h3><span class="tag">{{ logs.length }} 条</span></div>
+      <div class="card-body" style="padding:0">
+        <table class="table">
+          <thead><tr><th style="width:150px">时间</th><th style="width:110px">密钥</th><th style="width:100px">动作</th><th>幂等键 / 模板 ID</th><th style="width:80px">结果</th><th style="width:130px">错误码</th><th style="width:120px">IP</th></tr></thead>
+          <tbody>
+            <tr v-for="l in logs" :key="l.id">
+              <td class="hint">{{ l.created_at }}</td>
+              <td>{{ l.key_prefix || '—' }}</td>
+              <td>{{ l.action }}</td>
+              <td><code>{{ l.external_id || l.template_id || '—' }}</code></td>
+              <td><span class="tag" :class="l.status_code < 400 ? 'success' : 'danger'">{{ l.status_code }}</span></td>
+              <td class="hint">{{ l.code || '—' }}</td>
+              <td class="hint">{{ l.ip || '—' }}</td>
+            </tr>
+            <tr v-if="!logs.length"><td colspan="7" style="text-align:center;padding:20px" class="hint">暂无调用记录</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <teleport to="body">
+      <div class="mask" v-if="showNew" @click.self="closeNew">
+        <div class="modal" style="width:480px;max-width:94vw">
+          <div class="card-head"><h3>新建上架密钥</h3><button class="btn sm" @click="closeNew">关闭</button></div>
+          <div class="card-body">
+            <label class="field"><span>名称（谁在用）</span><input class="input" v-model="newName" placeholder="如：官方模板批量脚本 / 设计部投稿" /></label>
+            <label class="field" style="margin-top:10px;display:flex;align-items:center;gap:8px">
+              <input type="checkbox" v-model="newAuto" /> <span>允许直接上架（跳过人工审核）</span>
+            </label>
+            <div class="hint" style="margin-top:8px">关闭时新模板为「待审」，运营到「LabelGo模板市场」页审核后手动上架。</div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px">
+              <button class="btn" @click="closeNew">取消</button>
+              <button class="btn primary" :disabled="busy" @click="create">创建</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mask" v-if="plainKey" @click.self="plainKey = ''">
+        <div class="modal" style="width:560px;max-width:94vw">
+          <div class="card-head"><h3>请立即保存密钥</h3><button class="btn sm" @click="plainKey = ''">我已保存</button></div>
+          <div class="card-body">
+            <div class="hint" style="margin-top:0;color:var(--danger)"><b>只显示这一次</b>，刷新后再也看不到；丢失只能重建密钥。</div>
+            <pre class="code-block" style="margin-top:10px">{{ plainKey }}</pre>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+              <button class="btn primary" @click="copyKey">复制</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </teleport>
+  </div>`,
+  setup() {
+    const fmt = U.fmt;
+    const keys = ref([]);
+    const logs = ref([]);
+    const busy = ref(false);
+    const showNew = ref(false);
+    const newName = ref('');
+    const newAuto = ref(false);
+    const plainKey = ref('');
+
+    const base = (function () {
+      let origin = '';
+      try { origin = location.origin; } catch { /* ignore */ }
+      return origin + (U.basePath || '') + '/api/market/v1';
+    })();
+    const curlPublish = `curl -X POST ${base}/templates \\
+  -H "X-Market-Key: mkt_…" -H "X-Nonce: <uuid>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"externalId":"shelf-50x30-001","name":"仓储货架标签",
+       "industry":"物流仓储","paperType":"间隙纸",
+       "widthMm":50,"heightMm":30,"dpi":203,"columns":1,
+       "price":20,"author":"官方","tags":["条码","货架"],
+       "fileBase64":"<base64 .blls>","fileSha256":"<sha256>"}'`;
+    const curlUpload = `# 先 POST /templates 不带 fileBase64 拿 item.id，再：
+curl -X POST ${base}/templates/<id>/file \\
+  -H "X-Market-Key: mkt_…" -H "X-Nonce: <uuid2>" \\
+  -H "X-File-Sha256: <sha256>" \\
+  -F "file=@shelf.blls"
+
+# 查状态
+curl "${base}/templates?externalId=shelf-50x30-001" \\
+  -H "X-Market-Key: mkt_…"`;
+
+    async function load() {
+      busy.value = true;
+      try {
+        const r = await U.api.get('/api/market/api-keys');
+        keys.value = r.items || [];
+        logs.value = r.logs || [];
+      } catch (e) { U.toast(U.failMsg(e, '加载密钥失败'), 'error'); }
+      finally { busy.value = false; }
+    }
+    function openNew() { newName.value = ''; newAuto.value = false; showNew.value = true; lockScroll(true); }
+    function closeNew() { showNew.value = false; lockScroll(false); }
+    async function create() {
+      if (!String(newName.value || '').trim()) { U.toast('请填名称', 'error'); return; }
+      busy.value = true;
+      try {
+        const r = await U.api.post('/api/market/api-keys', { name: newName.value, autoPublish: newAuto.value });
+        plainKey.value = r.plainKey || '';
+        closeNew();
+        await load();
+      } catch (e) { U.toast(U.failMsg(e, '创建失败'), 'error'); }
+      finally { busy.value = false; }
+    }
+    async function patch(k, data, msg) {
+      busy.value = true;
+      try {
+        await U.api.patch('/api/market/api-keys/' + k.id, data);
+        U.toast(msg, 'success');
+        await load();
+      } catch (e) { U.toast(U.failMsg(e, '操作失败'), 'error'); }
+      finally { busy.value = false; }
+    }
+    function togglePublish(k) { return patch(k, { autoPublish: !k.auto_publish }, k.auto_publish ? '已改为待审' : '已允许直接上架'); }
+    function toggleStatus(k) { return patch(k, { status: k.status === 'active' ? 'disabled' : 'active' }, k.status === 'active' ? '已停用' : '已启用'); }
+    async function remove(k) {
+      if (!(await U.confirm('删除密钥「' + k.name + '」？已上架的模板会保留，但该脚本立刻不能再调用。'))) return;
+      busy.value = true;
+      try {
+        await U.api.del('/api/market/api-keys/' + k.id);
+        U.toast('已删除', 'success');
+        await load();
+      } catch (e) { U.toast(U.failMsg(e, '删除失败'), 'error'); }
+      finally { busy.value = false; }
+    }
+    async function copyKey() {
+      try { await navigator.clipboard.writeText(plainKey.value); U.toast('已复制', 'success'); }
+      catch { U.toast('复制失败，请手动选中', 'error'); }
+    }
+
+    onMounted(load);
+    return {
+      fmt, keys, logs, busy, showNew, newName, newAuto, plainKey, curlPublish, curlUpload,
+      load, openNew, closeNew, create, togglePublish, toggleStatus, remove, copyKey,
     };
   },
 };

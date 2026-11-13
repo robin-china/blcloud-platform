@@ -620,8 +620,9 @@ CREATE TABLE IF NOT EXISTS market_purchases (
 CREATE INDEX IF NOT EXISTS idx_market_purchase_user ON market_purchases(user_id, purchased_at DESC);
 CREATE INDEX IF NOT EXISTS idx_market_purchase_tpl ON market_purchases(template_id);
 
--- 枚举字典：kind = industry | paper_type | size_preset。
--- size_preset 的 value 是一段 JSON {label,widthMm,heightMm}，其余两种是纯文本。
+-- 枚举字典：kind = industry | paper_type | size_preset | dpi。
+-- size_preset 的 value 是一段 JSON {label,widthMm,heightMm}，其余是纯文本。
+-- dpi 的 value 是数字字符串，只允许 203 / 300 / 600（2026-11-13 补 600）。
 -- 运营在后台改完立刻影响 /market/meta，不需要发客户端版本。
 CREATE TABLE IF NOT EXISTS market_options (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -645,3 +646,35 @@ CREATE TABLE IF NOT EXISTS market_download_links (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_market_link_exp ON market_download_links(expires_at);
+
+-- ---------------------------------------------------------------------------
+-- API 上架（2026-11-13）：给运营脚本 / 设计工具 / 第三方投稿的机器对机器通道。
+-- 不用管理员 JWT：12h 会过期、等于把整个后台权限交出去、无法单独吊销。
+-- 明文密钥只在创建时返回一次，库里只存 sha256；支持单独停用与限流。
+-- auto_publish=0（默认）→ API 建的模板是 off，运营审核后在后台点上架；
+-- auto_publish=1 → 可信的官方脚本可一步直接对外。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS market_api_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  key_prefix TEXT NOT NULL,
+  key_hash TEXT NOT NULL UNIQUE,
+  auto_publish INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'active',
+  last_used_at TEXT DEFAULT '',
+  created_by TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS market_api_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key_id INTEGER DEFAULT 0,
+  action TEXT DEFAULT '',
+  external_id TEXT DEFAULT '',
+  template_id TEXT DEFAULT '',
+  status_code INTEGER DEFAULT 0,
+  code TEXT DEFAULT '',
+  ip TEXT DEFAULT '',
+  detail TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_api_log_time ON market_api_logs(created_at DESC, id DESC);

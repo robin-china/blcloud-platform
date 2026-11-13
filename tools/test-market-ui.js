@@ -1,4 +1,4 @@
-/* 模板市场后台两页的 Vue 模板编译 / 挂载回归
+/* 模板市场后台三页的 Vue 模板编译 / 挂载回归
  * 运行：node tools/test-market-ui.js
  *
  * 静态页面用 in-DOM 模板 + 全局 Vue，模板里一个语法错误或 setup 少 return 一个变量，
@@ -25,14 +25,19 @@ const css = read('public/assets/ui.css');
 
 console.log('\n[1] 静态约定');
 ok('页面脚本用 IIFE 包裹', /^\(function \(\) \{/.test(pageCode.trim()) && /\}\)\(\);\s*$/.test(pageCode.trim()));
-ok('导出两个页面组件', /window\.PageMarket = \{/.test(pageCode) && /window\.PageMarketOptions = \{/.test(pageCode));
+ok('导出三个页面组件', /window\.PageMarket = \{/.test(pageCode)
+  && /window\.PageMarketOptions = \{/.test(pageCode) && /window\.PageMarketApi = \{/.test(pageCode));
 ok('模板不引用全局 U / window / location', !/v-if="U\./.test(pageCode) && !/:src="window\./.test(pageCode) && !/\{\{\s*location\./.test(pageCode));
 ok('弹层 teleport 到 body', /<teleport to="body">/.test(pageCode) && /@click\.self="closeEdit"/.test(pageCode));
-ok('index.html 注册两个页面', /<page-market v-if="state\.route === 'market'"><\/page-market>/.test(adminIndex)
-  && /<page-market-options v-if="state\.route === 'marketOptions'"><\/page-market-options>/.test(adminIndex));
-ok('PAGES 数组含 Market / MarketOptions', /'Market', 'MarketOptions'/.test(adminIndex));
-ok('菜单含模板市场与模板字典', /key: 'market', name: '模板市场'/.test(appJs) && /key: 'marketOptions', name: '模板字典'/.test(appJs));
+ok('index.html 注册三个页面', /<page-market v-if="state\.route === 'market'"><\/page-market>/.test(adminIndex)
+  && /<page-market-options v-if="state\.route === 'marketOptions'"><\/page-market-options>/.test(adminIndex)
+  && /<page-market-api v-if="state\.route === 'marketApi'"><\/page-market-api>/.test(adminIndex));
+ok('PAGES 数组含 Market / MarketOptions / MarketApi', /'Market', 'MarketOptions', 'MarketApi'/.test(adminIndex));
+ok('菜单独立分组「扩展功能」且三页带 LabelGo 前缀', /group: '扩展功能'/.test(appJs)
+  && /name: 'LabelGo模板市场'/.test(appJs) && /name: 'LabelGo模板字典'/.test(appJs)
+  && /name: 'LabelGo模板API上架'/.test(appJs));
 ok('字典行样式已定义', /\.dict-row \{/.test(css) && /\.dict-idx \{/.test(css));
+ok('curl 示例块样式已定义', /\.code-block \{/.test(css));
 ok('私有目录不被 Nginx 静态映射（上线检查提示）', /绝对不要在这里加 alias/.test(read('deploy/nginx-subpath.conf')));
 
 console.log('\n[2] Vue 模板真编译 + 挂载');
@@ -58,7 +63,9 @@ w.U = {
           downloads: 3, version: 2, hasFile: true, fileSize: 2048, fileSha256: 'abcd',
         }],
       }
-      : { industries: ['制造业'], paperTypes: ['间隙纸'], sizePresets: [{ label: '50×30mm', widthMm: 50, heightMm: 30 }] },
+      : String(url).startsWith('/api/market/api-keys')
+        ? { items: [], logs: [] }
+        : { industries: ['制造业'], paperTypes: ['间隙纸'], dpis: [203, 300, 600], sizePresets: [{ label: '50×30mm', widthMm: 50, heightMm: 30 }] },
     post: async () => ({ ok: true }), patch: async () => ({ ok: true }), del: async () => ({ ok: true }),
     getToken: () => 'test-token',
   },
@@ -71,31 +78,34 @@ w.eval(pageCode);
 
 const Vue = w.Vue;
 let compiled = 0;
-for (const [name, comp] of [['PageMarket', w.PageMarket], ['PageMarketOptions', w.PageMarketOptions]]) {
+for (const [name, comp] of [['PageMarket', w.PageMarket], ['PageMarketOptions', w.PageMarketOptions], ['PageMarketApi', w.PageMarketApi]]) {
   try {
     const render = Vue.compile(comp.template);
     ok(name + ' 模板可编译', typeof render === 'function');
     compiled++;
   } catch (e) { ok(name + ' 模板可编译', false, e.message); }
 }
-ok('两个组件都编译成功', compiled === 2);
+ok('三个组件都编译成功', compiled === 3);
 
 const app = Vue.createApp({
-  template: '<div><page-market></page-market><page-market-options></page-market-options></div>',
+  template: '<div><page-market></page-market><page-market-options></page-market-options><page-market-api></page-market-api></div>',
 });
 app.component('page-market', w.PageMarket);
 app.component('page-market-options', w.PageMarketOptions);
+app.component('page-market-api', w.PageMarketApi);
 app.config.errorHandler = (e) => errors.push(e && e.message);
 let inst = null;
 try {
   inst = app.mount('#app');
-  ok('两页可挂载（setup 无未定义标识符）', !!inst);
+  ok('三页可挂载（setup 无未定义标识符）', !!inst);
 } catch (e) {
-  ok('两页可挂载（setup 无未定义标识符）', false, e.stack);
+  ok('三页可挂载（setup 无未定义标识符）', false, e.stack);
 }
 const html = w.document.body.innerHTML;
-ok('渲染出「模板上下架」表格区', html.includes('模板上下架'));
-ok('渲染出「枚举字典」页', html.includes('枚举字典'));
+ok('渲染出「模板上下架」表格区', html.includes('LabelGo模板市场 · 模板上下架'));
+ok('渲染出「LabelGo模板字典」页', html.includes('LabelGo模板字典'));
+ok('渲染出 600 dpi 选项', html.includes('600 dpi'));
+ok('渲染出「API 上架」密钥页与 curl 示例', html.includes('LabelGo模板API上架') && html.includes('curl -X POST'));
 ok('渲染出尺寸预设说明', html.includes('尺寸预设'));
 ok('首屏渲染时无 Vue 运行时错误', errors.length === 0, errors);
 
