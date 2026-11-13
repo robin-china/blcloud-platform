@@ -903,7 +903,7 @@ module.exports = {
   // API 上架
   createApiKey, findApiKey, listApiKeys, setApiKey, deleteApiKey, touchApiKey,
   logApiCall, recentApiLogs, apiTemplate, apiTemplateByExternal, publishTemplate,
-  apiReplaceFile, apiReplaceThumbnail, storeThumbnail, sniffImage,
+  apiReplaceFile, apiReplaceThumbnail, storeThumbnail, sniffImage, thumbExtOf,
   // 测试用
   encodeCursor, decodeCursor, SORTS,
 };

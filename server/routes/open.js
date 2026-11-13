@@ -19,6 +19,7 @@ const plans = require('../lib/plans');
 const profileLib = require('../lib/profile');
 const handoff = require('../lib/handoff');
 const avatars = require('../lib/avatars');
+const userid = require('../lib/userid');
 const release = require('../lib/release');
 
 const ACCESS_TTL_MS = 2 * 60 * 60 * 1000;
@@ -196,7 +197,8 @@ function licensePayload(lic) {
 function userPayload(u) {
   return {
     id: u.id,
-    openid: u.openid,
+    // openid 不下发到软件端；9 位数字个人 ID 供展示与客服核对
+    publicId: userid.ensurePublicId(u),
     nickname: u.nickname,
     // 内置卡通头像展开成 data URI，软件端拿到即可渲染，不需要再回源取图
     avatar: avatars.toDisplay(u.avatar),

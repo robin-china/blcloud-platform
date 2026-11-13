@@ -2,6 +2,7 @@ const db = require('../db');
 const { now } = require('../lib/util');
 const { requireAdmin } = require('../lib/auth');
 const tb = require('../services/tb');
+const userid = require('../lib/userid');
 
 function bumpDaily(field, delta = 1) {
   const date = new Date().toISOString().slice(0, 10);
@@ -18,7 +19,8 @@ module.exports = async function userRoutes(app) {
     const pageSize = Math.min(Number(req.query.pageSize) || 20, 100);
     const where = [];
     const args = [];
-    if (q) { where.push('(nickname LIKE ? OR phone LIKE ? OR openid LIKE ? OR tb_username LIKE ?)'); args.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
+    // 客服拿到的是用户报的 9 位个人 ID，必须能直接搜到（openid 仍保留内部排障搜索）
+    if (q) { where.push('(nickname LIKE ? OR phone LIKE ? OR openid LIKE ? OR tb_username LIKE ? OR public_id LIKE ?)'); args.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
     if (status) { where.push('status = ?'); args.push(status); }
     const wsql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const total = db.prepare(`SELECT COUNT(*) AS c FROM users ${wsql}`).get(...args).c;
@@ -27,6 +29,8 @@ module.exports = async function userRoutes(app) {
       (SELECT COUNT(*) FROM devices d WHERE d.user_id = u.id) AS device_count,
       (SELECT IFNULL(SUM(o.pay_amount),0) FROM orders o WHERE o.user_id = u.id AND o.status='paid') AS total_paid
       FROM users u ${wsql} ORDER BY u.id DESC LIMIT ? OFFSET ?`).all(...args, pageSize, (page - 1) * pageSize);
+    // 老账号首次出现在后台列表时补生成个人 ID，避免出现「待生成」的空列
+    for (const u of list) u.public_id = userid.ensurePublicId(u);
     return { total, page, pageSize, list };
   });
 
@@ -43,6 +47,7 @@ module.exports = async function userRoutes(app) {
     const orders = db.prepare('SELECT * FROM orders WHERE user_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 50').all(id);
     const points = db.prepare('SELECT * FROM points_logs WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(id);
     const apiKeys = db.prepare('SELECT * FROM api_keys WHERE user_id = ? ORDER BY id DESC').all(id);
+    user.public_id = userid.ensurePublicId(user);
     return { user, licenses, devices, orders, points, apiKeys };
   });
 

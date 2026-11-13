@@ -161,6 +161,12 @@ S2 之前**不要**让客户端删 `appSecret`——`APP_SECRET_RETIRED` 是给�
 
 ## 3. 用户级令牌
 
+> **2026-11-13 契约变更（务必核对客户端）**：所有返回 `user` 的接口
+> （激活 / 扫码登录 / 手机号登录 / `/user/profile` / `verify` / `heartbeat` / `refresh` 等）
+> **不再下发 `user.openid`**，改为 **`user.publicId`**：9 位数字字符串，全平台唯一、稳定不变，
+> 用于界面展示与客服核对。客户端不要把 openid 当本地用户标识，也不要缓存它。
+> 其余 `user` 字段（`id` / `nickname` / `avatar` / `phone` / `points` / `balance` …）保持不变。
+
 登录（激活 / 扫码 / 手机号）成功后返回：
 
 ```json
@@ -169,7 +175,7 @@ S2 之前**不要**让客户端删 `appSecret`——`APP_SECRET_RETIRED` 是给�
   "refresh_token": "ct_yyy",
   "expires_in": 7200,
   "refresh_expires_in": 2592000,
-  "user": { "id": 1, "nickname": "李雷", "points": 120, "tb_username": "oabc@tb.cn" },
+  "user": { "id": 1, "publicId": "123456789", "nickname": "李雷", "points": 120 },
   "license": { "license_key": "LIC-XXX", "product_name": "花盆卫士 Pro", "end_at": "2027-01-01T00:00:00.000Z", "max_devices": 2 }
 }
 ```
@@ -289,8 +295,8 @@ GET /api/open/v1/app/version?product=LabelGo&version=1.0.20&platform=win32&arch=
   "valid": true,
   "access_token": "ct_xxx", "refresh_token": "ct_yyy",
   "expires_in": 7200, "refresh_expires_in": 2592000,
-  "user": { "id": 12, "nickname": "李雷",
-    "avatar": "data:image/svg+xml;base64,PHN2Zy8+...", "avatar_preset": "preset:01",
+  "user": { "id": 12, "publicId": "123456789", "nickname": "李雷",
+    "avatar": "data:image/svg+xml;base64,PHN2Zy8+...", "avatar_preset": "preset:00",
     "phone": "138****8888", "points": 320 },
   "license": {
     "license_key": "LIC-XXXXXXXX-XXXXXXXX-XXXXXXXX",
@@ -319,8 +325,11 @@ GET /api/open/v1/app/version?product=LabelGo&version=1.0.20&platform=win32&arch=
 - `entitlement_version` 是权益内容哈希（12 位）：心跳带上它即可增量感知权益变化，不用整包 diff
 - `downgraded_from` 非空 = 这张授权的订阅已到期、被服务端降到免费档（原档位 code 见该字段）。**客户端要明说「订阅到期已降级为免费版」**，不要静默切到免费版让用户以为功能丢了
 - **订阅到期会在服务端明确降级**：过期瞬间（verify / heartbeat / 列表读取时）授权落到该应用 free 档，原授权码与已绑机器全部保留，续费后原地升回
+- `user.publicId` 是 9 位数字的个人 ID（字符串），替代了原来的 `openid`。同一用户重登、换机都不变；需要展示或报给客服时用这个。**响应里不再有 `openid`**
 - `user.nickname` / `user.avatar` 默认来自微信资料，用户在网页端「账户中心」改过之后这里实时返回最新值（软件端可用 `POST /user/profile` 改，与网页端共用校验）
-- `user.avatar` 是**可直接渲染的图片地址**：微信头像是 URL，内置卡通头像已展开成 `data:image/svg+xml;base64,...`。客户端拿去直接 `<img src>` 即可，**离线也能显示**，不要自己再处理 `avatar_preset`——它只是回传的预设编号，供网页端选择器高亮用
+- `user.avatar` 是**可直接渲染的图片地址**：微信头像是 URL，内置头像已展开成 `data:image/svg+xml;base64,...`，用户上传的头像则是站内 `/platform/uploads/...` 路径。客户端拿去直接 `<img src>` 即可，**离线也能显示**，不要自己再处理 `avatar_preset`——它只是回传的预设编号
+- **默认头像统一为中性款 `preset:00`**（不再按 openid 分配男女不同款）。微信拿到头像后覆盖；用户在网页端自行上传后 `profile_custom=1`，微信不再覆盖。老账号已有的 `preset:01~08` 仍兼容、照常展开，客户端不要写死头像编号
+- `user.avatar` 有三种形态，客户端都要能渲染：内置预设 = `data:image/svg+xml;base64,...`（离线可用）；微信头像 = `https://` 绝对地址；**用户自行上传 = 站内 `/` 开头的相对路径**（如 `/platform/uploads/mkt-….png`），客户端需拼上服务端基址（`https://www.bliot.cn` + 该路径）后再 `<img src>`。上传头像不走 data URI（图片可能到 2MB，塞进接口响应会拖垮同步），因此离线时它可能显示不出来，请用昵称首字占位兜底
 - **卡密还没被绑定**（渠道印的卡、用户还没领）返回 `403 LICENSE_UNASSIGNED`，此时应引导用户先登录绑定，而不是重新激活
 
 > 卡密池的码在**绑定那一刻**才起算有效期。一张印了半年的卡不会被白白扣掉半年，所以「先绑后激活」是正常流程。

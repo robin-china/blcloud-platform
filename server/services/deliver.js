@@ -4,6 +4,7 @@ const plans = require('../lib/plans');
 const tb = require('./tb');
 const tbdiag = require('../lib/tbdiag');
 const blcloud = require('../lib/blcloud');
+const pointsLib = require('../lib/points');
 
 /**
  * 支付成功后自动发放授权与硬件。
@@ -142,9 +143,20 @@ function deliverUpgrade(order) {
   };
 }
 
+/** 积分充值发货：走 pointsLib 单一入口，保证「改余额 + 记流水」同生共死。 */
+function deliverPoints(order) {
+  const items = safeJson(order.items, []);
+  const it = items.find((x) => x && x.type === 'points_recharge') || items[0] || {};
+  const pts = Math.max(0, Math.trunc(Number(it.points) || 0));
+  if (pts <= 0) throw new Error('充值订单缺少积分数量');
+  const after = pointsLib.apply(order.user_id, pts, `积分充值（订单 ${order.order_no}）`);
+  return { type: 'points', points: pts, balance: after, amount: Number(order.pay_amount) || 0 };
+}
+
 /** 支付成功后自动发放授权与硬件 */
 function deliverOrder(order) {
   const kind = String(order.kind || 'purchase');
+  if (kind === 'points_recharge') return [deliverPoints(order)];
   if (kind === 'renew') return [deliverRenew(order)];
   if (kind === 'upgrade') return [deliverUpgrade(order)];
   if (order.plan_id) return [deliverPlanPurchase(order)];

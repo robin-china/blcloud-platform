@@ -21,9 +21,9 @@ function toDisplay(v) {
   return p ? p.dataUri : s;
 }
 
-/** 微信没给头像时，按 openid 稳定分配一张内置卡通头像 */
-function defaultValue(seed) {
-  return presets.defaultValue(seed);
+/** 微信没给头像时统一用中性默认头像 preset:00（不按 openid 分男女款） */
+function defaultValue() {
+  return presets.defaultValue();
 }
 
 module.exports = { PRESETS: presets.PRESETS, PRESET_RE, isPreset, toDisplay, defaultValue };

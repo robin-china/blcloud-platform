@@ -306,6 +306,39 @@ table.table tbody tr:hover { background: var(--surface-2); }
 .thumb-sm img { width: 100%; height: 100%; object-fit: contain; }
 
 /* 内置头像选择器 */
+/* 账户中心：单列紧凑布局，移动端不挤压（2026-11-13） */
+.acct { display: grid; gap: 14px; max-width: 760px; }
+.acct-card { min-width: 0; }
+.acct-card .card-body.tight { overflow-x: auto; }
+.acct-top { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+.acct-avatar { flex: none; }
+.acct-avatar > img, .acct-avatar > .avatar {
+  width: 64px; height: 64px; border-radius: 50%; object-fit: cover;
+  display: grid; place-items: center; font-size: 24px;
+}
+.acct-who { min-width: 0; flex: 1; }
+.acct-name { display: block; font-size: 16px; margin-bottom: 2px; }
+.acct-avatar-btns { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.acct-kv { grid-template-columns: 84px minmax(0, 1fr); gap: 10px 12px; }
+.acct-val { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.acct-edit { display: flex; gap: 8px; margin-top: 14px; }
+.acct-edit .input { flex: 1; min-width: 0; }
+.acct-code { display: flex; gap: 8px; }
+.acct-code .input { flex: 1; min-width: 0; }
+.acct-tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
+.acct-tier { justify-content: center; }
+.acct-sum { padding: 12px; border-radius: 10px; background: var(--surface-2); font-size: 14px; }
+@media (max-width: 560px) {
+  .acct { gap: 12px; }
+  .acct-top { align-items: flex-start; }
+  .acct-avatar > img, .acct-avatar > .avatar { width: 54px; height: 54px; }
+  .acct-avatar-btns .btn { padding: 6px 10px; }
+  .acct-edit { flex-direction: column; }
+  .acct-edit .btn { width: 100%; }
+  .acct-tiers { grid-template-columns: repeat(2, 1fr); }
+  .acct-kv { grid-template-columns: 76px minmax(0, 1fr); }
+  .modal-foot { flex-wrap: wrap; }
+}
 .avatar-preview { width: 56px; height: 56px; flex: none; border-radius: 50%; object-fit: cover; background: var(--surface-2); }
 .avatar-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); gap: 10px; margin: 6px 0 10px; }
 .avatar-picker button {

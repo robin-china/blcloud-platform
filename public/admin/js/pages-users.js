@@ -5,7 +5,7 @@ window.PageUsers = {
   template: `
   <div>
     <div class="toolbar">
-      <input class="input" v-model="q" placeholder="昵称 / 手机号 / OpenID / blcloud 账户" @keyup.enter="load" />
+      <input class="input" v-model="q" placeholder="昵称 / 手机号 / 个人 ID / OpenID / blcloud 账户" @keyup.enter="load" />
       <select class="select" v-model="status">
         <option value="">全部状态</option><option value="active">正常</option><option value="disabled">已禁用</option>
       </select>
@@ -16,7 +16,7 @@ window.PageUsers = {
       <div class="card-body tight">
         <div class="table-wrap">
           <table class="table">
-            <thead><tr><th>用户</th><th>OpenID</th><th>手机</th><th>积分</th><th>blcloud 账户</th><th>授权</th><th>设备</th><th>消费</th><th>状态</th><th style="width:120px">操作</th></tr></thead>
+            <thead><tr><th>用户</th><th>个人 ID</th><th>手机</th><th>积分</th><th>blcloud 账户</th><th>授权</th><th>设备</th><th>消费</th><th>状态</th><th style="width:120px">操作</th></tr></thead>
             <tbody>
               <tr v-for="u in list" :key="u.id">
                 <td>
@@ -26,7 +26,7 @@ window.PageUsers = {
                     <div style="color:var(--text-3);font-size:12px">{{ fmt.ago(u.last_login_at) }}活跃</div></div>
                   </div>
                 </td>
-                <td style="font-family:ui-monospace,monospace;font-size:12px">{{ (u.openid||'-').slice(0,14) }}</td>
+                <td style="font-family:ui-monospace,monospace;font-size:12px">{{ u.public_id || '待生成' }}</td>
                 <td>{{ u.phone || '-' }}</td>
                 <td>{{ fmt.int(u.points) }}</td>
                 <td>
@@ -76,7 +76,8 @@ window.PageUsers = {
           <div v-if="tab==='base'">
             <div class="kv">
               <div class="k">用户 ID</div><div>{{ detail.user.id }}</div>
-              <div class="k">OpenID</div><div style="font-family:ui-monospace,monospace;font-size:12.5px">{{ detail.user.openid || '-' }}</div>
+              <div class="k">个人 ID</div><div style="font-family:ui-monospace,monospace;font-size:12.5px">{{ detail.user.public_id || '待生成' }}</div>
+              <div class="k">OpenID（内部）</div><div style="font-family:ui-monospace,monospace;font-size:12.5px">{{ detail.user.openid || '-' }}</div>
               <div class="k">手机号</div><div>{{ detail.user.phone || '未绑定' }}</div>
               <div class="k">积分</div><div>{{ fmt.int(detail.user.points) }}</div>
               <div class="k">API 额度</div>

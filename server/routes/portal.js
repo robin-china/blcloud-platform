@@ -14,6 +14,8 @@ const reminders = require('../lib/reminders');
 const profileLib = require('../lib/profile');
 const pointsLib = require('../lib/points');
 const orderdel = require('../lib/orderdel');
+// 头像与模板市场缩略图共用一套图片校验/内容寻址落盘（都是公开图片）
+const marketImg = require('../lib/market');
 
 /**
  * 用户端自动补单的节流表：orderId -> 上次查单时间戳。
@@ -162,6 +164,35 @@ module.exports = async function portalRoutes(app) {
     return { ok: true, user: r.user };
   });
 
+  /**
+   * 用户自行上传头像。和模板市场缩略图共用同一套安全规则：
+   * 只认文件头魔数、扩展名必须与内容一致、≤2MB、拒 SVG/HTML 改名伪装，
+   * 文件名按内容 sha256 生成（用户给的文件名不参与落盘路径）。
+   * 落公开 uploads/ 由 Nginx 直出；写库后置 profile_custom=1，微信不再覆盖。
+   */
+  app.post('/api/portal/avatar', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    let data;
+    try { data = await req.file(); }
+    catch { return reply.code(400).send({ error: '头像必须用 multipart/form-data 上传，字段名 file' }); }
+    if (!data) return reply.code(400).send({ error: '未收到头像文件' });
+    let buf;
+    try { buf = await data.toBuffer(); }
+    catch (e) { return reply.code(400).send({ error: '读取头像失败：' + e.message }); }
+    if (!buf.length) return reply.code(400).send({ error: '头像文件为空' });
+    const kind = marketImg.sniffImage(buf);
+    if (!kind) return reply.code(400).send({ error: '头像只支持 png / jpg / webp / gif 图片' });
+    const extByKind = { png: 'png', jpeg: 'jpg', gif: 'gif', webp: 'webp' };
+    const declared = marketImg.thumbExtOf(data.filename);
+    if (!declared || declared !== extByKind[kind]) {
+      return reply.code(400).send({ error: '头像扩展名与实际图片类型不符' });
+    }
+    const stored = marketImg.storeThumbnail(buf, req.headers['x-file-sha256']);
+    if (stored.error) return reply.code(400).send({ error: stored.error });
+    db.prepare('UPDATE users SET avatar = ?, profile_custom = 1 WHERE id = ?').run(stored.url, req.user.sub);
+    return { ok: true, user: profileLib.publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.sub)) };
+  });
+
   app.post('/api/portal/phone/code', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
     const phone = String((req.body || {}).phone || '').trim();
@@ -224,9 +255,37 @@ module.exports = async function portalRoutes(app) {
     if (!(await requireUser(req, reply))) return;
     const b = req.body || {};
     const kind = String(b.kind || 'purchase');
-    if (!['purchase', 'upgrade', 'renew'].includes(kind)) {
+    if (!['purchase', 'upgrade', 'renew', 'points_recharge'].includes(kind)) {
       return reply.code(400).send({ error: '不支持的订单类型' });
     }
+
+    /* 积分充值：¥1 = 100 积分，与「100 积分抵 ¥1」的下单抵扣汇率对称。
+     * 三条资金口径必须守住：
+     *  1) 金额与积分一律服务端算，只收 1~1000 的整数元，前端传 points 一概不认；
+     *  2) 充值订单**禁止用积分抵扣**（否则可以用积分买积分，循环放大）；
+     *  3) 走现有订单/支付/回调链路，支付成功后由 deliverOrder 发货到 users.points。
+     */
+    if (kind === 'points_recharge') {
+      const raw = Number(b.points_amount ?? b.amount_yuan);
+      // 不能 trunc：¥1.5 被静默截成 ¥1 会少收钱，用户还以为下单成功了。
+      // 只接受整数元，前端自定义输入的小数一律明确报错。
+      if (!Number.isFinite(raw) || !Number.isInteger(raw) || raw < 1 || raw > 1000) {
+        return reply.code(400).send({ error: '充值金额必须是 1~1000 的整数元' });
+      }
+      const yuan = raw;
+      const pts = yuan * 100;
+      const orderNo = genOrderNo();
+      const info = db.prepare(`INSERT INTO orders
+        (order_no, user_id, amount, pay_amount, discount, channel, status, items, remark, kind, created_at)
+        VALUES (?,?,?,?,0,?,'pending',?,?,?,?)`)
+        .run(orderNo, req.user.sub, yuan, yuan, b.channel || '',
+          JSON.stringify([{ type: 'points_recharge', product_id: 0,
+            product_name: `积分充值 ${pts} 积分`, qty: 1, price: yuan, points: pts }]),
+          `积分充值 ¥${yuan} → ${pts} 积分`, 'points_recharge', now());
+      return { id: info.lastInsertRowid, order_no: orderNo, amount: yuan,
+        pay_amount: yuan, discount: 0, kind, points: pts };
+    }
+
     const planId = b.plan_id ? Number(b.plan_id) : 0;
     let amount = 0;
     let detail = [];

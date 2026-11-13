@@ -90,6 +90,8 @@
 <script src="../assets/compare.js"></script>
 <script src="js/app.js"></script>
 <script src="js/pages.js"></script>
+<!-- 账户中心（含通用支付弹层）单独成文件，覆盖 pages.js 里的旧版 PageAccount -->
+<script src="js/page-account.js"></script>
 <script src="js/pages-earnings.js"></script>
 <script src="js/pages-blcloud.js"></script>
 <script>
@@ -100,6 +102,7 @@
     if (comp) UserApp.app.component('page-' + kebab(name), comp);
   }
   if (window.VersionCompare) UserApp.app.component('version-compare', window.VersionCompare);
+  if (window.PayDialog) UserApp.app.component('pay-dialog', window.PayDialog);
 
   // 揭开页面（撤首屏遮罩）。必须在 mount 之前注册监听：
   // 挂载 ≠ 可以给用户看，登录态校验（handoff 换票 → site → me）是异步的，

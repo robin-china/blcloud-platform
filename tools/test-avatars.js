@@ -52,7 +52,8 @@ function insertUser(openid, avatar = '') {
 
 (async () => {
   console.log('\n共享头像库（前后端同一份 UMD 定义）');
-  check('内置 8 张卡通头像', AP.PRESETS.length === 8, AP.PRESETS.length);
+  // 2026-11-13：新增一张中性默认头像，老 preset:01~08 继续保留兼容历史数据
+  check('内置 9 张头像（含 1 张中性默认）', AP.PRESETS.length === 9, AP.PRESETS.length);
   check('每张都是可直接 <img> 的 SVG data URI',
     AP.PRESETS.every((p) => /^data:image\/svg\+xml;base64,/.test(p.dataUri)));
   const decoded = Buffer.from(AP.PRESETS[0].dataUri.split(',')[1], 'base64').toString('utf8');
@@ -60,9 +61,10 @@ function insertUser(openid, avatar = '') {
     /<svg/.test(decoded) && /<ellipse/.test(decoded) && /<circle/.test(decoded) && decoded.length > 400,
     decoded.length);
   check('byValue 命中与不命中', !!AP.byValue('preset:03') && !AP.byValue('preset:99'));
-  check('默认头像按 openid 稳定', AP.defaultValue('openid-a') === AP.defaultValue('openid-a'));
-  check('不同 openid 会分到不同头像',
-    new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'].map((s) => AP.defaultValue(s))).size > 1);
+  check('默认头像恒为中性 preset:00', AP.defaultValue('openid-a') === 'preset:00'
+    && AP.defaultValue('openid-b') === 'preset:00' && !!AP.byValue('preset:00'));
+  check('中性默认不再按 openid 分男女款',
+    new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'].map((s) => AP.defaultValue(s))).size === 1);
 
   console.log('\n服务端展开与校验');
   check('isPreset 只认存在的预设',

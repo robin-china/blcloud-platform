@@ -150,6 +150,9 @@ ensureColumn('users', 'agent_code', "agent_code TEXT DEFAULT ''");
 ensureColumn('licenses', 'app_id', 'app_id INTEGER');
 ensureColumn('orders', 'app_id', 'app_id INTEGER');
 ensureColumn('users', 'profile_custom', 'profile_custom INTEGER DEFAULT 0');
+// 对外展示的 9 位数字个人 ID：openid 不再下发到用户端 / 软件端。
+// 老账号默认空，首次查询时懒生成（见 lib/userid.js），空值不参与唯一索引。
+ensureColumn('users', 'public_id', "public_id TEXT DEFAULT ''");
 // 升级结果上报的细分字段（2026-11-10 契约 v2，软件端 LabelGo 按「以后台为准」实现）：
 // result_code 客户端失败码（0=成功，3~7 客户端既有枚举，8=launch_failed 三兜底全挂）；
 // stage 失败阶段（download/extract/precheck/elevate/close/copy/launch/alive）；
@@ -202,6 +205,8 @@ db.exec(indexLines.join('\n'));
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_market_tpl_external
   ON market_templates(source, api_key_id, external_id)
   WHERE source='api' AND external_id<>''`);
+// 个人 ID 不允许重复；空值（尚未懒生成的历史账号）不参与约束
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_public_id ON users(public_id) WHERE public_id<>''");
 
 // 常见弱口令：命中即强制登录后修改密码
 const WEAK_PASSWORDS = ['admin123', 'admin', '123456', '12345678', 'admin888', 'password', 'root', 'test123'];

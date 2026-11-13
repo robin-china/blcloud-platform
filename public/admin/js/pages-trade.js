@@ -213,6 +213,7 @@ window.PageOrders = {
         if (c.type === 'license_renew') return `授权 ${c.license_key} 续期 ${c.days} 天`;
         if (c.type === 'license_upgrade') return `授权 ${c.license_key} 升级为 ${c.product}`;
         if (c.type === 'device') return `设备 ${c.sn}`;
+        if (c.type === 'points') return `积分 +${c.points}（余额 ${c.balance}）`;
         return '';
       }).filter(Boolean).join('，');
     }

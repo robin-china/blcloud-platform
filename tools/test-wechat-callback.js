@@ -200,7 +200,10 @@ function scanXml(from, to, scene, subscribe) {
     const meJson = me.json();
     t('⑨ token 可访问 /api/portal/me', me.statusCode === 200, me.statusCode);
     const meU = meJson.user || {};
-    t('⑨ me 返回的是本人 openid', meU.openid === 'oE2E0001', meU.openid || '-');
+    // 2026-11-13 起 openid 一律不对外，改发 9 位数字个人 ID
+    // 这段在父进程的模板字符串里，写到子脚本时必须写 \\d，否则 \d 会被吞成 d
+    t('⑨ me 返回 9 位数字个人 ID', /^\\d{9}$/.test(String(meU.publicId || '')), meU.publicId || '-');
+    t('⑨ me 不再下发 openid', !('openid' in meU), 'user字段=' + Object.keys(meU).join(','));
     t('⑨ me 不泄露 tb 账号密码', !meU.tb_username && !meU.tb_password, 'user字段=' + Object.keys(meU).join(','));
   } else {
     t('⑨ token 可访问 /api/portal/me', false, '上一步没拿到 token');

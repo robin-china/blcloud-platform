@@ -15,6 +15,7 @@ function describeDelivery(created) {
     if (c.type === 'license_renew') return `授权 ${c.license_key} 续期 ${c.days} 天，至 ${String(c.end_at).slice(0, 10)}`;
     if (c.type === 'license_upgrade') return `授权 ${c.license_key} 升级至 ${c.product}（${c.plan_code}）`;
     if (c.type === 'device') return `设备 ${c.sn}（${c.product}）`;
+    if (c.type === 'points') return `积分 +${c.points}（余额 ${c.balance}）`;
     return String(c.type || '未知');
   }).join('；');
 }
@@ -135,8 +136,11 @@ function markPaid(orderNo, tradeNo, channel, raw = '', paidAmount = null) {
   } else {
     paydiag.push('warn', 'deliver', `订单 ${orderNo} 已支付但没有发放任何东西：检查商品是否存在/已下架`);
   }
+  // 充值订单本身就是「花钱买积分」，不能再叠加消费返积分：
+  // 否则 ¥1=100 积分的口径会被悄悄改成 101，流水也对不上。退款侧同样要跳过。
+  const isRecharge = String(fresh.kind || '') === 'points_recharge';
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(order.user_id);
-  if (user) {
+  if (user && !isRecharge) {
     const gained = Math.floor(order.pay_amount);
     const balance = (user.points || 0) + gained;
     db.prepare('UPDATE users SET points = ? WHERE id = ?').run(balance, order.user_id);

@@ -154,6 +154,7 @@ module.exports = async function orderRoutes(app) {
      * 机器可能已经发到用户手里，不自动删，标记后人工核对。
      */
     let quotaBack = 0;
+    let rechargeBack = 0;
     let devicesFlagged = 0;
     try {
       const delivered = JSON.parse(order.deliver_result || '[]');
@@ -165,6 +166,20 @@ module.exports = async function orderRoutes(app) {
             const balance = Math.max(0, Number((u && u.blcloud_quota) || 0) - q);
             db.prepare('UPDATE users SET blcloud_quota = ? WHERE id = ?').run(balance, order.user_id);
             quotaBack += q;
+          }
+        } else if (c.type === 'points') {
+          // 积分充值退款：按发货记录收回积分。用户可能已经花掉一部分，
+          // 最多扣到 0，流水记的是「实际扣掉的量」而不是名义发放量。
+          const pts = Math.max(0, Math.trunc(Number(c.points) || 0));
+          if (pts > 0) {
+            const u = db.prepare('SELECT points FROM users WHERE id = ?').get(order.user_id);
+            const before = Number((u && u.points) || 0);
+            const balance = Math.max(0, before - pts);
+            db.prepare('UPDATE users SET points = ? WHERE id = ?').run(balance, order.user_id);
+            db.prepare('INSERT INTO points_logs (user_id, change, balance, reason, created_at) VALUES (?,?,?,?,?)')
+              .run(order.user_id, -(before - balance), balance,
+                `订单 ${order.order_no} 退款收回充值积分`, now());
+            rechargeBack += before - balance;
           }
         } else if (c.type === 'device' && c.sn) {
           // 设备退款不自动删行：TB 侧设备与已发硬件由人工处理，这里打上标记
@@ -197,8 +212,10 @@ module.exports = async function orderRoutes(app) {
     } catch { /* items 解析失败忽略 */ }
     // 佣金冲正：付款→代理商提现→用户退款 这条链路不堵住就是净亏钱
     const reversed = commission.reverseForOrder(order.id);
-    // 消费返的积分也要收回来（此前退款只改状态，积分白送）
-    const gained = Math.floor(order.pay_amount);
+    // 消费返的积分也要收回来（此前退款只改状态，积分白送）。
+    // 充值订单没有发过消费返积分（markPaid 已跳过），这里不能再收一次。
+    const isRecharge = String(order.kind || '') === 'points_recharge';
+    const gained = isRecharge ? 0 : Math.floor(order.pay_amount);
     if (gained > 0) {
       const buyer = db.prepare('SELECT points FROM users WHERE id = ?').get(order.user_id);
       if (buyer) {
@@ -211,8 +228,10 @@ module.exports = async function orderRoutes(app) {
     logAdmin(req, '订单退款', `订单 ${order.order_no}，¥${order.pay_amount}`
       + `${quotaBack ? `，收回 API 额度 ${quotaBack} 次` : ''}`
       + `${pointsBack ? `，退回抵扣积分 ${pointsBack}` : ''}`
-      + `${devicesFlagged ? `，标记待收回设备 ${devicesFlagged} 台` : ''}`);
-    return { ok: true, reversed_commissions: reversed, quota_back: quotaBack, points_back: pointsBack, devices_flagged: devicesFlagged };
+      + `${devicesFlagged ? `，标记待收回设备 ${devicesFlagged} 台` : ''}`
+      + `${rechargeBack ? `，收回充值积分 ${rechargeBack}` : ''}`);
+    return { ok: true, reversed_commissions: reversed, quota_back: quotaBack,
+      points_back: pointsBack, recharge_points_back: rechargeBack, devices_flagged: devicesFlagged };
   });
 
   // 删除未付款订单（软删除，见 lib/orderdel.js）：只清列表，不销毁记录，

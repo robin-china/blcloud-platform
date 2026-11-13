@@ -10,6 +10,7 @@ const plans = require('../lib/plans');
 const profileLib = require('../lib/profile');
 const handoff = require('../lib/handoff');
 const pointsLib = require('../lib/points');
+const userid = require('../lib/userid');
 
 async function ensureUser(openid, profile = {}) {
   let user = db.prepare('SELECT * FROM users WHERE openid = ?').get(openid);
@@ -36,10 +37,12 @@ async function ensureUser(openid, profile = {}) {
     // 历史账号补发免费档授权：软件端 activate 强制要 license_key，
     // 没有码就登不进来。已有任何授权（含付费）则不发，避免列表里多出废码。
     plans.ensureFreeLicense(user.id);
-    return { user, isNew: false };
+    // 历史账号首次登录时补上 9 位个人 ID（不追溯改库，用到才生成）
+    userid.ensurePublicId(user);
+    return { user: db.prepare('SELECT * FROM users WHERE id = ?').get(user.id), isNew: false };
   }
   // 新用户默认用微信昵称 / 微信头像；服务号没返回昵称时回退「用户XXXX」，
-  // 没返回头像则按 openid 稳定分配一张内置卡通头像（账户中心可随时换）。
+  // 没返回头像则统一用中性默认头像（微信后续给头像会覆盖，账户中心也可自行上传）。
   const wxAvatar = profileLib.safeAvatar(profile.avatar);
   const initialAvatar = wxAvatar.ok && wxAvatar.value
     ? wxAvatar.value
@@ -51,6 +54,8 @@ async function ensureUser(openid, profile = {}) {
   // 新用户赠送积分（默认 200，设置项 user_points_register 可改）只在注册这一刻发一次，
   // 并写 points_logs 流水。历史账号不补发：模板市场尚未发售，不需要追溯旧口径。
   try { pointsLib.registerBonus(user.id); } catch (e) { console.warn('[points] 新用户赠送失败：' + e.message); }
+  // 建档即生成个人 ID，后台用户列表与对外资料都能直接展示
+  userid.ensurePublicId(user);
   const cfg = getConfig('tb');
   const suffix = cfg.email_suffix || '@tb.cn';
   db.prepare('UPDATE users SET tb_username = ?, tb_password = ?, tb_status = ?, tb_message = ? WHERE id = ?')

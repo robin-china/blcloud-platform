@@ -11,6 +11,7 @@ const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 const css = read('public/assets/ui.css');
 const pages = read('public/user/js/pages.js');
+const accountJs = read('public/user/js/page-account.js');
 const adminProducts = read('public/admin/js/pages-products.js');
 const userIndex = read('public/user/index.html');
 const apiJs = read('public/assets/api.js');
@@ -93,11 +94,19 @@ check('会话抽屉有清理失效会话按钮', /cleanupSessions/.test(openapiP
 check('会话抽屉显示生效条数', /生效 \{\{ sessions\.online \}\}/.test(openapiPage));
 check('服务端只删失效/过期会话', /status <> 'active' OR expires_at </.test(read('server/routes/openapps.js')));
 
-console.log('\n头像：内置卡通可选，不再让用户填地址');
-check('账户中心不再有「头像地址」输入框', !/头像地址/.test(pages));
-check('账户中心有头像选择器网格', /class="avatar-picker"/.test(pages));
-check('自定义链接收进折叠的高级选项', /<summary>高级：改用图片链接<\/summary>/.test(pages));
-check('CSS 有头像选择器与选中态样式', /\.avatar-picker button\.active/.test(css));
+console.log('\n账户中心：中性默认头像 + 上传 + 紧凑单列');
+check('账户中心不再有「头像地址」输入框', !/头像地址/.test(accountJs));
+check('不再铺一整排卡通头像选择器', !/avatar-picker/.test(accountJs) && /上传头像/.test(accountJs));
+check('手机绑定收进 teleport 模态框', /<teleport to="body">/.test(accountJs)
+  && /绑定手机号|更换手机号/.test(accountJs) && /acct-code/.test(accountJs));
+check('主页面只留手机号状态与按钮', /maskedPhone/.test(accountJs) && /openPhone/.test(accountJs));
+check('主页面不再显示 openid，改显示个人 ID', !/user\?\.openid|me\?\.openid/.test(accountJs)
+  && /publicId/.test(accountJs));
+check('CSS 有账户中心紧凑布局与移动端断点', /\.acct \{/.test(css) && /@media \(max-width: 560px\)/.test(css));
+check('弹层 teleport 到 body 且有滚动锁/Esc', /<teleport to="body">/.test(accountJs)
+  && /body\.style\.overflow/.test(accountJs) && /e\.key === 'Escape'/.test(accountJs));
+check('user/index.html 引入新账户中心并注册 pay-dialog',
+  /js\/page-account\.js/.test(userIndex) && /component\('pay-dialog'/.test(userIndex));
 check('模板不直接引用全局 U', !/v-if="U\./.test(pages) && !/:src="U\./.test(pages) && !/v-if="U\./.test(userIndex));
 check('api.js 暴露 U.avatar / U.avatarPresets', /avatar,\s*avatarPresets/.test(apiJs) || /avatarPresets,/.test(apiJs));
 check('user/index.html 引入 avatars.js', /<script src="\.\.\/assets\/avatars\.js"><\/script>/.test(userIndex));
@@ -106,7 +115,8 @@ const iApi = userIndex.indexOf('assets/api.js');
 check('avatars.js 早于 api.js 加载', iAv > -1 && iApi > -1 && iAv < iApi, { iAv, iApi });
 check('头像库是 UMD（前后端共用一份）',
   /module\.exports/.test(avatarJs) && /root\.AvatarPresets/.test(avatarJs));
-check('头像库提供 8 个预设', (avatarJs.match(/id: '\d\d', name:/g) || []).length === 8);
+check('头像库提供 9 个预设（含中性默认 00）',
+  (avatarJs.match(/id: '\d\d', name:/g) || []).length === 9 && /id: '00', name: '默认头像'/.test(avatarJs));
 check('头像库导出 defaultValue 供服务端分配', /defaultValue/.test(avatarJs));
 
 console.log('\n开关组件：.field 里的 label.switch 必须保住 inline-flex');

@@ -881,14 +881,19 @@ window.PageMyOrders = {
               <button class="btn sm danger" v-if="o.status==='pending'" @click="remove(o)">删除</button>
             </td>
           </tr>
-          <tr v-if="!list.length"><td colspan="7"><div class="empty">暂无订单</div></td></tr>
-        </tbody>
-      </table>
+            <tr v-if="!list.length"><td colspan="7"><div class="empty">暂无订单</div></td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
-  </div>
+    <pay-dialog :open="payOpen" :order-no="payOrderNo" :channels="payChannels"
+      title="订单支付" @close="payOpen = false" @paid="onPayDialogPaid"></pay-dialog>
   `,
   setup() {
     const list = ref([]);
+    const payOpen = ref(false);
+    const payOrderNo = ref('');
+    const payChannels = ref([]);
     const fmt = U.fmt;
     // 模拟支付按钮只在后台显式开启时出现，避免生产环境暴露 0 元发货入口
     const canSimulate = ref(false);
@@ -900,7 +905,20 @@ window.PageMyOrders = {
         load();
       } catch (e) { U.toast(e.message, 'error'); }
     }
-    function pay(o) { location.hash = `#/product/${o.items[0].product_id}`; }
+    // 积分充值单（以及没有实体商品的套餐单）没有可跳的商品页，直接起支付弹层
+    function pay(o) {
+      const first = (o.items || [])[0] || {};
+      if (o.kind === 'points_recharge' || !Number(first.product_id)) {
+        payOrderNo.value = o.order_no;
+        payOpen.value = true;
+        return;
+      }
+      location.hash = `#/product/${first.product_id}`;
+    }
+    async function onPayDialogPaid() {
+      U.toast('支付成功', 'success');
+      await load();
+    }
     // 没付钱的订单一直挂在列表里很闹心，允许用户自己删掉。
     // 服务端是软删除（列表隐藏、记录保留），万一扫码付款的回调晚到也不会丢单。
     async function remove(o) {
@@ -926,6 +944,7 @@ window.PageMyOrders = {
         if (c.type === 'license_renew') return `授权 ${c.license_key} 续期 ${c.days} 天`;
         if (c.type === 'license_upgrade') return `授权 ${c.license_key} 升级为 ${c.product}`;
         if (c.type === 'device') return `设备 ${c.sn}`;
+        if (c.type === 'points') return `积分 +${c.points}`;
         return '';
       }).filter(Boolean).join('，');
     }
@@ -934,159 +953,12 @@ window.PageMyOrders = {
       load();
       try {
         const s = await U.api.get('/api/portal/site');
-        canSimulate.value = (s.pay_channels || []).includes('simulate');
+        payChannels.value = s.pay_channels || [];
+        canSimulate.value = payChannels.value.includes('simulate');
       } catch (e) { /* ignore */ }
     });
-    return { list, fmt, canSimulate, simulatePay, pay, remove, statusText, channelName, deliverText };
-  },
-};
-
-window.PageAccount = {
-  template: `
-  <div class="grid g2">
-    <div class="card">
-      <div class="card-head">
-        <h3>账户资料</h3>
-        <span class="tag success" v-if="user?.profile_custom">已自定义</span>
-        <span class="tag" v-else>来自微信</span>
-      </div>
-      <div class="card-body">
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-          <img v-if="avatarUrl" :src="avatarUrl" alt="" class="avatar-preview" />
-          <div v-else class="avatar" style="width:56px;height:56px;font-size:22px">
-            {{ (nickname || 'U').slice(0, 1) }}
-          </div>
-          <div style="min-width:0">
-            <b>{{ nickname || '-' }}</b>
-            <div style="color:var(--text-3);font-size:12.5px">微信没给头像时自动分配一张卡通头像；改过后微信登录不会再覆盖，软件端登录后同步</div>
-          </div>
-        </div>
-        <div class="kv">
-          <div class="k">OpenID</div><div style="font-family:ui-monospace,monospace;font-size:12.5px">{{ user?.openid || '-' }}</div>
-          <div class="k">手机号</div><div>{{ user?.phone || '未绑定' }}</div>
-          <div class="k">积分</div><div>{{ user?.points || 0 }}</div>
-          <div class="k">注册时间</div><div>{{ fmt.time(user?.created_at) }}</div>
-        </div>
-        <div class="field" style="margin-top:12px"><label>昵称</label><input class="input" v-model="nickname" maxlength="24" placeholder="你的昵称" /></div>
-        <div class="field">
-          <label>头像</label>
-          <div class="hint" style="margin:0 0 6px">点一张就能换，不用填地址</div>
-          <div class="avatar-picker">
-            <button type="button" v-for="p in presets" :key="p.value"
-              :class="avatar===p.value ? 'active' : ''" :title="p.name" @click="pickPreset(p)">
-              <img :src="p.dataUri" :alt="p.name" />
-            </button>
-          </div>
-          <details class="avatar-custom">
-            <summary>高级：改用图片链接</summary>
-            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
-              <input class="input" style="flex:1;min-width:180px" v-model="customUrl" @input="applyCustom"
-                     placeholder="https://... 或 /assets/avatar.png" />
-              <button class="btn sm" type="button" @click="applyCustom">使用此链接</button>
-              <button class="btn sm" type="button" @click="clearCustom">清除</button>
-            </div>
-            <div class="hint">链接仅作高级选项；留空点「清除」则回到字母占位。</div>
-          </details>
-        </div>
-        <button class="btn primary" :disabled="saving" @click="saveProfile">{{ saving ? '保存中…' : '保存资料' }}</button>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h3>绑定手机号</h3></div>
-      <div class="card-body">
-        <div class="field"><label>手机号</label><input class="input" v-model="phone" placeholder="请输入手机号" /></div>
-        <div class="field"><label>验证码</label>
-          <div style="display:flex;gap:8px">
-            <input class="input" v-model="code" placeholder="6 位验证码" />
-            <button class="btn" @click="sendCode">发送验证码</button>
-          </div>
-          <div class="hint" v-if="devCode">开发模式验证码：{{ devCode }}</div>
-        </div>
-        <button class="btn primary" @click="bind">确认绑定</button>
-      </div>
-    </div>
-    <div class="card" style="grid-column:1/-1">
-      <div class="card-head"><h3>积分明细</h3><button class="btn primary sm" @click="signin">每日签到</button></div>
-      <div class="card-body tight">
-        <table class="table">
-          <thead><tr><th>变动</th><th>余额</th><th>原因</th><th>时间</th></tr></thead>
-          <tbody>
-            <tr v-for="p in points" :key="p.id">
-              <td :style="{color:p.change>0?'var(--success)':'var(--danger)'}">{{ p.change>0?'+':'' }}{{ p.change }}</td>
-              <td>{{ p.balance }}</td><td>{{ p.reason }}</td><td>{{ fmt.time(p.created_at) }}</td>
-            </tr>
-            <tr v-if="!points.length"><td colspan="4"><div class="empty">暂无记录</div></td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-  `,
-  setup() {
-    const user = Vue.inject('user');
-    const phone = ref('');
-    const code = ref('');
-    const devCode = ref('');
-    const points = ref([]);
-    const nickname = ref('');
-    // avatar 是「提交给后端的值」：preset:XX / 自定义链接 / 空，不是展开后的 data URI
-    const avatar = ref('');
-    const presets = ref(U.avatarPresets());
-    const customUrl = ref('');
-    const saving = ref(false);
-    const fmt = U.fmt;
-    // 模板作用域：把 preset:XX 展开成 data URI，空值则显示昵称首字占位
-    const avatarUrl = computed(() => U.avatar(avatar.value));
-    function pickPreset(p) { avatar.value = p.value; customUrl.value = ''; }
-    function applyCustom() { avatar.value = customUrl.value.trim(); }
-    function clearCustom() { customUrl.value = ''; avatar.value = ''; }
-    async function saveProfile() {
-      saving.value = true;
-      try {
-        const res = await U.api.post('/api/portal/profile', { nickname: nickname.value, avatar: avatar.value });
-        nickname.value = res.user.nickname;
-        avatar.value = res.user.avatar_preset || customUrl.value.trim();
-        U.toast('资料已保存，软件端下次同步即可看到', 'success');
-        location.reload();
-      } catch (e) { U.toast(e.message, 'error'); }
-      finally { saving.value = false; }
-    }
-    async function sendCode() {
-      if (!/^1\d{10}$/.test(phone.value)) { U.toast('手机号格式不正确', 'error'); return; }
-      const res = await U.api.post('/api/portal/phone/code', { phone: phone.value });
-      devCode.value = res.devCode || '';
-      U.toast('验证码已发送', 'success');
-    }
-    async function bind() {
-      try {
-        await U.api.post('/api/portal/phone/bind', { phone: phone.value, code: code.value });
-        U.toast('绑定成功', 'success');
-        location.reload();
-      } catch (e) { U.toast(e.message, 'error'); }
-    }
-    async function signin() {
-      try {
-        const res = await U.api.post('/api/portal/signin', {});
-        U.toast(`签到成功 +${res.gain} 积分`, 'success');
-        location.reload();
-      } catch (e) { U.toast(e.message, 'error'); }
-    }
-    onMounted(async () => {
-      if (!(await U.authReady())) { location.hash = '#/login'; return; }
-      try {
-        const me = await U.api.get('/api/portal/me');
-        nickname.value = me.user.nickname || '';
-        // 内置头像回显选中态；自定义链接 / 微信头像则填进高级选项
-        avatar.value = me.user.avatar_preset || '';
-        if (!avatar.value && me.user.avatar && /^(https?:\/\/|\/)/.test(me.user.avatar)) {
-          customUrl.value = me.user.avatar;
-          avatar.value = me.user.avatar;
-        }
-      } catch (e) { /* ignore */ }
-      points.value = (await U.api.get('/api/portal/points')).list;
-    });
-    return { user, phone, code, devCode, points, nickname, avatar, avatarUrl, presets, customUrl, saving, fmt,
-      saveProfile, pickPreset, applyCustom, clearCustom, sendCode, bind, signin };
+    return { list, fmt, canSimulate, payOpen, payOrderNo, payChannels, onPayDialogPaid,
+      simulatePay, pay, remove, statusText, channelName, deliverText };
   },
 };
 

@@ -60,6 +60,10 @@
   }
 
   var DEFS = [
+    // 中性默认头像：所有新用户统一用这一张，不按性别/openid 分配。
+    // 微信拿到头像后覆盖；用户也可以自己上传。老数据里的 01~08 继续保留，
+    // 不能删（删了老用户库里的 preset:0X 就展开不出图）。
+    { id: '00', name: '默认头像', bg1: '#E2E8F0', bg2: '#94A3B8', hair: '#475569', style: 'short' },
     { id: '01', name: '蓝帽少年', bg1: '#DBEAFE', bg2: '#93C5FD', hair: '#2563EB', style: 'cap' },
     { id: '02', name: '樱花妹妹', bg1: '#FCE7F3', bg2: '#F9A8D4', hair: '#BE185D', style: 'bob' },
     { id: '03', name: '薄荷同学', bg1: '#D1FAE5', bg2: '#6EE7B7', hair: '#047857', style: 'short' },
@@ -85,14 +89,10 @@
   var BY_VALUE = {};
   PRESETS.forEach(function (p) { BY_VALUE[p.value] = p; });
 
-  // 同一 openid 每次都落到同一张，避免用户重登后头像乱跳
-  function hash(s) {
-    var h = 5381;
-    for (var i = 0; i < s.length; i += 1) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
-    return h;
-  }
-  function defaultId(seed) { return PRESETS[hash(String(seed || '')) % PRESETS.length].id; }
-  function defaultValue(seed) { return 'preset:' + defaultId(seed); }
+  // 2026-11-13 口径：默认头像固定一张中性款，不再按 openid 散列到男女不同款。
+  // defaultId/defaultValue 保留 seed 参数只为兼容旧调用，值恒为 preset:00。
+  function defaultId() { return '00'; }
+  function defaultValue() { return 'preset:' + defaultId(); }
 
   return {
     PRESETS: PRESETS,

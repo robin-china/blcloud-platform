@@ -6,12 +6,13 @@
  * 注意：对外 user 对象绝不能带 tb_username / tb_password（内部打通凭据），
  * 这里用 publicUser 白名单输出，别直接把 SELECT * 的结果丢给客户端。
  *
- * 头像：库里存 `preset:01` 短标识（内置卡通头像）或自定义链接；
+ * 头像：库里存 `preset:00`（中性默认头像）短标识或自定义链接；
  * publicUser 把标识展开成 data URI 再对外，软件端离线也能显示。
- * 微信没给头像时按 openid 稳定分配一张内置头像。
+ * 微信没给头像时统一用中性默认头像，不再按 openid 分配男女款。
  */
 const db = require('../db');
 const avatars = require('./avatars');
+const userid = require('./userid');
 
 const MAX_NICKNAME = 24;
 // 内置头像只存 10 字符的 preset 标识；放宽上限是为了让「自定义图片 data URL」也能用
@@ -65,7 +66,8 @@ function publicUser(u) {
   if (!u) return null;
   return {
     id: u.id,
-    openid: u.openid,
+    // openid 属于微信身份凭据，一律不对外；改用 9 位数字个人 ID 供展示/客服核对
+    publicId: userid.ensurePublicId(u),
     nickname: u.nickname,
     // 预设头像展开成 data URI，软件端 / 网页端拿到即可直接渲染，无需再取图
     avatar: avatars.toDisplay(u.avatar),
