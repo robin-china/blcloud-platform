@@ -223,6 +223,14 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
   ok('第二因素弹层 teleport 到 body', /<teleport to="body">/.test(loginCode));
   ok('index.html 在 login.js 之前引入 pow.js', adminIndex.indexOf('../assets/pow.js') < adminIndex.indexOf('js/login.js'));
   ok('管理员页有登录安全卡片与 teleport 弹层', /登录安全/.test(systemCode) && /<teleport to="body">/.test(systemCode));
+  ok('绑定弹层明确说明微信/支付宝扫不了', /微信 \/ 支付宝/.test(systemCode) && /无法识别/.test(systemCode));
+  ok('绑定弹层给出可用验证器 App 名单', /Microsoft Authenticator/.test(systemCode) && /Bitwarden/.test(systemCode));
+  ok('绑定弹层有手动输入引导与固定参数', /手动添加/.test(systemCode) && /SHA1/.test(systemCode) && /30 秒/.test(systemCode));
+  ok('复制密钥函数在 setup 里定义并 return', /async function copySecret/.test(systemCode)
+    && /return \{[\s\S]*copySecret/.test(systemCode));
+  ok('模板不直接引用 navigator/window（复制走 setup 函数）', !/@click="navigator\./.test(systemCode) && !/\{\{\s*window\./.test(systemCode));
+  ok('二维码容器加了白底便于扫码', /background:#fff;padding:10px/.test(systemCode));
+  ok('登录页第二因素提示不是微信扫码', /不是微信扫码/.test(loginCode));
 
   const dom = new JSDOM('<!doctype html><html><body><div id="app"></div></body></html>', {
     runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://example.com/platform/admin/',

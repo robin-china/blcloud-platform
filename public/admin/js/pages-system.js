@@ -525,10 +525,24 @@ window.PageAdmins = {
           </div>
           <div class="modal-body">
             <div v-if="sec.mode === 'setup'">
-              <div class="hint">用验证器 App 扫描二维码，或手动填入密钥，再输入 6 位动态码确认。</div>
-              <div style="margin:12px 0;line-height:0" v-html="sec.qrcodeSvg"></div>
-              <div class="hint" style="font-family:ui-monospace,monospace;word-break:break-all">密钥：{{ sec.secret }}</div>
-              <div class="field" style="margin-top:12px"><label>6 位动态码</label><input class="input" v-model="sec.code" maxlength="6" /></div>
+              <div class="hint" style="color:var(--danger)">
+                请用<b>身份验证器 App</b>扫码。微信 / 支付宝的「扫一扫」不支持这种格式，
+                提示「无法识别」或打不开是正常现象，不是二维码坏了。
+              </div>
+              <div class="hint" style="margin-top:6px">
+                可用：Microsoft Authenticator、Google Authenticator，或 1Password / Bitwarden / KeePassXC
+                等支持 TOTP 的密码管理器；应用商店搜「身份验证器」「Authenticator」「动态口令」即可。
+              </div>
+              <div style="margin:12px 0;text-align:center;line-height:0">
+                <div style="display:inline-block;background:#fff;padding:10px;border:1px solid var(--border);border-radius:8px" v-html="sec.qrcodeSvg"></div>
+              </div>
+              <div class="hint">
+                <b>扫不了就手动添加</b>：在验证器里选「手动输入 / 输入密钥」，粘贴下面这串密钥，
+                算法 <b>SHA1</b>、位数 <b>6</b>、周期 <b>30 秒</b>，账号名随意填。
+              </div>
+              <div class="hint" style="font-family:ui-monospace,monospace;word-break:break-all;margin-top:6px">密钥：{{ sec.secret }}</div>
+              <button class="btn sm" style="margin-top:6px" @click="copySecret">复制密钥</button>
+              <div class="field" style="margin-top:12px"><label>6 位动态码</label><input class="input" v-model="sec.code" maxlength="6" inputmode="numeric" autocomplete="one-time-code" placeholder="验证器里显示的 6 位数字" /></div>
             </div>
             <div v-if="sec.mode === 'recovery'">
               <div class="hint" style="color:var(--danger)">以下恢复码只显示这一次，请立即离线保存。每个只能用一次。</div>
@@ -605,6 +619,27 @@ window.PageAdmins = {
       finally { sec.busy = false; }
     }
 
+    async function copySecret() {
+      const text = String(sec.secret || '').replace(/\s/g, '');
+      if (!text) return;
+      try {
+        // 子路径部署在 http 下没有 clipboard API，回退到临时 textarea
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        U.toast('密钥已复制', 'success');
+      } catch (e) { U.toast('复制失败，请手动选中密钥', 'error'); }
+    }
+
     function openDisable() { sec.mode = 'disable'; sec.code = ''; sec.show = true; }
     function closeSec() {
       sec.show = false;
@@ -679,7 +714,7 @@ window.PageAdmins = {
     onMounted(function () { load(); loadSec(); });
     return {
       list, logs, editing, form, fmt, openCreate, save, remove,
-      sec, loadSec, openSetup, openDisable, closeSec, confirmSec, saveSec, revoke,
+      sec, loadSec, openSetup, copySecret, openDisable, closeSec, confirmSec, saveSec, revoke,
     };
   },
 };

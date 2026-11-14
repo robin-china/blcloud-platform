@@ -44,7 +44,7 @@ window.PageLogin = {
         <div class="modal" style="max-width:420px">
           <div class="modal-head"><h3>第二因素验证</h3></div>
           <div class="modal-body">
-            <div class="hint" style="margin-bottom:12px">该账号已启用动态口令，请输入验证器中的 6 位数字；也可用一次性恢复码。</div>
+            <div class="hint" style="margin-bottom:12px">该账号已启用动态口令，请输入<b>身份验证器 App</b> 里的 6 位数字（不是微信扫码）；也可用一次性恢复码。</div>
             <div class="field">
               <label>动态码 / 恢复码</label>
               <input class="input" v-model="second.code" autocomplete="one-time-code" placeholder="000000" @keyup.enter="submitSecond" />
