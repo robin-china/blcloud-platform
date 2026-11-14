@@ -489,6 +489,66 @@ window.PageAdmins = {
       </div>
     </div>
 
+    <div class="card">
+      <div class="card-head"><h3>登录安全</h3><button class="btn sm" @click="loadSec">刷新</button></div>
+      <div class="card-body">
+        <div class="kv">
+          <div class="k">动态口令</div><div><span class="tag" :class="sec.enabled ? 'success' : ''">{{ sec.enabled ? '已启用' : '未启用' }}</span></div>
+          <div class="k">剩余恢复码</div><div>{{ sec.recoveryLeft }}</div>
+          <div class="k">图形验证</div><div>{{ sec.captchaMode }}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button class="btn sm primary" v-if="!sec.enabled" :disabled="sec.busy" @click="openSetup">绑定动态口令</button>
+          <button class="btn sm danger" v-if="sec.enabled" @click="openDisable">解绑</button>
+          <button class="btn sm" @click="revoke">强制下线全部会话</button>
+        </div>
+        <div class="field" style="margin-top:14px">
+          <label>验证码策略</label>
+          <select class="select" v-model="sec.modeEdit">
+            <option value="risk">风险触发（推荐）</option>
+            <option value="always">每次登录</option>
+            <option value="off">关闭</option>
+          </select>
+        </div>
+        <div class="field"><label>同一 IP 15 分钟内登录上限</label><input class="input" v-model="sec.ipLimit" inputmode="numeric" /></div>
+        <button class="btn sm" @click="saveSec">保存安全设置</button>
+        <div class="hint" style="margin-top:8px">动态口令密钥用 AES 加密入库；恢复码只存哈希、只显示一次。</div>
+      </div>
+    </div>
+
+    <teleport to="body">
+      <div class="mask" v-if="sec.show">
+        <div class="modal" style="max-width:460px">
+          <div class="modal-head">
+            <h3>{{ sec.mode === 'disable' ? '解绑动态口令' : (sec.mode === 'recovery' ? '保存恢复码' : '绑定动态口令') }}</h3>
+            <button class="close-x" @click="closeSec">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div v-if="sec.mode === 'setup'">
+              <div class="hint">用验证器 App 扫描二维码，或手动填入密钥，再输入 6 位动态码确认。</div>
+              <div style="margin:12px 0;line-height:0" v-html="sec.qrcodeSvg"></div>
+              <div class="hint" style="font-family:ui-monospace,monospace;word-break:break-all">密钥：{{ sec.secret }}</div>
+              <div class="field" style="margin-top:12px"><label>6 位动态码</label><input class="input" v-model="sec.code" maxlength="6" /></div>
+            </div>
+            <div v-if="sec.mode === 'recovery'">
+              <div class="hint" style="color:var(--danger)">以下恢复码只显示这一次，请立即离线保存。每个只能用一次。</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:12px;font-family:ui-monospace,monospace;font-size:13px">
+                <div v-for="c in sec.recoveryCodes" :key="c">{{ c }}</div>
+              </div>
+            </div>
+            <div v-if="sec.mode === 'disable'">
+              <div class="hint">输入当前动态码或任一未使用的恢复码以解绑。</div>
+              <div class="field" style="margin-top:12px"><label>动态码 / 恢复码</label><input class="input" v-model="sec.code" /></div>
+            </div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn" @click="closeSec">{{ sec.mode === 'recovery' ? '我已保存' : '取消' }}</button>
+            <button class="btn primary" v-if="sec.mode !== 'recovery'" :disabled="sec.busy" @click="confirmSec">确认</button>
+          </div>
+        </div>
+      </div>
+    </teleport>
+
     <div class="mask" v-if="editing" @click.self="editing=false">
       <div class="modal">
         <div class="modal-head"><h3>新增管理员</h3><button class="close-x" @click="editing=false">&times;</button></div>
@@ -514,6 +574,87 @@ window.PageAdmins = {
     const editing = ref(false);
     const form = reactive({ username: '', name: '', password: '', role: 'admin' });
     const fmt = U.fmt;
+    const sec = reactive({
+      enabled: false, recoveryLeft: 0, captchaMode: 'risk', modeEdit: 'risk',
+      ipLimit: '30', nudge: false, show: false, mode: '', busy: false,
+      qrcodeSvg: '', secret: '', code: '', recoveryCodes: [],
+    });
+
+    async function loadSec() {
+      try {
+        const r = await U.api.get('/api/admin/2fa/status');
+        sec.enabled = !!r.enabled;
+        sec.recoveryLeft = Number(r.recoveryLeft) || 0;
+        sec.captchaMode = r.captchaMode || 'risk';
+        sec.modeEdit = sec.captchaMode;
+        sec.ipLimit = String(r.loginIpLimit || '30');
+        sec.nudge = !!r.nudge;
+      } catch (e) { /* 老进程没这个接口时静默降级 */ }
+    }
+
+    async function openSetup() {
+      sec.busy = true;
+      try {
+        const r = await U.api.post('/api/admin/2fa/setup', {});
+        sec.qrcodeSvg = r.qrcodeSvg || '';
+        sec.secret = r.secret || '';
+        sec.code = '';
+        sec.mode = 'setup';
+        sec.show = true;
+      } catch (e) { U.toast(U.failMsg(e, '获取二维码失败'), 'error'); }
+      finally { sec.busy = false; }
+    }
+
+    function openDisable() { sec.mode = 'disable'; sec.code = ''; sec.show = true; }
+    function closeSec() {
+      sec.show = false;
+      sec.code = '';
+      document.body.style.overflow = '';
+    }
+
+    async function confirmSec() {
+      if (!String(sec.code || '').trim() || sec.busy) return;
+      sec.busy = true;
+      try {
+        if (sec.mode === 'setup') {
+          const r = await U.api.post('/api/admin/2fa/confirm', { code: String(sec.code).trim() });
+          sec.recoveryCodes = r.recoveryCodes || [];
+          sec.mode = 'recovery';
+          sec.code = '';
+          U.toast('已启用，请保存恢复码', 'success');
+        } else {
+          await U.api.post('/api/admin/2fa/disable', { code: String(sec.code).trim() });
+          sec.show = false;
+          U.toast('已解绑，请重新登录', 'success');
+          U.api.setToken('admin', '');
+          location.reload();
+        }
+        await loadSec();
+      } catch (e) { U.toast(U.failMsg(e, '操作失败'), 'error'); }
+      finally { sec.busy = false; }
+    }
+
+    async function saveSec() {
+      try {
+        await U.api.post('/api/admin/security/config', {
+          captchaMode: sec.modeEdit, loginIpLimit: Number(sec.ipLimit), nudge: sec.nudge,
+        });
+        U.toast('安全设置已保存', 'success');
+        await loadSec();
+      } catch (e) { U.toast(U.failMsg(e, '保存失败'), 'error'); }
+    }
+
+    async function revoke() {
+      if (!(await U.confirm('强制下线后当前登录也会失效，需要重新登录。继续？'))) return;
+      try {
+        await U.api.post('/api/admin/security/revoke', {});
+        U.api.setToken('admin', '');
+        location.reload();
+      } catch (e) { U.toast(U.failMsg(e, '操作失败'), 'error'); }
+    }
+
+    Vue.watch(() => sec.show, function (v) { document.body.style.overflow = v ? 'hidden' : ''; });
+
     async function load() {
       list.value = (await U.api.get('/api/admin/list')).list;
       logs.value = (await U.api.get('/api/admin/logs?limit=80')).list;
@@ -535,8 +676,11 @@ window.PageAdmins = {
         load();
       } catch (e) { U.toast(U.failMsg(e, '删除失败'), 'error'); }
     }
-    onMounted(load);
-    return { list, logs, editing, form, fmt, openCreate, save, remove };
+    onMounted(function () { load(); loadSec(); });
+    return {
+      list, logs, editing, form, fmt, openCreate, save, remove,
+      sec, loadSec, openSetup, openDisable, closeSec, confirmSec, saveSec, revoke,
+    };
   },
 };
 })();

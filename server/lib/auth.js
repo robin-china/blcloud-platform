@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const db = require('../db');
 const { getMasterKey } = require('./crypto');
 const { basePath } = require('./config');
 
@@ -15,9 +16,17 @@ const USER_TTL = '30d';
  * 所有管理接口都拦成 403，逼着先把密码改掉。
  */
 function signAdmin(admin) {
-  const payload = { sub: admin.id, username: admin.username, role: admin.role, scope: 'admin' };
+  // ep = token_epoch：显式强制下线 / 删除管理员时 +1，让此前签发的 12h JWT 立刻失效。
+  const payload = {
+    sub: admin.id, username: admin.username, role: admin.role, scope: 'admin',
+    ep: Number(admin.token_epoch || 0),
+  };
   if (Number(admin.must_change_password || 0) === 1) payload.mcp = 1;
   return jwt.sign(payload, ADMIN_SECRET, { expiresIn: ADMIN_TTL });
+}
+
+function bumpAdminEpoch(adminId) {
+  return db.prepare('UPDATE admins SET token_epoch = token_epoch + 1 WHERE id = ?').run(adminId).changes;
 }
 
 function signUser(user) {
@@ -36,7 +45,10 @@ function verifyAdmin(req) {
   if (!token) return null;
   try {
     const payload = jwt.verify(token, ADMIN_SECRET);
-    return payload.scope === 'admin' ? payload : null;
+    if (payload.scope !== 'admin') return null;
+    const row = db.prepare('SELECT token_epoch FROM admins WHERE id = ?').get(payload.sub);
+    if (!row || Number(row.token_epoch || 0) !== Number(payload.ep || 0)) return null;
+    return payload;
   } catch {
     return null;
   }
@@ -86,4 +98,4 @@ async function requireUser(req, reply) {
   return p;
 }
 
-module.exports = { signAdmin, signUser, verifyAdmin, verifyUser, requireAdmin, requireUser };
+module.exports = { signAdmin, bumpAdminEpoch, signUser, verifyAdmin, verifyUser, requireAdmin, requireUser };

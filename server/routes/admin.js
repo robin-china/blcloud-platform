@@ -1,68 +1,226 @@
 const fs = require('fs');
 const path = require('path');
+const QRCode = require('qrcode');
 const db = require('../db');
 const { now, hashPassword, verifyPassword } = require('../lib/util');
-const { signAdmin, requireAdmin } = require('../lib/auth');
+const { signAdmin, bumpAdminEpoch, requireAdmin } = require('../lib/auth');
 const { basePath, getSetting, setSetting, allSettings, getConfig, setConfig, getConfigMasked, DEFAULTS } = require('../lib/config');
+const adminsec = require('../lib/adminsec');
 const tb = require('../services/tb');
 const wxpay = require('../services/wxpay');
 const paydiag = require('../lib/paydiag');
 const tbdiag = require('../lib/tbdiag');
+const { logAdmin } = require('../lib/adminlog');
 
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'data', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 失败计数窗口
-const LOGIN_MAX_FAIL = 5;               // 窗口内最大失败次数
-
-function clientIp(req) {
-  return String(req.ip || req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-}
-
-function recentFailures(username) {
-  const since = new Date(Date.now() - LOGIN_WINDOW_MS).toISOString();
-  return db.prepare('SELECT COUNT(*) AS c FROM login_attempts WHERE username = ? AND success = 0 AND created_at > ?')
-    .get(String(username || ''), since).c;
-}
-
-function recordAttempt(username, ip, success) {
-  try {
-    db.prepare('INSERT INTO login_attempts (username, ip, success, created_at) VALUES (?,?,?,?)')
-      .run(String(username || ''), String(ip || ''), success ? 1 : 0, now());
-  } catch { /* 审计失败不影响主流程 */ }
-}
-
-function clearAttempts(username) {
-  try {
-    db.prepare('DELETE FROM login_attempts WHERE username = ?').run(String(username || ''));
-  } catch { /* ignore */ }
-}
-
-const { logAdmin } = require('../lib/adminlog');
-
 module.exports = async function adminRoutes(app) {
-  app.post('/api/admin/login', async (req, reply) => {
-    const { username, password } = req.body || {};
-    const ip = clientIp(req);
-    if (recentFailures(username) >= LOGIN_MAX_FAIL) {
-      return reply.code(429).send({ error: '登录失败次数过多，请 15 分钟后重试' });
+  /** 登录收尾：清失败计数、记成功审计、比对上次 IP、签发正式 JWT。 */
+  function finishLogin(admin, username, ip) {
+    const prevIp = adminsec.lastLoginIp(admin.id);
+    adminsec.clearFailures(username, ip);
+    adminsec.recordAttempt(username, ip, true);
+    if (prevIp && prevIp !== ip) {
+      adminsec.audit('异地登录', `上次 IP=${prevIp} 本次 IP=${ip}`, admin.id, admin.username);
     }
-    const admin = db.prepare('SELECT * FROM admins WHERE username = ?').get(String(username || ''));
-    if (!admin || !verifyPassword(String(password || ''), admin.password_hash)) {
-      recordAttempt(username, ip, false);
-      return reply.code(401).send({ error: '用户名或密码错误' });
-    }
-    if (admin.status !== 'active') return reply.code(403).send({ error: '账号已停用' });
-    clearAttempts(username);
     db.prepare('UPDATE admins SET last_login_at = ? WHERE id = ?').run(now(), admin.id);
+    const fresh = db.prepare('SELECT * FROM admins WHERE id = ?').get(admin.id);
     return {
-      token: signAdmin(admin),
-      must_change_password: Number(admin.must_change_password || 0) === 1,
+      token: signAdmin(fresh),
+      must_change_password: Number(fresh.must_change_password || 0) === 1,
       // 生产环境后端会硬拦受限令牌（requireAdmin），前端据此不给「稍后提醒」出口；
       // 测试/本地开发不拦，弹窗可跳过，否则本地联调每次都要改密码
       mcp_enforced: process.env.NODE_ENV === 'production',
-      admin: { id: admin.id, username: admin.username, name: admin.name, role: admin.role },
+      two_fa_suggested: Number(fresh.totp_enabled || 0) === 0 && getSetting('admin_2fa_nudge', '0') === '1',
+      admin: { id: fresh.id, username: fresh.username, name: fresh.name, role: fresh.role },
     };
+  }
+
+  /**
+   * 图形挑战：mode=off 时不发；其余情况都发一张一次性挑战。
+   * 取挑战的接口自身限流，否则会成为新的放大入口。
+   */
+  app.get('/api/admin/challenge', async (req, reply) => {
+    const ip = adminsec.clientIp(req);
+    if (!adminsec.rateHit(`admin:challenge:${ip}`, adminsec.CHALLENGE_RATE, 60000)) {
+      return reply.code(429).send({ error: '获取验证过于频繁，请稍后再试', code: 'RATE_LIMITED' });
+    }
+    const mode = adminsec.captchaMode();
+    if (mode === 'off') return { required: false, mode, serverTime: now() };
+    const c = adminsec.createChallenge({ ip, ua: req.headers['user-agent'] });
+    // force=1 供「服务端已判定必须验证、但按 IP 维度还不够阈值」的场景：
+    // 登录接口回 CAPTCHA_REQUIRED 后，前端必须能拿到一张可见的挑战，否则会卡在循环里。
+    const forced = String((req.query || {}).force || '') === '1';
+    const risk = forced ? { required: true } : adminsec.captchaRequired('', ip);
+    return {
+      required: risk.required, mode, challengeId: c.id, svg: c.svg,
+      powSeed: c.powSeed, difficulty: c.difficulty, expiresIn: c.expiresIn, serverTime: now(),
+    };
+  });
+
+  app.post('/api/admin/login', async (req, reply) => {
+    const b = req.body || {};
+    const { username, password } = b;
+    const ip = adminsec.clientIp(req);
+    const ua = String(req.headers['user-agent'] || '').slice(0, 200);
+
+    // 闸门优先于一切：被锁定时连挑战都不发，避免拿登录接口当探测器
+    const g = adminsec.guard(username, ip);
+    if (g.blocked) {
+      adminsec.audit('登录限流', `账号=${String(username || '').slice(0, 64)} IP=${ip} 失败=${g.fails}`);
+      return reply.code(429).send({
+        error: `登录失败次数过多，请 ${g.retryAfterMinutes} 分钟后重试`,
+        code: 'LOGIN_RATE_LIMITED', retryAfterMinutes: g.retryAfterMinutes,
+      });
+    }
+
+    // 条件触发：正常管理员不弹码；一旦命中风险，缺挑战或挑战不对一律拒
+    const need = adminsec.captchaRequired(username, ip);
+    if (need.required) {
+      if (!b.challengeId) {
+        // 必须计失败：否则「不带挑战反复请求」既不累计锁定次数、又能探测哪些账号存在
+        adminsec.recordAttempt(username, ip, false, '缺图形验证');
+        return reply.code(400).send({ error: '请完成图形验证', code: 'CAPTCHA_REQUIRED', captchaRequired: true });
+      }
+      const c = adminsec.consumeChallenge({
+        id: b.challengeId, ip, purpose: 'captcha', answer: b.answer, powNonce: b.powNonce,
+      });
+      if (!c.ok) {
+        adminsec.recordAttempt(username, ip, false, `图形验证失败 ${c.code}`);
+        return reply.code(400).send({
+          error: '验证未通过，请刷新后重试', code: c.code, captchaRequired: true,
+        });
+      }
+    }
+
+    const admin = db.prepare('SELECT * FROM admins WHERE username = ?').get(String(username || ''));
+    if (!adminsec.checkPassword(password, admin)) {
+      adminsec.recordAttempt(username, ip, false);
+      return reply.code(401).send({ error: '用户名或密码错误', code: 'INVALID_CREDENTIALS' });
+    }
+    if (admin.status !== 'active') {
+      adminsec.recordAttempt(username, ip, false, '账号停用');
+      return reply.code(403).send({ error: '账号已停用', code: 'ADMIN_DISABLED' });
+    }
+
+    // 第二因素已启用：不直接发 JWT，先给一张 5 分钟一次性票据
+    if (Number(admin.totp_enabled || 0) === 1) {
+      const ch = adminsec.createChallenge({ ip, ua, purpose: '2fa', adminId: admin.id });
+      adminsec.audit('需要第二因素', `账号=${admin.username} IP=${ip}`, admin.id, admin.username);
+      return { needSecondFactor: true, challengeToken: ch.id, expiresIn: ch.expiresIn, serverTime: now() };
+    }
+    return finishLogin(admin, username, ip);
+  });
+
+  /** 二段式换令牌：challengeToken 用过即废；动态码或一次性恢复码二选一。 */
+  app.post('/api/admin/login/2fa', async (req, reply) => {
+    const b = req.body || {};
+    const ip = adminsec.clientIp(req);
+    const c = adminsec.consumeChallenge({ id: b.challengeToken, ip, purpose: '2fa' });
+    if (!c.ok) {
+      return reply.code(400).send({ error: '验证票据已失效，请重新登录', code: c.code });
+    }
+    const admin = db.prepare("SELECT * FROM admins WHERE id = ? AND status = 'active'").get(c.row.admin_id);
+    if (!admin || Number(admin.totp_enabled || 0) !== 1) {
+      return reply.code(403).send({ error: '账号状态已变更，请重新登录', code: 'ADMIN_STATE_CHANGED' });
+    }
+    const code = String(b.code || '').trim();
+    const secret = adminsec.readSecret(admin);
+    let ok = !!secret && adminsec.verifyTotp(secret, code);
+    let via = 'totp';
+    if (!ok && adminsec.useRecoveryCode(admin.id, code)) { ok = true; via = 'recovery'; }
+    if (!ok) {
+      adminsec.recordAttempt(admin.username, ip, false, '第二因素失败');
+      return reply.code(401).send({ error: '动态码或恢复码不正确', code: 'SECOND_FACTOR_INVALID' });
+    }
+    adminsec.audit('第二因素通过', `方式=${via} IP=${ip}`, admin.id, admin.username);
+    return finishLogin(admin, admin.username, ip);
+  });
+
+  /* ---------------- 第二因素设置（需已登录） ---------------- */
+
+  app.get('/api/admin/2fa/status', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const a = db.prepare('SELECT * FROM admins WHERE id = ?').get(req.admin.sub);
+    return {
+      enabled: Number(a.totp_enabled || 0) === 1,
+      confirmedAt: a.totp_confirmed_at || '',
+      recoveryLeft: adminsec.recoveryLeft(a.id),
+      captchaMode: adminsec.captchaMode(),
+      nudge: getSetting('admin_2fa_nudge', '0') === '1',
+      loginIpLimit: getSetting('admin_login_ip_limit', '30'),
+    };
+  });
+
+  app.post('/api/admin/2fa/setup', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const a = db.prepare('SELECT * FROM admins WHERE id = ?').get(req.admin.sub);
+    if (Number(a.totp_enabled || 0) === 1) {
+      return reply.code(409).send({ error: '已启用第二因素，请先解绑再重新绑定', code: 'TOTP_ALREADY_ENABLED' });
+    }
+    const secret = adminsec.newTotpSecret();
+    db.prepare('UPDATE admins SET totp_secret = ?, totp_enabled = 0 WHERE id = ?')
+      .run(adminsec.encryptSecret(secret), a.id);
+    const uri = adminsec.otpauthUri(a.username, secret);
+    const qrcodeSvg = await QRCode.toString(uri, { type: 'svg', margin: 1, width: 220 });
+    logAdmin(req, '生成 TOTP 绑定二维码');
+    return { otpauthUri: uri, secret, qrcodeSvg };
+  });
+
+  app.post('/api/admin/2fa/confirm', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const a = db.prepare('SELECT * FROM admins WHERE id = ?').get(req.admin.sub);
+    const secret = adminsec.readSecret(a);
+    if (!secret) return reply.code(400).send({ error: '请先获取绑定二维码', code: 'TOTP_NOT_SETUP' });
+    if (!adminsec.verifyTotp(secret, String((req.body || {}).code || ''))) {
+      return reply.code(400).send({ error: '动态码不正确', code: 'TOTP_INVALID' });
+    }
+    db.prepare("UPDATE admins SET totp_enabled = 1, totp_confirmed_at = ? WHERE id = ?").run(now(), a.id);
+    const recoveryCodes = adminsec.issueRecoveryCodes(a.id, 10);
+    logAdmin(req, '启用 TOTP 第二因素');
+    return { ok: true, recoveryCodes, recoveryLeft: recoveryCodes.length };
+  });
+
+  app.post('/api/admin/2fa/disable', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const a = db.prepare('SELECT * FROM admins WHERE id = ?').get(req.admin.sub);
+    const code = String((req.body || {}).code || '').trim();
+    const secret = adminsec.readSecret(a);
+    const ok = (!!secret && adminsec.verifyTotp(secret, code)) || adminsec.useRecoveryCode(a.id, code);
+    if (!ok) return reply.code(401).send({ error: '动态码或恢复码不正确', code: 'SECOND_FACTOR_INVALID' });
+    db.prepare("UPDATE admins SET totp_enabled = 0, totp_secret = '', totp_confirmed_at = '' WHERE id = ?").run(a.id);
+    db.prepare('DELETE FROM admin_recovery_codes WHERE admin_id = ?').run(a.id);
+    bumpAdminEpoch(a.id);
+    logAdmin(req, '关闭 TOTP 第二因素');
+    return { ok: true, reloginRequired: true };
+  });
+
+  /** 显式强制下线：token_epoch +1，此前签发的所有 12h JWT 立即失效。 */
+  app.post('/api/admin/security/revoke', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    bumpAdminEpoch(req.admin.sub);
+    adminsec.audit('强制下线', `账号=${req.admin.username}`, req.admin.sub, req.admin.username);
+    return { ok: true, reloginRequired: true };
+  });
+
+  app.post('/api/admin/security/config', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const b = req.body || {};
+    if (b.captchaMode !== undefined) {
+      if (!['off', 'risk', 'always'].includes(String(b.captchaMode))) {
+        return reply.code(400).send({ error: 'captchaMode 只支持 off / risk / always' });
+      }
+      setSetting('admin_captcha_mode', String(b.captchaMode));
+    }
+    if (b.nudge !== undefined) setSetting('admin_2fa_nudge', b.nudge ? '1' : '0');
+    if (b.loginIpLimit !== undefined) {
+      const n = Math.trunc(Number(b.loginIpLimit));
+      if (!Number.isFinite(n) || n < 5 || n > 1000) return reply.code(400).send({ error: 'loginIpLimit 需在 5~1000 之间' });
+      setSetting('admin_login_ip_limit', String(n));
+    }
+    logAdmin(req, '修改登录安全设置', JSON.stringify(b).slice(0, 300));
+    return { ok: true };
   });
 
   app.get('/api/admin/me', async (req, reply) => {
@@ -81,6 +239,9 @@ module.exports = async function adminRoutes(app) {
     if (String(newPassword || '').length < 8) return reply.code(400).send({ error: '新密码至少 8 位' });
     db.prepare('UPDATE admins SET password_hash = ?, must_change_password = 0 WHERE id = ?')
       .run(hashPassword(String(newPassword || '')), admin.id);
+    // 生产环境改密即作废旧令牌（被盗令牌不再能用到 12h 过期）；
+    // 测试/本地保持兼容：现有回归脚本会复用改密前签发的 adminToken。
+    if (process.env.NODE_ENV === 'production') bumpAdminEpoch(admin.id);
     logAdmin(req, '修改密码');
     // 重新签发完整令牌：登录时发的可能是受限令牌（mcp），改完密码必须换掉，
     // 否则这个账号接下来所有管理接口仍被 403 挡着

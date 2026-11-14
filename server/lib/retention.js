@@ -54,6 +54,12 @@ const POLICIES = [
     why: '锁定只看最近几分钟，30 天足够事后追查',
   },
   {
+    key: 'admin_challenges', table: 'admin_challenges', ts: 'created_at', days: 1, auto: true,
+    name: '后台登录一次性挑战',
+    desc: '图形验证码 / PoW / 第二因素票据，用过即废',
+    why: '有效期只有 2~5 分钟，留 1 天够查「为什么验证没过」；恢复码是账本，不在此列',
+  },
+  {
     key: 'wechat_sessions', table: 'wechat_sessions', ts: 'created_at', days: 7, auto: true,
     name: '微信扫码会话',
     desc: '扫码登录场景（scene），过期即作废',

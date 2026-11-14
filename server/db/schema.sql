@@ -678,3 +678,34 @@ CREATE TABLE IF NOT EXISTS market_api_logs (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_market_api_log_time ON market_api_logs(created_at DESC, id DESC);
+
+-- ---------------------------------------------------------------------------
+-- 后台登录安全（2026-11-14）：一次性挑战（图形验证码 / PoW / 2FA 票据共用一张表）
+-- 答案只存 HMAC，2FA 票据不带 scope、不是 JWT；用过即废，1 天滚动清理。
+CREATE TABLE IF NOT EXISTS admin_challenges (
+  id TEXT PRIMARY KEY,
+  purpose TEXT NOT NULL,
+  answer_hmac TEXT DEFAULT '',
+  pow_seed TEXT DEFAULT '',
+  admin_id INTEGER DEFAULT 0,
+  ip TEXT DEFAULT '',
+  ua TEXT DEFAULT '',
+  expires_at TEXT NOT NULL,
+  used_at TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_admin_challenge_exp ON admin_challenges(expires_at);
+CREATE INDEX IF NOT EXISTS idx_admin_challenge_purpose ON admin_challenges(purpose, used_at);
+
+-- TOTP 恢复码：只存 sha256，用过即废；账本性质，不自动清理。
+CREATE TABLE IF NOT EXISTS admin_recovery_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  admin_id INTEGER NOT NULL,
+  code_hash TEXT NOT NULL,
+  used_at TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_admin_recovery_admin ON admin_recovery_codes(admin_id, used_at);
+
+-- 双维锁定要按 IP 查，原来的索引只有 (username, created_at)。
+CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip, created_at);

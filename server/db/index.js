@@ -108,6 +108,15 @@ ensureColumn('open_apps', 'release_note', 'release_note TEXT DEFAULT \'\'');
 ensureColumn('users', 'blcloud_quota', 'blcloud_quota INTEGER DEFAULT 0');
 ensureColumn('users', 'blcloud_used', 'blcloud_used INTEGER DEFAULT 0');
 ensureColumn('admins', 'must_change_password', 'must_change_password INTEGER DEFAULT 0');
+// 后台登录第二因素 / 可撤销会话（2026-11-14）：secret 走 enc: 前缀 AES 加密，
+// token_epoch 变化即让该管理员此前所有 JWT 失效。phone / wechat_openid 先预留，
+// 等短信账户审核与服务号配置就绪后再接，不参与本轮逻辑。
+ensureColumn('admins', 'totp_secret', "totp_secret TEXT DEFAULT ''");
+ensureColumn('admins', 'totp_enabled', 'totp_enabled INTEGER DEFAULT 0');
+ensureColumn('admins', 'totp_confirmed_at', "totp_confirmed_at TEXT DEFAULT ''");
+ensureColumn('admins', 'token_epoch', 'token_epoch INTEGER DEFAULT 0');
+ensureColumn('admins', 'phone', "phone TEXT DEFAULT ''");
+ensureColumn('admins', 'wechat_openid', "wechat_openid TEXT DEFAULT ''");
 // 额度包商品发放多少「次」必须能显式配置：早先是从商品描述里正则猜「N 万次」，
 // 描述写不出这个数字时就会按默认值发，配错了用户买到的额度与页面标称不符
 ensureColumn('products', 'quota', 'quota INTEGER DEFAULT 0');
