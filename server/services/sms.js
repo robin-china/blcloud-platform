@@ -8,9 +8,10 @@
  *   - 生产环境**绝不**把验证码回给客户端；
  *   - 服务商原始错误码原样留痕，方便排障，但响应不回传任何密钥。
  *
- * 阿里云：Dysmsapi 2017-05-25 RPC V1 签名（HMAC-SHA1），GET 请求。
- * 腾讯云：SMS 2021-01-11 + TC3-HMAC-SHA256，POST / JSON。
- * 两家都只发「单变量验证码」模板，变量名固定 code。
+ * 阿里云：Dysmsapi 2017-05-25 RPC V1 签名（HMAC-SHA1），GET 请求；TemplateParam={"code":"123456"}。
+ * 腾讯云：SMS 2021-01-11 + TC3-HMAC-SHA256，POST / JSON；模板变量是顺序占位符 {1}，
+ * 按出现顺序传值，TemplateParamSet=["123456"] 即替换 {1}。
+ * 两家都只支持「单变量验证码」模板（服务端只传验证码本身）。
  */
 const crypto = require('crypto');
 const db = require('../db');

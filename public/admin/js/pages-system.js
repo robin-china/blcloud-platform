@@ -375,8 +375,11 @@ window.PageIntegration = {
           <div class="hint" style="margin-top:4px">在短信控制台「应用管理」里查看，不是云 API 的 AppId。</div>
         </div>
         <div class="hint" style="margin-top:8px">
-          模板须为<b>单变量验证码模板</b>，变量名固定为 code（腾讯云按变量顺序只传这一个值）。
-          开发模式不会真实下发、只在响应里回验证码；生产环境禁止使用开发模式。
+          模板须为<b>单变量验证码模板</b>：阿里云模板变量名是 <b>code</b>；
+          腾讯云是<b>顺序占位符 {1}</b>（与变量名无关），例如「验证码为：{1}，您正在登录…」。
+          服务端只传一个值，就是验证码本身（6 位纯数字，不带花括号）；
+          模板若改成两个变量会报参数不匹配。开发模式不会真实下发、只在响应里回验证码；
+          生产环境禁止使用开发模式。
         </div>
         <div class="btn-group" style="margin-top:14px">
           <button class="btn primary" @click="save('sms')">保存</button>
