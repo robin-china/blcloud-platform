@@ -17,6 +17,9 @@ const pointsLib = require('../lib/points');
 const orderdel = require('../lib/orderdel');
 // 头像与模板市场缩略图共用一套图片校验/内容寻址落盘（都是公开图片）
 const marketImg = require('../lib/market');
+// 发短信验证码前的图形挑战：复用后台登录那套自绘 SVG 验证码 + PoW，
+// purpose='sms' 与后台登录/2FA 票据隔离，专用于挡脚本批量刷短信。
+const adminsec = require('../lib/adminsec');
 
 /**
  * 用户端自动补单的节流表：orderId -> 上次查单时间戳。
@@ -194,10 +197,41 @@ module.exports = async function portalRoutes(app) {
     return { ok: true, user: profileLib.publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.sub)) };
   });
 
+  /**
+   * 发短信验证码前的一道人机验证：一次性图形码 + PoW。
+   * 短信是真花钱的通道，之前脚本可直接打 /phone/code 刷费；这里要求先领挑战，
+   * 发码时带上 challengeId + answer + powNonce 并通过校验。挑战 120s 有效、用过即废。
+   * 取挑战接口自身限流，避免成为新的刷量入口；必须登录用户才能领。
+   */
+  app.get('/api/portal/sms/challenge', async (req, reply) => {
+    if (!(await requireUser(req, reply))) return;
+    const ip = adminsec.clientIp(req);
+    if (!adminsec.rateHit(`portal:sms:${ip}`, adminsec.CHALLENGE_RATE, 60000)) {
+      return reply.code(429).send({ error: '获取验证过于频繁，请稍后再试', code: 'RATE_LIMITED' });
+    }
+    const c = adminsec.createChallenge({ ip, ua: req.headers['user-agent'], purpose: 'sms' });
+    return {
+      challengeId: c.id, svg: c.svg, powSeed: c.powSeed,
+      difficulty: c.difficulty, expiresIn: c.expiresIn, serverTime: now(),
+    };
+  });
+
   app.post('/api/portal/phone/code', async (req, reply) => {
     if (!(await requireUser(req, reply))) return;
-    const phone = String((req.body || {}).phone || '').trim();
+    const b = req.body || {};
+    const phone = String(b.phone || '').trim();
     if (!/^1\d{10}$/.test(phone)) return reply.code(400).send({ error: '手机号格式不正确' });
+    // 人机验证：缺挑战或验证不过一律不发短信（也就不会产生任何短信费用）
+    if (!b.challengeId) {
+      return reply.code(400).send({ error: '请先完成图形验证', code: 'CAPTCHA_REQUIRED' });
+    }
+    const chal = adminsec.consumeChallenge({
+      id: b.challengeId, ip: adminsec.clientIp(req), purpose: 'sms',
+      answer: b.answer, powNonce: b.powNonce,
+    });
+    if (!chal.ok) {
+      return reply.code(400).send({ error: '验证未通过，请刷新后重试', code: chal.code });
+    }
     const code = genCode(6);
     // 先真发再入库：发送失败绝不留一条能用于校验的码，也不能回「发送成功」骗用户
     try {

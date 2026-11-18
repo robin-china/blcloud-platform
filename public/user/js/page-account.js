@@ -195,10 +195,19 @@ window.PageAccount = {
             <button class="btn sm" type="button" @click="closePhone">✕</button></div>
           <div class="modal-body">
             <div class="field"><label>手机号</label><input class="input" v-model="phone" placeholder="请输入手机号" inputmode="numeric" /></div>
+            <div class="field"><label>图形验证</label>
+              <div class="acct-code">
+                <input class="input" v-model="captchaText" placeholder="右侧 4 位数字" inputmode="numeric" maxlength="4" />
+                <div class="acct-captcha" title="点击刷新" v-html="captchaSvg" @click="loadCaptcha"></div>
+              </div>
+              <div class="hint" style="margin-top:5px">点击图片可刷新；答错后会自动换一张</div>
+            </div>
             <div class="field"><label>验证码</label>
               <div class="acct-code">
                 <input class="input" v-model="code" placeholder="6 位验证码" inputmode="numeric" />
-                <button class="btn" type="button" @click="sendCode">发送验证码</button>
+                <button class="btn" type="button" :disabled="smsLeft > 0 || smsSending" @click="sendCode">
+                  {{ smsSending ? '发送中…' : (smsLeft > 0 ? smsLeft + 's 后重发' : '发送验证码') }}
+                </button>
               </div>
               <div class="hint" v-if="devCode">开发模式验证码：{{ devCode }}</div>
             </div>
@@ -257,6 +266,16 @@ window.PageAccount = {
     const code = ref('');
     const devCode = ref('');
     const phoneOpen = ref(false);
+    // 发码前图形验证：挑战票据只由服务端签发，前端只持有 id/种子，答案不参与逻辑
+    const captchaText = ref('');
+    const captchaSvg = ref('');
+    const challengeId = ref('');
+    const powSeed = ref('');
+    const powDifficulty = ref(16);
+    // 发码按钮：发中禁用 + 60s 倒计时（与服务端同号 60s 频控对齐）
+    const smsSending = ref(false);
+    const smsLeft = ref(0);
+    let smsTimer = null;
     const rechargeOpen = ref(false);
     const payOpen = ref(false);
     const payOrderNo = ref('');
@@ -287,8 +306,9 @@ window.PageAccount = {
       else if (rechargeOpen.value) closeRecharge();
     }
     Vue.watch([phoneOpen, rechargeOpen], ([a, b]) => lock(a || b));
+    function stopSmsTimer() { if (smsTimer) { clearInterval(smsTimer); smsTimer = null; } }
     onMounted(() => window.addEventListener('keydown', onKey));
-    onUnmounted(() => { window.removeEventListener('keydown', onKey); lock(false); });
+    onUnmounted(() => { window.removeEventListener('keydown', onKey); stopSmsTimer(); lock(false); });
 
     function syncUser(u) {
       me.value = u;
@@ -347,15 +367,53 @@ window.PageAccount = {
       finally { saving.value = false; }
     }
 
-    function openPhone() { phone.value = ''; code.value = ''; devCode.value = ''; phoneOpen.value = true; }
-    function closePhone() { phoneOpen.value = false; }
-    async function sendCode() {
-      if (!/^1\d{10}$/.test(phone.value)) { U.toast('手机号格式不正确', 'error'); return; }
+    function openPhone() {
+      phone.value = ''; code.value = ''; devCode.value = ''; captchaText.value = '';
+      phoneOpen.value = true;
+      loadCaptcha();
+    }
+    function closePhone() { phoneOpen.value = false; stopSmsTimer(); smsLeft.value = 0; }
+    async function loadCaptcha() {
+      captchaSvg.value = ''; captchaText.value = '';
       try {
-        const r = await U.api.post('/api/portal/phone/code', { phone: phone.value });
+        const r = await U.api.get('/api/portal/sms/challenge');
+        challengeId.value = r.challengeId || '';
+        captchaSvg.value = r.svg || '';
+        powSeed.value = r.powSeed || '';
+        powDifficulty.value = Number(r.difficulty) || 16;
+      } catch (e) {
+        captchaSvg.value = '<span style="color:var(--danger);font-size:12px">加载失败，点击重试</span>';
+      }
+    }
+    function startSmsCountdown() {
+      stopSmsTimer();
+      smsLeft.value = 60;
+      smsTimer = setInterval(() => {
+        smsLeft.value -= 1;
+        if (smsLeft.value <= 0) { smsLeft.value = 0; stopSmsTimer(); }
+      }, 1000);
+    }
+    async function sendCode() {
+      if (smsLeft.value > 0 || smsSending.value) return;
+      if (!/^1\d{10}$/.test(phone.value)) { U.toast('手机号格式不正确', 'error'); return; }
+      if (!/^\d{4}$/.test(captchaText.value)) { U.toast('请输入右侧 4 位图形验证码', 'error'); return; }
+      if (!challengeId.value) { U.toast('验证已失效，请点击图片刷新', 'error'); await loadCaptcha(); return; }
+      const P = U.pow || window.AdminPow;
+      const powNonce = P ? P.solve(powSeed.value, powDifficulty.value) : '';
+      smsSending.value = true;
+      try {
+        const r = await U.api.post('/api/portal/phone/code', {
+          phone: phone.value, challengeId: challengeId.value,
+          answer: captchaText.value, powNonce,
+        });
         devCode.value = r.devCode || '';
         U.toast('验证码已发送', 'success');
-      } catch (e) { U.toast(e.message, 'error'); }
+        startSmsCountdown();
+      } catch (e) {
+        // 图形码一次性：无论答错/过期/PoW 不过，都必须换一张，否则用户对着废票反复输
+        await loadCaptcha();
+        U.toast(e.message, 'error');
+      } finally { smsSending.value = false; }
     }
     async function bind() {
       try {
@@ -407,6 +465,7 @@ window.PageAccount = {
       me, points, nickname, avatarUrl, avatarValue, fileEl, saving, uploading, busy, fmt,
       maskedPhone, phone, code, devCode, phoneOpen, rechargeOpen, payOpen, payOrderNo,
       payChannels, tiers, customYuan, yuan, pts, validYuan,
+      captchaText, captchaSvg, smsSending, smsLeft, loadCaptcha,
       pickFile, onFile, resetAvatar, saveProfile, openPhone, closePhone, sendCode, bind, signin,
       openRecharge, closeRecharge, chooseTier, submitRecharge, onPaid,
     };

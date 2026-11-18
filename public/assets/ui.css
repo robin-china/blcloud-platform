@@ -323,8 +323,11 @@ table.table tbody tr:hover { background: var(--surface-2); }
 .acct-val { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .acct-edit { display: flex; gap: 8px; margin-top: 14px; }
 .acct-edit .input { flex: 1; min-width: 0; }
-.acct-code { display: flex; gap: 8px; }
+.acct-code { display: flex; gap: 8px; align-items: stretch; }
 .acct-code .input { flex: 1; min-width: 0; }
+.acct-captcha { flex: none; width: 168px; height: 48px; cursor: pointer; border-radius: 6px; overflow: hidden; line-height: 0; border: 1px solid var(--border); }
+.acct-captcha svg { display: block; }
+.acct-code .btn[disabled] { opacity: .55; cursor: not-allowed; }
 .acct-tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
 .acct-tier { justify-content: center; }
 .acct-sum { padding: 12px; border-radius: 10px; background: var(--surface-2); font-size: 14px; }

@@ -34,6 +34,7 @@ const db = require('../server/db');
 const { setConfig, setSetting } = require('../server/lib/config');
 const sms = require('../server/services/sms');
 const { signUser } = require('../server/lib/auth');
+const { passSmsCaptcha } = require('./helpers/sms-challenge');
 
 let pass = 0;
 let fail = 0;
@@ -99,13 +100,32 @@ const SIM_CFG = {
 
   setConfig('sms', SIM_CFG);
   clearLogs(); clearCodes();
-  let r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(1) } });
+
+  /* 图形验证闸门：未登录不能领挑战，缺/错挑战一律不发码 */
+  let r = await app.inject({ method: 'GET', url: `${B}/api/portal/sms/challenge` });
+  ok('未登录不能领图形挑战', r.statusCode === 401, json(r));
+  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(1) } });
+  ok('缺图形挑战明确回 CAPTCHA_REQUIRED', r.statusCode === 400 && json(r).code === 'CAPTCHA_REQUIRED', json(r));
+  ok('未过验证不发短信不写码', db.prepare('SELECT COUNT(*) AS c FROM sms_send_logs').get().c === 0
+    && db.prepare('SELECT COUNT(*) AS c FROM sms_codes').get().c === 0);
+  const ch = await passSmsCaptcha(app, db, UH, B);
+  ok('图形挑战返回 svg 且不带答案明文', !!ch.challengeId && /^\d{4}$/.test(ch.answer)
+    && ch.raw.svg.includes('<svg') && !/data-(answer|code)/i.test(ch.raw.svg), ch.raw);
+  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH,
+    payload: { phone: phone(1), challengeId: ch.challengeId, answer: '0000', powNonce: ch.powNonce } });
+  ok('图形码答错不发码并换票', r.statusCode === 400 && ['CAPTCHA_WRONG', 'CHALLENGE_USED'].includes(json(r).code), json(r));
+
+  const cap1 = await passSmsCaptcha(app, db, UH, B);
+  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(1), ...cap1 } });
   ok('网页端发码 200 且回开发验证码', r.statusCode === 200 && /^\d{6}$/.test(String(json(r).devCode || '')), json(r));
   ok('模拟发送写入发送台账', db.prepare('SELECT COUNT(*) AS c FROM sms_send_logs').get().c === 1);
   ok('验证码已入库', db.prepare('SELECT COUNT(*) AS c FROM sms_codes').get().c === 1);
+  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(1), ...cap1 } });
+  ok('同一图形挑战重放被拒', r.statusCode === 400 && /CHALLENGE_(USED|INVALID)/.test(String(json(r).code)), json(r));
 
   await setSetting('dev_simulate', '0');
-  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(2) } });
+  const cap2 = await passSmsCaptcha(app, db, UH, B);
+  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(2), ...cap2 } });
   ok('显式关闭演示模式后不回明文验证码', r.statusCode === 200 && !('devCode' in json(r)), json(r));
   await setSetting('dev_simulate', '1');
 
@@ -227,17 +247,20 @@ const SIM_CFG = {
   db.prepare("UPDATE settings SET value = ? WHERE key = 'cfg.sms'")
     .run(JSON.stringify({ ...ALI_CFG, secret: '' }));
   clearLogs(); clearCodes();
-  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(9) } });
+  const cap9 = await passSmsCaptcha(app, db, UH, B);
+  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(9), ...cap9 } });
   ok('缺 Secret 明确回 503 SMS_CONFIG_MISSING', r.statusCode === 503 && json(r).code === 'SMS_CONFIG_MISSING', json(r));
   ok('发送失败不写可用验证码', db.prepare('SELECT COUNT(*) AS c FROM sms_codes').get().c === 0);
 
   setConfig('sms', { ...SIM_CFG, enabled: 0 });
-  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(10) } });
+  const cap10 = await passSmsCaptcha(app, db, UH, B);
+  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(10), ...cap10 } });
   ok('通道关闭明确回 503 SMS_DISABLED', r.statusCode === 503 && json(r).code === 'SMS_DISABLED', json(r));
 
   process.env.NODE_ENV = 'production';
   setConfig('sms', SIM_CFG);
-  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(11) } });
+  const cap11 = await passSmsCaptcha(app, db, UH, B);
+  r = await app.inject({ method: 'POST', url: `${B}/api/portal/phone/code`, headers: UH, payload: { phone: phone(11), ...cap11 } });
   ok('生产禁止模拟模式', r.statusCode === 503 && json(r).code === 'SMS_SIMULATE_FORBIDDEN', json(r));
   ok('生产响应绝无 devCode', !('devCode' in json(r)) && !String(r.body).includes('devCode'));
   setConfig('sms', ALI_CFG);

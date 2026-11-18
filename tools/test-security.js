@@ -16,6 +16,7 @@ process.env.ADMIN_INIT_PASSWORD = 'admin123';
 const { build } = require('../server');
 const db = require('../server/db');
 const { now, hashPassword } = require('../server/lib/util');
+const { passSmsCaptcha } = require('./helpers/sms-challenge');
 
 let pass = 0;
 let fail = 0;
@@ -97,7 +98,8 @@ async function newUser(app, openid) {
   r = await app.inject({ method: 'POST', url: `/api/wechat/simulate/${scene2}`, payload: { openid: 'victim-002' } });
   check('显式关闭演示模式后模拟登录被拒', r.statusCode === 403, r.json());
 
-  r = await app.inject({ method: 'POST', url: '/api/portal/phone/code', headers: H(u1.token), payload: { phone: '13800138000' } });
+  const smsCap = await passSmsCaptcha(app, db, H(u1.token));
+  r = await app.inject({ method: 'POST', url: '/api/portal/phone/code', headers: H(u1.token), payload: { phone: '13800138000', ...smsCap } });
   check('关闭演示模式后验证码不再明文返回', r.statusCode === 200 && !('devCode' in r.json()), r.json());
   await setSetting('dev_simulate', '1');
 

@@ -170,16 +170,21 @@ function captchaRequired(username, ip) {
   return { required: fails >= 2 || ipCount >= limit, mode, fails, ipCount };
 }
 
+// 需要「图形码 + PoW」的用途。用户端发短信验证码前也加一道，防脚本刷短信。
+// 与后台登录、2FA 票据共用同一张挑战表和同一套绘制/校验，但 purpose 隔离，
+// 不能拿登录挑战去发短信，也不能反过来。
+const CAPTCHA_PURPOSES = new Set(['captcha', 'sms']);
+
 function createChallenge({ ip, ua, purpose = 'captcha', adminId = 0 }) {
   const id = `ach_${crypto.randomBytes(16).toString('hex')}`;
   let answer = ''; let svg = ''; let answerHmac = ''; let powSeed = '';
-  if (purpose === 'captcha') {
+  if (CAPTCHA_PURPOSES.has(purpose)) {
     answer = String(crypto.randomInt(0, 10000)).padStart(4, '0');
     svg = renderCaptcha(answer);
     answerHmac = hmac(answer);
     powSeed = crypto.randomBytes(16).toString('hex');
   }
-  const ttl = purpose === 'captcha' ? CAPTCHA_TTL : TWOFA_TTL;
+  const ttl = CAPTCHA_PURPOSES.has(purpose) ? CAPTCHA_TTL : TWOFA_TTL;
   db.prepare(`INSERT INTO admin_challenges
     (id, purpose, answer_hmac, pow_seed, admin_id, ip, ua, expires_at, used_at, created_at)
     VALUES (?,?,?,?,?,?,?,?,'',?)`).run(
@@ -200,7 +205,7 @@ function consumeChallenge({ id, ip, purpose = 'captcha', answer = '', powNonce =
   if (String(row.ip || '') !== String(ip || '')) return { ok: false, code: 'CHALLENGE_IP_MISMATCH' };
   const claimed = db.prepare("UPDATE admin_challenges SET used_at = ? WHERE id = ? AND used_at = ''").run(now(), row.id);
   if (claimed.changes !== 1) return { ok: false, code: 'CHALLENGE_USED' };
-  if (purpose === 'captcha') {
+  if (CAPTCHA_PURPOSES.has(purpose)) {
     const a = Buffer.from(hmac(String(answer || '').trim()), 'hex');
     const b = Buffer.from(String(row.answer_hmac || ''), 'hex');
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return { ok: false, code: 'CAPTCHA_WRONG' };
@@ -293,7 +298,7 @@ module.exports = {
   clientIp, hmac, sha256, audit, rateHit,
   guard, recordAttempt, clearFailures, checkPassword, lastLoginIp,
   captchaMode, captchaRequired, createChallenge, consumeChallenge, renderCaptcha,
-  CAPTCHA_TTL, TWOFA_TTL, CHALLENGE_RATE,
+  CAPTCHA_PURPOSES, CAPTCHA_TTL, TWOFA_TTL, CHALLENGE_RATE,
   newTotpSecret, totpCode, verifyTotp, otpauthUri, readSecret,
   issueRecoveryCodes, useRecoveryCode, recoveryLeft,
   encryptSecret: encrypt,

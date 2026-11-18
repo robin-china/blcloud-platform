@@ -31,6 +31,15 @@ ok('三个弹层都 teleport 到 body', (accountCode.match(/<teleport to="body">
 ok('自定义组件标签显式闭合', /<pay-dialog[\s\S]*?><\/pay-dialog>/.test(accountCode));
 ok('index.html 引入新页面并注册组件', /js\/page-account\.js/.test(userIndex)
   && /component\('pay-dialog'/.test(userIndex));
+ok('index.html 在页面脚本前引入 pow.js', /assets\/pow\.js/.test(userIndex)
+  && userIndex.indexOf('pow.js') < userIndex.indexOf('js/page-account.js'));
+ok('发码按钮有 60s 倒计时与禁用态', /:disabled="smsLeft > 0 \|\| smsSending"/.test(accountCode)
+  && /smsLeft \+ 's 后重发'/.test(accountCode) && /smsLeft\.value = 60/.test(accountCode));
+ok('手机弹窗有图形码输入与可点击刷新 SVG', /v-model="captchaText"/.test(accountCode)
+  && /v-html="captchaSvg"/.test(accountCode) && /@click="loadCaptcha"/.test(accountCode));
+ok('发码请求带图形挑战三要素', /challengeId: challengeId\.value/.test(accountCode)
+  && /powNonce/.test(accountCode) && /\/api\/portal\/sms\/challenge/.test(accountCode));
+ok('CSS 有图形码框与禁用按钮样式', /\.acct-captcha \{/.test(css) && /\.acct-code \.btn\[disabled\]/.test(css));
 ok('CSS 有账户中心与移动端断点', /\.acct \{/.test(css) && /@media \(max-width: 560px\)/.test(css));
 ok('PC 端单列账户中心水平居中', /\.acct \{[^}]*max-width:\s*760px;[^}]*margin:\s*0 auto/.test(css), (css.match(/\.acct \{[^}]*\}/) || [''])[0]);
 ok('头像库中性别无关的中性默认存在', /id: '00', name: '默认头像'/.test(avatarJs)
@@ -49,6 +58,7 @@ const mockUser = {
   avatar_preset: 'preset:00', phone: '13800138000', points: 1500,
   profile_custom: 0, created_at: '2026-11-13T00:00:00.000Z',
 };
+w.AdminPow = { solve: () => '12345' };
 w.U = {
   basePath: '/platform',
   fmt: { int: (n) => String(n || 0), time: () => '2026-11-13 08:00' },
@@ -56,6 +66,9 @@ w.U = {
   api: {
     get: async (url) => {
       const u = String(url);
+      if (u.startsWith('/api/portal/sms/challenge')) {
+        return { challengeId: 'ch-test', svg: '<svg width="168" height="48"></svg>', powSeed: 'seed', difficulty: 16 };
+      }
       if (u.startsWith('/api/portal/me')) return { user: mockUser };
       if (u.startsWith('/api/portal/points')) {
         return { list: [{ id: 1, change: 200, balance: 1500, reason: '积分充值（订单 NO1）', created_at: '2026-11-13T01:00:00.000Z' }] };
