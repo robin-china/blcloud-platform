@@ -355,9 +355,52 @@ window.PageIntegration = {
         </div>
         <div class="field-row">
           <div class="field"><label>签名</label><input class="input" v-model="c.sign_name" /></div>
-          <div class="field"><label>模板 Code</label><input class="input" v-model="c.template_code" /></div>
+          <div class="field"><label>模板 Code / TemplateId</label><input class="input" v-model="c.template_code" /></div>
         </div>
-        <div class="btn-group" style="margin-top:14px"><button class="btn primary" @click="save('sms')">保存</button></div>
+        <div class="field" v-if="c.vendor==='tencent'">
+          <label>SmsSdkAppId（腾讯云短信应用 ID）</label>
+          <input class="input" v-model="c.sdk_app_id" placeholder="如 1400006666" />
+          <div class="hint" style="margin-top:4px">在短信控制台「应用管理」里查看，不是云 API 的 AppId。</div>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          模板须为<b>单变量验证码模板</b>，变量名固定为 code（腾讯云按变量顺序只传这一个值）。
+          开发模式不会真实下发、只在响应里回验证码；生产环境禁止使用开发模式。
+        </div>
+        <div class="btn-group" style="margin-top:14px">
+          <button class="btn primary" @click="save('sms')">保存</button>
+          <button class="btn" @click="loadSmsStatus">自检</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" v-if="tab==='sms'">
+      <div class="card-head"><h3>发送自检与测试</h3><button class="btn sm" @click="loadSmsStatus">刷新</button></div>
+      <div class="card-body">
+        <div class="kv" v-if="smsSt.check">
+          <div class="k">当前状态</div>
+          <div><span class="tag" :class="smsSt.check.ok ? 'success' : 'danger'">{{ smsSt.check.ok ? '可发送' : '不可发送' }}</span>
+            <span style="margin-left:8px">{{ smsSt.check.vendor }}</span></div>
+          <div class="k">缺失字段</div><div>{{ smsSt.check.missing.length ? smsSt.check.missing.join('、') : '无' }}</div>
+        </div>
+        <div class="hint" v-for="h in smsSt.check.hints" :key="h">{{ h }}</div>
+        <div class="field-row" style="margin-top:12px">
+          <div class="field"><label>测试手机号</label><input class="input" v-model="smsTestPhone" placeholder="13800138000" inputmode="numeric" /></div>
+          <div class="field"><label>&nbsp;</label><button class="btn" :disabled="smsBusy" @click="testSms">发送测试短信</button></div>
+        </div>
+        <div class="hint">会真实调用服务商并计费（开发模式除外）。失败时直接显示服务商原始错误码，便于对照控制台排查。</div>
+        <div v-if="smsResult" class="hint" :style="{ color: smsResult.ok ? '#16a34a' : 'var(--danger)' }">{{ smsResult.text }}</div>
+        <div class="card-body tight" style="margin-top:12px;max-height:250px;overflow:auto" v-if="smsSt.logs.length">
+          <table class="table">
+            <thead><tr><th>时间</th><th>号码</th><th>渠道</th><th>结果</th><th>详情</th></tr></thead>
+            <tbody>
+              <tr v-for="l in smsSt.logs" :key="l.id">
+                <td>{{ fmtTime(l.created_at) }}</td><td>{{ l.phone }}</td><td>{{ l.vendor }}</td>
+                <td><span class="tag" :class="l.ok ? 'success' : 'danger'">{{ l.ok ? '成功' : '失败' }}</span></td>
+                <td>{{ l.vendor_code }} {{ l.message }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -449,9 +492,50 @@ window.PageIntegration = {
       } catch (e) { U.toast(e.message, 'error'); }
     }
 
-    onMounted(load);
-    Vue.watch(tab, sync);
-    return { tabs, tab, c, origin, wxDomain, save, testWechat, diagWechat, diag, fmtTime, testTb, diagTb, tbDiag, tbStatusText, testWxpay, diagPay, payDiag, verifyModeText };
+    const smsSt = reactive({ check: { ok: false, vendor: '', missing: [], hints: [] }, logs: [], diagnostics: [] });
+    const smsTestPhone = ref('');
+    const smsBusy = ref(false);
+    const smsResult = ref(null);
+
+    async function loadSmsStatus() {
+      try {
+        const r = await U.api.get('/api/admin/sms/status');
+        if (r.check) smsSt.check = r.check;
+        smsSt.logs = r.logs || [];
+        smsSt.diagnostics = r.diagnostics || [];
+      } catch (e) { U.toast(U.failMsg(e, '读取短信状态失败'), 'error'); }
+    }
+
+    async function testSms() {
+      const phone = String(smsTestPhone.value || '').trim();
+      if (!/^1\d{10}$/.test(phone)) { U.toast('请输入正确的手机号', 'error'); return; }
+      if (!(await U.confirm('将真实发送一条测试短信（可能产生费用），继续？'))) return;
+      smsBusy.value = true;
+      smsResult.value = null;
+      try {
+        const r = await U.api.post('/api/admin/sms/test', { phone });
+        smsResult.value = {
+          ok: true,
+          text: `发送成功（${r.mode}）${r.devCode ? ' · 开发模式验证码 ' + r.devCode : ''}${r.bizId ? ' · 回执 ' + r.bizId : ''}`,
+        };
+        U.toast('测试短信已提交', 'success');
+      } catch (e) {
+        const msg = U.failMsg(e, '发送失败');
+        smsResult.value = { ok: false, text: `${msg}${e.code ? ' [' + e.code + ']' : ''}` };
+        U.toast(msg, 'error');
+      } finally {
+        smsBusy.value = false;
+        await loadSmsStatus();
+      }
+    }
+
+    onMounted(function () { load(); loadSmsStatus(); });
+    Vue.watch(tab, function (v) { sync(); if (v === 'sms') loadSmsStatus(); });
+    return {
+      tabs, tab, c, origin, wxDomain, save, testWechat, diagWechat, diag, fmtTime,
+      testTb, diagTb, tbDiag, tbStatusText, testWxpay, diagPay, payDiag, verifyModeText,
+      smsSt, smsTestPhone, smsBusy, smsResult, loadSmsStatus, testSms,
+    };
   },
 };
 

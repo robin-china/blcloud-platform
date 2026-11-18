@@ -36,7 +36,11 @@ const DEFAULTS = {
     email_suffix: '@blcloud.cn', default_customer: '', device_profile: '',
   },
   sms: {
-    enabled: 0, vendor: 'simulate', access_key: '', secret: '', sign_name: '', template_code: '',
+    // 默认启用「开发模式」：本地/测试开箱可用（不下发真实短信、回验证码便于联调）。
+    // 生产环境 simulate 会被 services/sms.js 明确拒绝，必须切成阿里云/腾讯云并填凭据，
+    // 不会静默降级成「假发送成功」。
+    enabled: 1, vendor: 'simulate', access_key: '', secret: '', sign_name: '',
+    template_code: '', sdk_app_id: '', // 腾讯云必填：短信控制台「应用管理」里的 SdkAppId
   },
 };
 

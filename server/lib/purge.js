@@ -46,7 +46,7 @@ const GROUPS = [
   {
     key: 'logs', name: '日志与会话',
     desc: '后台操作日志、登录尝试、扫码会话、短信码、一次性票据',
-    tables: ['admin_logs', 'login_attempts', 'api_nonces', 'wechat_sessions', 'sms_codes', 'handoff_tickets'],
+    tables: ['admin_logs', 'login_attempts', 'api_nonces', 'wechat_sessions', 'sms_codes', 'sms_send_logs', 'handoff_tickets'],
   },
   {
     key: 'stats', name: '统计数据',
@@ -71,7 +71,7 @@ const ORDER = [
   'license_reminders', 'license_devices', 'client_sessions', 'licenses',
   'agent_commissions', 'withdrawals', 'points_logs', 'payments', 'orders',
   'devices', 'api_usage', 'api_keys', 'blcloud_usage', 'blcloud_keys', 'users',
-  'wechat_sessions', 'sms_codes', 'handoff_tickets', 'api_nonces', 'login_attempts',
+  'wechat_sessions', 'sms_codes', 'sms_send_logs', 'handoff_tickets', 'api_nonces', 'login_attempts',
   'admin_logs', 'app_update_log', 'open_auth_log', 'stats_daily', 'product_versions', 'products', 'open_apps',
 ];
 

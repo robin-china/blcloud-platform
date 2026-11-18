@@ -709,3 +709,20 @@ CREATE INDEX IF NOT EXISTS idx_admin_recovery_admin ON admin_recovery_codes(admi
 
 -- 双维锁定要按 IP 查，原来的索引只有 (username, created_at)。
 CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip, created_at);
+
+-- 短信发送台账：发送成功/失败都留痕，兼做 60s / 每日 / 每 IP 频控依据。
+-- 只存服务商错误码与描述，绝不存密钥；验证码本身仍在 sms_codes。
+CREATE TABLE IF NOT EXISTS sms_send_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT NOT NULL,
+  ip TEXT DEFAULT '',
+  scene TEXT DEFAULT '',
+  vendor TEXT DEFAULT '',
+  ok INTEGER DEFAULT 0,
+  vendor_code TEXT DEFAULT '',
+  message TEXT DEFAULT '',
+  biz_id TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sms_log_phone_time ON sms_send_logs(phone, created_at);
+CREATE INDEX IF NOT EXISTS idx_sms_log_ip_time ON sms_send_logs(ip, created_at);

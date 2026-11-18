@@ -848,8 +848,23 @@ sha256   : aa2ce39732b0f6d294a96d5440433ccef19af301a9fe58144a910e51f1bd8b97
 - 网页端兑换失败给的是同一句「链接无效或已过期」——区分「不存在 / 用过 / 过期」等于白送一个试探入口
 
 ### 5.8 手机号登录
-1. `POST /auth/sms/send` body `{ "phone": "13800138000" }` → 返回 `{ ok: true }`（未接短信网关时响应里还有 `dev_code`，联调可直接用）
+1. `POST /auth/sms/send` body `{ "phone": "13800138000" }` → 返回 `{ ok: true, mode: "aliyun" | "tencent" | "simulate", expires_in: 300 }`
 2. `POST /auth/login/phone` body `{ "phone": "...", "code": "123456", "machine_id": "..." }`
+
+**契约变更（2026-11-18）**：`dev_code` 只在**非生产环境的开发模式**下回显，生产环境**一律不下发**；
+此前是无条件返回，等于把验证码直接交给调用方。客户端联调请改用本地/测试环境，
+不要在正式包里依赖 `dev_code`。
+
+发送失败不再回「假成功」，而是明确错误码（HTTP 状态见 §6）：
+
+| code | 含义 | 客户端处理 |
+|---|---|---|
+| `SMS_DISABLED` | 短信通道未启用 | 提示稍后再试，别无限重试 |
+| `SMS_CONFIG_MISSING` / `SMS_SIMULATE_FORBIDDEN` | 后台配置不全 / 生产仍是开发模式 | 属服务端配置问题，联系管理员 |
+| `SMS_RATE_LIMITED` | 同号 60 秒 / 每日 10 条 / 同 IP 每小时 30 条 | 按提示等待，倒计时后再让用户点 |
+| `SMS_VENDOR_ERROR` / `SMS_NETWORK_ERROR` | 服务商拒绝或网络故障 | 稍后重试；后台台账能看到原始错误码 |
+
+响应新增 `mode` 字段仅用于诊断，客户端不必解析。
 
 新手机号会**自动建档**，并按规则生成 TB 账户（`p_13800138000@tb.cn`，密码 `p_13800138000`）。
 

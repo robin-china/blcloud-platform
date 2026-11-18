@@ -20,6 +20,7 @@ const profileLib = require('../lib/profile');
 const handoff = require('../lib/handoff');
 const avatars = require('../lib/avatars');
 const userid = require('../lib/userid');
+const sms = require('../services/sms');
 const release = require('../lib/release');
 
 const ACCESS_TTL_MS = 2 * 60 * 60 * 1000;
@@ -625,10 +626,20 @@ module.exports = async function openRoutes(app) {
     const phone = String((req.body || {}).phone || '').trim();
     if (!/^1\d{10}$/.test(phone)) return reply.code(400).send({ error: '手机号格式不正确', code: 'PARAM_INVALID' });
     const code = genCode(6);
-    db.prepare('INSERT INTO sms_codes (phone, code, used, expires_at) VALUES (?,?,0,?)')
-      .run(phone, code, new Date(Date.now() + 5 * 60 * 1000).toISOString());
-    track(0, req.app.app_key, 'auth.sms.send');
-    return { ok: true, expires_in: 300, dev_code: code };
+    // 与网页端共用一条发送通道：未开通 / 配置不全 / 服务商报错一律明确回错，
+    // 绝不再「假装发送成功」；生产环境不下发 dev_code（此前是无条件回显的真后门）
+    try {
+      const r = await sms.sendVerifyCode({ phone, code, scene: 'open.sms', ip: clientIp(req) });
+      db.prepare('INSERT INTO sms_codes (phone, code, used, expires_at) VALUES (?,?,0,?)')
+        .run(phone, code, new Date(Date.now() + 5 * 60 * 1000).toISOString());
+      track(0, req.app.app_key, 'auth.sms.send');
+      return sms.canRevealCode()
+        ? { ok: true, expires_in: 300, dev_code: code, mode: r.mode }
+        : { ok: true, expires_in: 300, mode: r.mode };
+    } catch (e) {
+      const err = e instanceof sms.SmsError ? e : new sms.SmsError('SMS_NETWORK_ERROR', e.message);
+      return reply.code(sms.httpStatus(err.code)).send({ error: err.message, code: err.code });
+    }
   });
 
   app.post('/api/open/v1/auth/login/phone', async (req, reply) => {

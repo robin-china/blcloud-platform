@@ -72,6 +72,12 @@ const POLICIES = [
     why: '验证码本身 5 分钟过期，留 7 天够查发送记录',
   },
   {
+    key: 'sms_send_logs', table: 'sms_send_logs', ts: 'created_at', days: 30, auto: true,
+    name: '短信发送台账',
+    desc: '每次发送的服务商结果码、耗时窗口与频控依据',
+    why: '频控只看最近 24 小时，留 30 天足够核对账单与投诉',
+  },
+  {
     key: 'handoff_tickets', table: 'handoff_tickets', ts: 'created_at', days: 3, auto: true,
     name: '免登一次性票据',
     desc: '软件端 → 浏览器免登的 code，用一次即作废',

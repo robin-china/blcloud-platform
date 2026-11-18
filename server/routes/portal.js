@@ -1,7 +1,8 @@
 const db = require('../db');
 const { now, safeJson, genOrderNo, genCode } = require('../lib/util');
 const { requireUser, signUser } = require('../lib/auth');
-const { getSetting, getConfig, devMode, publicUrl } = require('../lib/config');
+const { getSetting, getConfig, publicUrl } = require('../lib/config');
+const sms = require('../services/sms');
 const { createPayment, markPaid } = require('../services/pay');
 const wxpay = require('../services/wxpay');
 const paydiag = require('../lib/paydiag');
@@ -198,10 +199,21 @@ module.exports = async function portalRoutes(app) {
     const phone = String((req.body || {}).phone || '').trim();
     if (!/^1\d{10}$/.test(phone)) return reply.code(400).send({ error: '手机号格式不正确' });
     const code = genCode(6);
-    db.prepare('INSERT INTO sms_codes (phone, code, used, expires_at) VALUES (?,?,0,?)')
-      .run(phone, code, new Date(Date.now() + 5 * 60 * 1000).toISOString());
-    // 验证码一律不下发到客户端；仅在演示模式下附带，便于本地联调
-    return devMode() ? { ok: true, devCode: code } : { ok: true };
+    // 先真发再入库：发送失败绝不留一条能用于校验的码，也不能回「发送成功」骗用户
+    try {
+      const r = await sms.sendVerifyCode({
+        phone, code, scene: 'portal.bind',
+        ip: String(req.ip || req.headers['x-forwarded-for'] || '').split(',')[0].trim(),
+      });
+      db.prepare('INSERT INTO sms_codes (phone, code, used, expires_at) VALUES (?,?,0,?)')
+        .run(phone, code, new Date(Date.now() + 5 * 60 * 1000).toISOString());
+      return sms.canRevealCode()
+        ? { ok: true, devCode: code, mode: r.mode }
+        : { ok: true, mode: r.mode };
+    } catch (e) {
+      const err = e instanceof sms.SmsError ? e : new sms.SmsError('SMS_NETWORK_ERROR', e.message);
+      return reply.code(sms.httpStatus(err.code)).send({ error: err.message, code: err.code });
+    }
   });
 
   // 短信验证码失败锁定：6 位码 5 分钟内可被暴力撞出来。单实例部署（SQLite 禁

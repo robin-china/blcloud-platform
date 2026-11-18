@@ -10,6 +10,7 @@ const tb = require('../services/tb');
 const wxpay = require('../services/wxpay');
 const paydiag = require('../lib/paydiag');
 const tbdiag = require('../lib/tbdiag');
+const sms = require('../services/sms');
 const { logAdmin } = require('../lib/adminlog');
 
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'data', 'uploads');
@@ -339,6 +340,35 @@ module.exports = async function adminRoutes(app) {
     if (name === 'tb') tb.resetAdminToken();
     logAdmin(req, '更新接入配置', name);
     return { ok: true, config: getConfigMasked(name), enabled: cfg.enabled };
+  });
+
+  // 短信配置自检：不发短信，直接告诉管理员「差哪个字段 / 为什么发不出去」
+  app.get('/api/admin/sms/status', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    return { check: sms.testConfig(), logs: sms.recentLogs(20), diagnostics: sms.diagnostics(10) };
+  });
+
+  // 真发一条测试短信（会计费），把服务商原始错误码回显出来便于对账排障
+  app.post('/api/admin/sms/test', async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const phone = String((req.body || {}).phone || '').trim();
+    if (!/^1\d{10}$/.test(phone)) return reply.code(400).send({ error: '手机号格式不正确' });
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const ip = String(req.ip || req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    try {
+      const r = await sms.sendVerifyCode({ phone, code, scene: 'admin.test', ip });
+      logAdmin(req, '短信测试发送', `${phone} / ${r.mode}`);
+      return sms.canRevealCode()
+        ? { ok: true, mode: r.mode, bizId: r.bizId, devCode: code }
+        : { ok: true, mode: r.mode, bizId: r.bizId };
+    } catch (e) {
+      const err = e instanceof sms.SmsError ? e : new sms.SmsError('SMS_NETWORK_ERROR', e.message);
+      logAdmin(req, '短信测试失败', `${phone} / ${err.code}`);
+      return reply.code(sms.httpStatus(err.code)).send({
+        error: err.message, code: err.code, vendorCode: err.extra.vendorCode || '',
+        requestId: err.extra.requestId || '',
+      });
+    }
   });
 
   app.post('/api/upload', async (req, reply) => {
