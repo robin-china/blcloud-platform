@@ -363,9 +363,12 @@ module.exports = async function adminRoutes(app) {
         : { ok: true, mode: r.mode, bizId: r.bizId };
     } catch (e) {
       const err = e instanceof sms.SmsError ? e : new sms.SmsError('SMS_NETWORK_ERROR', e.message);
-      logAdmin(req, '短信测试失败', `${phone} / ${err.code}`);
+      logAdmin(req, '短信测试失败', `${phone} / ${err.code} / ${err.extra.vendorCode || ''}`);
+      // 服务商原始错误码翻成中文处置建议，管理员不必再拿着英文错误码翻文档
+      const hint = err.extra.hint || '';
       return reply.code(sms.httpStatus(err.code)).send({
-        error: err.message, code: err.code, vendorCode: err.extra.vendorCode || '',
+        error: hint ? `${err.message}｜${hint}` : err.message,
+        code: err.code, vendorCode: err.extra.vendorCode || '', hint,
         requestId: err.extra.requestId || '',
       });
     }

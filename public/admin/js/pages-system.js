@@ -366,8 +366,17 @@ window.PageIntegration = {
           该账号需具备 <b>dysms:SendSms</b> 权限；Secret 只在创建时完整显示一次。
         </div>
         <div class="field-row">
-          <div class="field"><label>签名</label><input class="input" v-model="c.sign_name" /></div>
-          <div class="field"><label>模板 Code / TemplateId</label><input class="input" v-model="c.template_code" /></div>
+          <div class="field">
+            <label>签名（内容，不是 ID）</label>
+            <input class="input" v-model="c.sign_name" placeholder="如：博联云" />
+            <div class="hint" style="margin-top:4px">填审核通过的<b>签名内容</b>，不带【】、不含空格，
+              2~12 个中英文/数字；填签名 ID 或带空格会报 SignatureIncorrectOrUnapproved。</div>
+          </div>
+          <div class="field">
+            <label>模板 Code / TemplateId</label>
+            <input class="input" v-model="c.template_code" placeholder="腾讯云填纯数字模板 ID" />
+            <div class="hint" style="margin-top:4px">须为审核通过且已启用的模板；腾讯云填纯数字 ID，不是模板文案。</div>
+          </div>
         </div>
         <div class="field" v-if="c.vendor==='tencent'">
           <label>SmsSdkAppId（腾讯云短信应用 ID）</label>

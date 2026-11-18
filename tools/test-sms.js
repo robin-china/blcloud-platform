@@ -201,6 +201,26 @@ const SIM_CFG = {
   try { await sms.sendVerifyCode({ phone: phone(8), code: '123456' }); } catch (e) { err = e; }
   ok('网络异常归为 SMS_NETWORK_ERROR', err && err.code === 'SMS_NETWORK_ERROR', err && err.message);
 
+  // 用户实测报的签名错误：官方要求 SignName 填签名内容、不带空格、2~12 字
+  setConfig('sms', { ...TC_CFG, sign_name: '  博联云  ' });
+  calls.length = 0;
+  fetchImpl = async () => reply({ Response: { SendStatusSet: [{ Code: 'FailedOperation.SignatureIncorrectOrUnapproved', Message: 'signature format is incorrect or signature is not approved' }] } });
+  clearLogs();
+  err = null;
+  try { await sms.sendVerifyCode({ phone: phone(13), code: '123456' }); } catch (e) { err = e; }
+  const sentSign = JSON.parse(calls[calls.length - 1].opts.body).SignName;
+  ok('配置字段首尾空格发送前被剔除', sentSign === '博联云', sentSign);
+  ok('签名错误码翻成中文处置建议', !!err && !!err.extra.hint
+    && err.extra.hint.includes('签名内容') && err.extra.hint.includes('2~12'), err && err.extra.hint);
+  ok('vendorHint 覆盖签名/模板/权限/密钥类错误',
+    !!sms.vendorHint('FailedOperation.TemplateIncorrectOrUnapproved')
+    && !!sms.vendorHint('UnauthorizedOperation.SmsSdkAppIdVerifyFail')
+    && !!sms.vendorHint('AuthFailure.SignatureFailure'));
+  setConfig('sms', { ...TC_CFG, sign_name: '【博联云】' });
+  ok('自检会提示签名带【】', sms.testConfig().hints.some((h) => h.includes('【】')), sms.testConfig().hints);
+  setConfig('sms', { ...TC_CFG, sign_name: '1400006666' });
+  ok('自检会提示疑似填了签名 ID', sms.testConfig().hints.some((h) => h.includes('签名 ID')), sms.testConfig().hints);
+
   /* ------------------------------------------------------------ [5] 配置与生产护栏 */
   console.log('\n[5] 配置缺失 / 生产模式 / 失败不入库');
   // setConfig 对加密字段是「留空表示不修改」，要模拟真缺 Secret 得直接改配置行
@@ -268,6 +288,12 @@ const SIM_CFG = {
   r = await app.inject({ method: 'POST', url: `${B}/api/admin/sms/test`, headers: AH, payload: { phone: phone(70) } });
   ok('开发模式测试发送返回验证码', r.statusCode === 200 && /^\d{6}$/.test(String(json(r).devCode || '')), json(r));
   ok('测试发送写入台账', db.prepare("SELECT COUNT(*) AS c FROM sms_send_logs WHERE scene='admin.test'").get().c === 1);
+  setConfig('sms', TC_CFG);
+  fetchImpl = async () => reply({ Response: { SendStatusSet: [{ Code: 'FailedOperation.SignatureIncorrectOrUnapproved', Message: 'signature format is incorrect' }] } });
+  r = await app.inject({ method: 'POST', url: `${B}/api/admin/sms/test`, headers: AH, payload: { phone: phone(71) } });
+  ok('后台测试端点直接回显中文处置建议', r.statusCode === 502 && !!json(r).hint
+    && json(r).error.includes('签名内容'), json(r));
+  setConfig('sms', SIM_CFG);
   setConfig('sms', { ...TC_CFG, sdk_app_id: '' });
   const chk = sms.testConfig();
   ok('腾讯云缺 SdkAppId 被自检抓到', !chk.ok && chk.missing.includes('SmsSdkAppId'), chk);

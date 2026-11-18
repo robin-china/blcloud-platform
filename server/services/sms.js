@@ -68,9 +68,47 @@ function isProduction() {
   return process.env.NODE_ENV === 'production';
 }
 
+/**
+ * 所有文本配置统一去掉首尾空白。复制粘贴带一个空格，腾讯云会直接回
+ * FailedOperation.SignatureIncorrectOrUnapproved、密钥会回 SignatureFailure，
+ * 而自检只看「非空」并看不出问题 —— 发送链路一律用这份归一化配置。
+ */
+function normalized(raw) {
+  const out = { ...raw };
+  for (const k of ['vendor', 'access_key', 'secret', 'sign_name', 'template_code', 'sdk_app_id']) {
+    if (typeof out[k] === 'string') out[k] = out[k].trim();
+  }
+  return out;
+}
+
+/** 常见服务商错误码 → 中文处置建议（只回给后台管理员，不下发给普通用户）。 */
+const VENDOR_HINTS = {
+  'FailedOperation.SignatureIncorrectOrUnapproved':
+    '签名未通过校验：SignName 要填「签名内容」而不是签名 ID，不带【】、不含空格，只能 2~12 个中英文/数字；并到短信控制台「国内短信 → 签名管理」确认该签名已审核通过且生效',
+  'FailedOperation.TemplateIncorrectOrUnapproved':
+    '模板未审核通过或内容不匹配：确认模板 ID 是审核通过后的纯数字 ID，模板已启用，变量个数与 TemplateParamSet 一致',
+  'FailedOperation.TemplateParamSetNotMatchApprovedTemplate':
+    '模板变量个数不匹配：当前只支持单变量模板 {1}，模板若含 {2} 需先改服务端',
+  'FailedOperation.SignatureNotApproved': '签名还在审核中或已拒绝，到签名管理查看审核状态',
+  'UnauthorizedOperation.SmsSdkAppIdVerifyFail':
+    'SmsSdkAppId 与云 API 密钥不属于同一主账号，换同账号下的密钥',
+  'AuthFailure.SignatureFailure':
+    '签名校验失败：检查 SecretId/SecretKey 有没有带空格、服务器时间是否偏差过大',
+  'AuthFailure.UnauthorizedOperation':
+    '子账号缺少短信权限：关联 QcloudSMSFullAccess 或含 sms:SendSms 的自定义策略',
+  'InvalidAccessKeyId': 'AccessKey 不存在或已禁用，检查密钥与该账号的短信权限',
+  'isv.INVALID_PARAMETERS': '阿里云参数错误：检查模板变量名 code、签名与模板是否审核通过',
+  'isv.BUSINESS_LIMIT_CONTROL': '阿里云侧触发流控，稍后重试或在控制台调整频率限制',
+  'isv.TEMPLATE_MISSING_PARAMETERS': '阿里云模板变量缺失：模板须为单变量 code',
+};
+
+function vendorHint(code) {
+  return VENDOR_HINTS[String(code || '')] || '';
+}
+
 /** 不用真发短信的自检：管理员保存配置后立刻能看出「为什么发不出去」。 */
 function testConfig() {
-  const cfg = getConfig('sms');
+  const cfg = normalized(getConfig('sms'));
   const vendor = String(cfg.vendor || 'simulate');
   const enabled = Number(cfg.enabled || 0) === 1;
   const missing = [];
@@ -83,8 +121,14 @@ function testConfig() {
   const hints = [];
   if (!enabled) hints.push('「启用」开关未打开');
   if (vendor === 'simulate' && isProduction()) hints.push('生产环境不允许开发模式（不下发真实短信）');
-  if (vendor === 'tencent') hints.push('模板须为单变量验证码模板，SdkAppId 在短信控制台「应用管理」里');
+  if (vendor === 'tencent') hints.push('模板须为单变量验证码模板（占位符 {1}），SdkAppId 在短信控制台「应用管理」里');
   if (vendor === 'aliyun') hints.push('模板变量须为 ${code}，AccessKey 需具备 dysms:SendSms 权限');
+  const sign = String(cfg.sign_name || '');
+  if (sign && /[【】\[\]\s]/.test(sign)) hints.push('签名不要带【】或空格：SignName 只填审核通过的签名内容');
+  if (sign && /^\d{5,}$/.test(sign)) hints.push('签名看起来是签名 ID：这里要填签名「内容」，不是 ID');
+  if (sign && !/^[\u4e00-\u9fa5A-Za-z0-9]{2,12}$/.test(sign)) {
+    hints.push('签名格式要求 2~12 个中英文/数字，且与控制台审核通过的内容逐字一致');
+  }
 
   return {
     ok: enabled && (vendor === 'simulate' ? !isProduction() : missing.length === 0),
@@ -109,7 +153,7 @@ function assertReady() {
   if (st.vendor !== 'simulate' && st.missing.length) {
     throw new SmsError('SMS_CONFIG_MISSING', `短信配置不完整：缺少 ${st.missing.join('、')}`);
   }
-  return getConfig('sms');
+  return normalized(getConfig('sms'));
 }
 
 /* ------------------------------------------------------------------ 频控 */
@@ -293,6 +337,8 @@ async function sendVerifyCode({ phone, code, scene = 'bind', ip = '' }) {
     return { ok: true, mode: vendor, bizId: r.bizId, requestId: r.requestId };
   } catch (e) {
     const err = e instanceof SmsError ? e : new SmsError('SMS_NETWORK_ERROR', `短信服务商请求失败：${e.message}`);
+    const hint = vendorHint(err.extra.vendorCode);
+    if (hint) err.extra.hint = hint;
     writeLog({
       phone, ip, scene, vendor, ok: 0,
       vendorCode: err.code + (err.extra.vendorCode ? `:${err.extra.vendorCode}` : ''),
@@ -311,7 +357,7 @@ function httpStatus(code) {
 }
 
 module.exports = {
-  SmsError, sendVerifyCode, testConfig, canRevealCode, httpStatus,
+  SmsError, sendVerifyCode, testConfig, canRevealCode, httpStatus, vendorHint,
   diagnostics, recentLogs, writeLog,
   // 测试用
   aliSignParams, tcAuthorization, pct, LIMITS,
