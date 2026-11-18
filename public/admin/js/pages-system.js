@@ -353,6 +353,18 @@ window.PageIntegration = {
           <div class="field"><label>AccessKey / SecretId</label><input class="input" v-model="c.access_key" /></div>
           <div class="field"><label>Secret</label><input class="input" v-model="c.secret" placeholder="留空表示不修改" /></div>
         </div>
+        <div class="hint" v-if="c.vendor==='tencent'" style="margin:-4px 0 12px">
+          腾讯云这里填的是<b>云 API 密钥</b>：控制台右上角头像 →「访问管理」→「访问密钥 / API 密钥管理」
+          （<span style="font-family:ui-monospace,monospace">console.cloud.tencent.com/cam/capi</span>）。
+          SecretId 填左边、SecretKey 填右边，SecretKey 点「显示」查看（需验证身份）。
+          推荐用子账号密钥：主账号在「用户 → 用户列表 → 子账号 → API 密钥」新建，
+          并关联 <b>QcloudSMSFullAccess</b>（或含 sms:SendSms 的自定义策略）；
+          <b>SmsSdkAppId 必须与密钥属于同一主账号</b>，否则报 SmsSdkAppIdVerifyFail。
+        </div>
+        <div class="hint" v-if="c.vendor==='aliyun'" style="margin:-4px 0 12px">
+          阿里云这里填 RAM 用户的 <b>AccessKey ID / AccessKey Secret</b>（访问控制 → 用户 → 创建 AccessKey），
+          该账号需具备 <b>dysms:SendSms</b> 权限；Secret 只在创建时完整显示一次。
+        </div>
         <div class="field-row">
           <div class="field"><label>签名</label><input class="input" v-model="c.sign_name" /></div>
           <div class="field"><label>模板 Code / TemplateId</label><input class="input" v-model="c.template_code" /></div>
